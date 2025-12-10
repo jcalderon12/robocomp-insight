@@ -1,0 +1,20 @@
+import "OmniRobot.idsl";
+import "Lidar3D.idsl";
+import "CameraRGBDSimple.idsl";
+import "Camera360RGB.idsl";
+import "Webots2Robocomp.idsl";
+import "IMU.idsl";
+import "FullPoseEstimationPub.idsl";
+Component concept_robot
+{
+    Communications
+    {
+        requires Lidar3D, Camera360RGB, OmniRobot, Webots2Robocomp, IMU;
+        subscribesTo FullPoseEstimationPub;
+    };
+    language Cpp11;
+    gui Qt(QMainWindow);
+    options dsr;
+
+};
+

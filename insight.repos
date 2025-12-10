@@ -1,0 +1,17 @@
+repositories:
+  robocomp_shadow:
+    type: git
+    url: https://github.com/robocomp/robocomp-shadow.git
+    version: main
+  webots-shadow:
+    type: git
+    url: https://github.com/robocomp/webots-shadow.git
+    version: main
+  webots-bridge:
+    type: git
+    url: https://github.com/robocomp/webots-bridge.git
+    version: main
+  core:
+    type: git
+    url: https://github.com/robocomp/robocomp-robolab.git
+    version: master

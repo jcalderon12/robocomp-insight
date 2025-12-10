@@ -1,0 +1,14 @@
+
+
+Component inner_simulator
+{
+    Communications
+    {
+        
+    };
+    language python;
+    gui Qt(QMainWindow);
+    options dsr;
+
+};
+

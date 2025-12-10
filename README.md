@@ -1,4 +1,4 @@
-# roboComp-INSIGHT
+# robocomp-INSIGHT
 
 ## 1. Project introduction
 

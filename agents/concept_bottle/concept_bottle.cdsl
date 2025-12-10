@@ -1,0 +1,14 @@
+import "VisualElementsPub.idsl";
+
+Component concept_bottle
+{
+    Communications
+    {
+        subscribesTo VisualElementsPub;
+    };
+    language Cpp11;
+    gui Qt(QMainWindow);
+    options dsr;
+
+};
+
