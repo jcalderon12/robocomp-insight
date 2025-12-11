@@ -16,7 +16,7 @@ The same Mission Control Agent also carries out an internal simulation to repres
 
 #### Robot knowledge - Ontologies
 
-### TODO
+Work in progress...
 
 #### Simulation of problematic events
 
@@ -77,7 +77,7 @@ cd ~/software/Program-manager/certificates
 openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
 ```
 
-Create a new user (**This user must be used in the future to login in the software.**):
+Create a new user (**This user must be used in the future to login in the software**):
 ```bash
 cd ~/software/Program-manager
 python src/utils/addUser.py
@@ -93,5 +93,6 @@ cp $ROBOCOMP/components/robocomp-INSIGHT/insight_config.json ~/software/Program-
 To launch all the enviroment just execute Program manager with the INSIGHT configuration file:
 
 ```bash
-python ~/software/Program-manager/src/ProgramManager.py --config etc/insight_config.json
+cd ~/software/Program-manager
+python src/ProgramManager.py --config etc/insight_config.json
 ```

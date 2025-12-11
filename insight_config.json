@@ -2,7 +2,7 @@
     {
       "name": "webots",
       "directory": ".",
-      "command": "webots"
+      "command": "webots $ROBOCOMP/components/webots-shadow/worlds/SimpleWorld_Bump.wbt"
     },
     {
       "name": "rcnode",
@@ -13,16 +13,6 @@
       "name": "bridge",
       "directory": "$ROBOCOMP/components/webots-bridge",
       "command": "bin/Webots2Robocomp etc/config"
-    },
-    {
-      "name": "lidar",
-      "directory": "$ROBOCOMP/components/robocomp-robolab/components/hardware/laser/lidar3D",
-      "command": "bin/Lidar3D etc/config_helios_webots "
-    },
-    {
-      "name": "viewer",
-      "directory": "$ROBOCOMP/components/robocomp-robolab/components/viewers/lidar3d_viewer",
-      "command": "bin/lidar3dviewer etc/config_helios "
     },
     {
         "name": "mission_controller",
