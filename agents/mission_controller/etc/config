@@ -1,6 +1,6 @@
 
 # Change id
-Agent.id = 0
+Agent.id = 1
 Agent.name = "mission_controller"
 Agent.configFile = "insight_dsr.json"
 ViewAgent.tree = true

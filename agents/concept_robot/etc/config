@@ -14,7 +14,7 @@ Endpoints.FullPoseEstimationPubPrefix = ""
 
 
 # Change id
-Agent.id = 0
+Agent.id = 3
 Agent.name = "concept_robot"
 Agent.configFile = ""
 ViewAgent.tree = true

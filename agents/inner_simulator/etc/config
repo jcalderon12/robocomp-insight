@@ -5,7 +5,7 @@
 
 
 # Change id
-Agent.id = 0
+Agent.id = 2
 Agent.name = "inner_simulator"
 Agent.configFile = ""
 
