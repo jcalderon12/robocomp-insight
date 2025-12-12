@@ -24,6 +24,67 @@
                 "name": "root",
                 "type": "root",
                 "links": [
+                    {
+                        "dst": "200",
+                        "label": "RT",
+                        "linkAttribute": {
+                            "rt_rotation_euler_xyz": {
+                                "type": 3,
+                                "value": [
+                                    0,
+                                    0,
+                                    0
+                                ]
+                            },
+                            "rt_translation": {
+                                "type": 3,
+                                "value": [
+                                    0,
+                                    0,
+                                    0
+                                ]
+                            }
+                        },
+                        "src": "100"
+                    }
+                ]
+            },
+            "200": {
+                "attribute": {
+                    "color": {
+                        "type": 0,
+                        "value": "Khaki"
+                    },
+                    "level": {
+                        "type": 1,
+                        "value": 1
+                    },
+                    "pos_x": {
+                        "type": 2,
+                        "value": 100
+                    },
+                    "pos_y": {
+                        "type": 2,
+                        "value": 100
+                    },
+                    "parent": {
+                        "type": 7,
+                        "value": 100
+                    },
+                    "forward_velocity": {
+                        "type": 2,
+                        "value": 0
+                    },
+                    "angular_velocity": {
+                        "type": 2,
+                        "value": 0
+                    }
+                },
+                "id": "200",
+                "name": "robot",
+                "type": "robot",
+                "links": [
+
                 ]
             }
         }  

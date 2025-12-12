@@ -65,6 +65,11 @@ class SpecificWorker(GenericWorker):
 
         locale.setlocale(locale.LC_NUMERIC, 'en_US.UTF-8')
 
+        # self.g = 
+
+        self.state = "INNER_SIMULATOR" # Possible states: "IDLE", "INNER_SIMULATOR"
+
+
         # ================ PYBULLET SIMULATION SETUP  ================
         # ============================================================
 
@@ -106,6 +111,7 @@ class SpecificWorker(GenericWorker):
         self.links_name = self.get_link_info(self.robot)
 
         self.init_pos, self.init_orn = p.getBasePositionAndOrientation(self.robot)
+        self.forward_vel, self.angular_vel = 0, 0
 
 
     def __del__(self):
@@ -114,6 +120,19 @@ class SpecificWorker(GenericWorker):
 
     @QtCore.Slot()
     def compute(self):
+        match self.state:
+            case "IDLE":
+                pass
+
+            case "INNER_SIMULATOR":
+                self.forward_vel, self.angular_vel = self.get_velocities_from_dsr()
+                wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.forward_vel, self.angular_vel)
+                for motor_name in self.motors:
+                    p.setJointMotorControl2(bodyUniqueId=self.robot,
+                                            jointIndex=self.joints_name[motor_name],
+                                            controlMode=p.VELOCITY_CONTROL,
+                                            targetVelocity=wheels_velocity[motor_name],
+                                            force=10)
 
         
         return True
@@ -220,6 +239,28 @@ class SpecificWorker(GenericWorker):
             "frame_back_left2motor_back_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
             "frame_back_right2motor_back_right": forward_velocity / self.wheels_radius + self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius}
         return wheels_velocity
+    
+    # ================= DSR INTERACTION  ================
+    # ==================================================
+
+    def get_velocities_from_dsr(self):
+        """
+        Get the forward and angular velocities from the DSR graph
+
+        :return: Forward and angular velocities
+        """
+        forward_velocity = 0
+        angular_velocity = 0
+
+        robot_nodes = self.g.get_nodes_by_type("robot")
+        if len(robot_nodes) > 0:
+            robot_node = robot_nodes[0]
+            if robot_node.attrs["forward_velocity"].value is not None:
+                forward_velocity = robot_node.attrs["forward_velocity"].value
+            if robot_node.attrs["angular_velocity"].value is not None:
+                angular_velocity = robot_node.attrs["angular_velocity"].value
+
+        return forward_velocity, angular_velocity
 
     # =============== DSR SLOTS  ================
     # =============================================
