@@ -87,7 +87,7 @@ void SpecificWorker::initialize()
 	graph_viewer = std::make_unique<DSR::DSRViewer>(this, G, current_opts, main);
 	//graph_viewer->add_custom_widget_to_dock("CustomWidget", &custom_widget);
 
-    //initializeCODE
+    auto rt = G->get_rt_api();
 
     /////////GET PARAMS, OPEND DEVICES....////////
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
@@ -99,22 +99,53 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
-    std::cout << "Compute worker" << std::endl;
-	//computeCODE
-	//try
-	//{
-	//  camera_proxy->getYImage(0,img, cState, bState);
-    //    if (img.empty())
-    //        emit goToEmergency()
-	//  memcpy(image_gray.data, &img[0], m_width*m_height*sizeof(uchar));
-	//  searchTags(image_gray);
-	//}
-	//catch(const Ice::Exception &e)
-	//{
-	//  std::cout << "Error reading from Camera" << e << std::endl;
-	//}
-}
+	switch (agentState)
+	{
+	case States::IDLE:{
+		bool is_target_assigned = check_target_assigned();
+		if (is_target_assigned)
+			agentState = States::ASSIGNED;
+		break;
+	}
 
+	case States::ASSIGNED:{
+		bool affordance_existed = check_affordance_assigned();
+		if (!affordance_existed)
+			create_affordance();
+		bool affordance_acepted = check_affordance_accepted();
+		if (affordance_acepted)
+			agentState = States::FOLLOWME;
+		break;
+	}
+
+	case States::FOLLOWME:{
+		auto state = follow_person();
+		if (state == "RUNNING")
+			break;
+		else {
+			if (state == "SUCCESS")
+				agentState = States::SUCCESS;
+			if (state == "FAILED")
+				agentState = States::FAILED;
+			if (state == "STOPPED")
+				agentState = States::STOPPED;
+		}
+		break;
+	}
+
+	case States::SUCCESS:
+		std::cout << "Mission success!" << std::endl;
+		break;
+
+	case States::FAILED:
+		std::cout << "Mission failed!" << std::endl;
+		break;
+
+	case States::STOPPED:
+		std::cout << "Mission stopped by user!" << std::endl;
+		break;
+	}	
+}
 
 
 void SpecificWorker::emergency()
@@ -152,7 +183,80 @@ void SpecificWorker::VisualElementsPub_setVisualObjects(RoboCompVisualElementsPu
 
 }
 
+/************ DSR Methods *************/
 
+bool SpecificWorker::check_target_assigned()
+{
+	auto robot_node = G->get_node("robot");
+	if (!robot_node.has_value()){
+		std::cout << "Robot node not found in DSR." << std::endl;
+		return false;
+	}
+	auto person_nodes = G->get_nodes_by_type("person");
+	if (person_nodes.empty()){
+		std::cout << "No person nodes found in DSR." << std::endl;
+		return false;
+	}
+
+	auto target_edges = G->get_edges_by_type("TARGET");
+	if (target_edges.empty()){
+		std::cout << "No TARGET edge found from robot to person." << std::endl;
+		return false;
+	}
+	else{
+		DSR::Edge target_edge = target_edges[0];
+		auto target_id = target_edge.to();
+
+		person_node = G->get_node(target_id).value();
+		std::cout << "Target assigned to person with id:" << target_id << std::endl;
+		return true;
+	}
+}
+
+bool SpecificWorker::check_affordance_assigned()
+{
+	auto affordance_nodes = G->get_nodes_by_type("affordance");
+	for (const auto& node : affordance_nodes){
+		auto edge = G->get_edge(person_node.id(), node.id(), "has_intention");
+		if (edge.has_value()){
+			std::cout << "Affordance already exists for the assigned target." << std::endl;
+			return true;
+		}
+	}
+	std::cout << "No affordance exists for the assigned target." << std::endl;
+	return false;
+}
+
+void SpecificWorker::create_affordance()
+{
+	std::cout << "Creating affordance for the assigned target." << std::endl;
+	DSR::Node affordance_node = DSR::Node::create<affordance_node_type>("follow_me");
+	auto pos_x = G->get_attrib_by_name<pos_x_att>(person_node.id()).value();
+	auto pos_y = G->get_attrib_by_name<pos_y_att>(person_node.id()).value();
+	pos_y = pos_y - 100.0; //Position the affordance slightly above the person
+	G->add_or_modify_attrib_local<pos_x_att>(affordance_node, pos_x);
+    G->add_or_modify_attrib_local<pos_y_att>(affordance_node, pos_y);
+	G->add_or_modify_attrib_local<parent_att>(affordance_node, person_node.id());
+	G->add_or_modify_attrib_local<aff_interacting_att>(affordance_node, false);
+	G->insert_node(affordance_node);
+	G->update_node(affordance_node);
+
+	DSR::Edge affordance_edge;
+	affordance_edge.from(person_node.id());
+	affordance_edge.to(affordance_node.id());
+	affordance_edge.type("has_intention");
+	G->insert_or_assign_edge(affordance_edge);
+}
+
+bool SpecificWorker::check_affordance_accepted()
+{
+	return true;
+}
+
+std::string SpecificWorker::follow_person()
+{
+	return "RUNNING";
+}
 
 /**************************************/
 // From the RoboCompVisualElementsPub you can use this types:

@@ -33,6 +33,16 @@
 
 #include <genericworker.h>
 
+enum class States
+{
+	IDLE,
+	ASSIGNED,
+	FOLLOWME,
+	SUCCESS,
+	FAILED,
+	STOPPED
+};
+
 
 /**
  * \brief Class SpecificWorker implements the core functionality of the component.
@@ -56,6 +66,8 @@ public:
 
 	void VisualElementsPub_setVisualObjects(RoboCompVisualElementsPub::TData data);
 
+	States agentState = States::IDLE;
+	DSR::Node person_node;
 
 public slots:
 
@@ -90,7 +102,37 @@ public slots:
 	void modify_edge_slot(std::uint64_t from, std::uint64_t to,  const std::string &type){};
 	void modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to, const std::string &type, const std::vector<std::string>& att_names){};
 	void del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag){};
-	void del_node_slot(std::uint64_t from){};     
+	void del_node_slot(std::uint64_t from){};
+	
+	/**
+	 * \brief Checks the current state of the mission in the DSR.
+	 * \return A boolean indicating whether the target is assigned.
+	 */
+	bool check_target_assigned();
+
+	/**
+	 * \brief Checks if an affordance already exists for the assigned target.
+	 * \return A boolean indicating whether the affordance exists.
+	 */
+	bool check_affordance_assigned();
+	
+	/**
+	 * \brief Creates an affordance for the assigned target.	
+	 */
+	void create_affordance();
+
+	/**
+	 * \brief Checks if an affordance has been accepted for the assigned target.
+	 * \return A boolean indicating whether the affordance is accepted.
+	 */
+	bool check_affordance_accepted();
+
+	/**
+	 * \brief Follows the assigned person.
+	 * \return A string indicating the state of the follow operation ("RUNNING", "SUCCESS", "FAILED", "STOPPED").
+	 */
+	std::string follow_person();
+
 private:
 
 	/**
