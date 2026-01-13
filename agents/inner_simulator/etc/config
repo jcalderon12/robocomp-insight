@@ -14,7 +14,7 @@ ViewAgent.graph = true
 ViewAgent.2d = true
 ViewAgent.3d = true
 
-Period.Compute = 100
+Period.Compute = 16
 Period.Emergency = 500
 
 Ice.Warn.Connections = "0"

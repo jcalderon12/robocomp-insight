@@ -95,6 +95,9 @@ void SpecificWorker::initialize()
 
 	graph_viewer->add_custom_widget_to_dock("Mission_controller", &mission_controller_widget);
 
+	mission_types["IDLE"] = 0;
+	mission_types["FOLLOW_PERSON"] = 1;
+
     //initializeCODE
 
     /////////GET PARAMS, OPEND DEVICES....////////
@@ -143,9 +146,35 @@ int SpecificWorker::startup_check()
 void SpecificWorker::on_setMission_clicked()
 {
 	QString mission_name = mission_controller_ui.mission_selector->currentText();
-	std::cout << "Mission selected: " << mission_name.toStdString() << std::endl;
+	std::string mission_name_str = mission_name.toStdString();
 
-	//on_setMission_clickedCODE
+	std::cout << "Mission selected: " << mission_name_str << std::endl;
+
+	// Get robot node
+	auto robot_node = G->get_node("robot");
+	// Get person node
+	auto person_node = G->get_node("person");
+	
+	switch (mission_types[mission_name_str])
+	{
+	case 0: //IDLE
+		// Remove TARGET edge from robot node
+		if (auto target_edge = G->get_edge(robot_node.value().id(), person_node.value().id(),"TARGET"); target_edge.has_value())
+		{
+			G->delete_edge(robot_node.value().id(), person_node.value().id(),"TARGET");
+		}
+		break;
+
+	case 1: //FOLLOW_PERSON
+		// Set TARGET attribute of robot to person edge to person node 
+		DSR::Edge new_target_edge;
+		new_target_edge.from(robot_node.value().id());
+		new_target_edge.to(person_node.value().id());
+		new_target_edge.type("TARGET");
+		G->insert_or_assign_edge(new_target_edge);
+		break;
+
+	}
 }
 
 void SpecificWorker::on_startMission_clicked()

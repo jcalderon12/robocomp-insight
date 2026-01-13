@@ -111,7 +111,7 @@ private:
 
 	Ui::mission_controller mission_controller_ui;
 	QWidget mission_controller_widget;
-
+	std::map<std::string, int> mission_types;
 
 signals:
 	//void customSignal();
