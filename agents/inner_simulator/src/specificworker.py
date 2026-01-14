@@ -96,6 +96,9 @@ class SpecificWorker(GenericWorker):
         # LOAD ROBOT IN THE SIMULATION
         self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", [-3.7, -0.7, 0.01], flags=flags)
 
+        # LOAD A CYLINDER IN THE SIMULATION
+        self.cylinder = p.loadURDF("../../etc/URDFs/cylinder/cylinder.urdf", [1.3, -0.7, 0.0], flags=flags)
+
         time.sleep(0.5)
 
 

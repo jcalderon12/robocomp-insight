@@ -85,6 +85,8 @@ public slots:
      */
 	int startup_check();
 
+	std::vector<float> getVelocitiesFromDSR();
+
 	void modify_node_slot(std::uint64_t, const std::string &type){};
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){};
 	void modify_edge_slot(std::uint64_t from, std::uint64_t to,  const std::string &type){};

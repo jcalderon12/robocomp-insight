@@ -99,20 +99,8 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
-    std::cout << "Compute worker" << std::endl;
-	//computeCODE
-	//try
-	//{
-	//  camera_proxy->getYImage(0,img, cState, bState);
-    //    if (img.empty())
-    //        emit goToEmergency()
-	//  memcpy(image_gray.data, &img[0], m_width*m_height*sizeof(uchar));
-	//  searchTags(image_gray);
-	//}
-	//catch(const Ice::Exception &e)
-	//{
-	//  std::cout << "Error reading from Camera" << e << std::endl;
-	//}
+    std::vector<float> velocities = getVelocitiesFromDSR();
+	this->omnirobot_proxy->setSpeedBase(0.0, velocities[0], velocities[1]);
 }
 
 
@@ -143,6 +131,30 @@ int SpecificWorker::startup_check()
 	std::cout << "Startup check" << std::endl;
 	QTimer::singleShot(200, QCoreApplication::instance(), SLOT(quit()));
 	return 0;
+}
+
+std::vector<float> SpecificWorker::getVelocitiesFromDSR()
+{
+	std::vector<float> velocities = {0.0, 0.0}; // {advx, rot}
+
+	//Access to DSR to get the desired velocities
+	auto optional_robot_node = G->get_node("robot");
+	if (optional_robot_node.has_value())
+	{
+		auto robot_node = optional_robot_node.value();
+		auto optional_adv_speed = G->get_attrib_by_name<robot_ref_adv_speed_att>(robot_node.id());
+		if (optional_adv_speed.has_value())
+		{
+			velocities[0] = optional_adv_speed.value() * 1000;
+		}
+		auto optional_rot_speed = G->get_attrib_by_name<robot_ref_rot_speed_att>(robot_node.id());
+		if (optional_rot_speed.has_value())
+		{
+			velocities[1] = optional_rot_speed.value() * 1000;
+		}
+	}
+
+	return velocities;
 }
 
 //SUBSCRIPTION to newFullPose method from FullPoseEstimationPub interface
