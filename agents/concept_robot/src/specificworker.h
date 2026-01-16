@@ -86,6 +86,7 @@ public slots:
 	int startup_check();
 
 	std::vector<float> getVelocitiesFromDSR();
+	void update_or_create_imu_node();
 
 	void modify_node_slot(std::uint64_t, const std::string &type){};
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){};

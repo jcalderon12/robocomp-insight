@@ -32,13 +32,21 @@ import matplotlib.pyplot as plt
 import matplotlib
 import pandas as pd
 import time
+import os
+import sys
 
 matplotlib.use("TkAgg")
 
 sys.path.append('/opt/robocomp/lib')
+
+dir_name = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(dir_name)
+sys.path.append(parent_dir + "/src/")
 console = Console(highlight=False)
 
 from pydsr import *
+
+from pybullet_imu import IMU
 
 
 class SpecificWorker(GenericWorker):
@@ -65,7 +73,7 @@ class SpecificWorker(GenericWorker):
 
         locale.setlocale(locale.LC_NUMERIC, 'en_US.UTF-8')
 
-        # self.g = 
+        self.print_dsr_signals = False # PONER A TRUE SI SE QUIERE VER EN CONSOLA LAS SEÑALES DSR
 
         self.state = "INNER_SIMULATOR" # Possible states: "IDLE", "INNER_SIMULATOR"
 
@@ -76,9 +84,12 @@ class SpecificWorker(GenericWorker):
         self.physicsClient = p.connect(p.GUI)
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         p.setGravity(0, 0, -9.81)
-        p.setRealTimeSimulation(1) # Enable real-time simulation
+        # p.setRealTimeSimulation(1) # Enable real-time simulation
         p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15,
                                      cameraTargetPosition=[-1.3, -0.5, 0.2])
+        
+        self.dt = 1./62. # Simulation time step (60 Hz)
+        p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
         
         # ================= PYBULLET MODELS LOADING  ================
         # ===========================================================
@@ -116,6 +127,15 @@ class SpecificWorker(GenericWorker):
         self.init_pos, self.init_orn = p.getBasePositionAndOrientation(self.robot)
         self.forward_vel, self.angular_vel = 0, 0
 
+        self.print_time = time.time()
+        self.actual_time = time.time()
+        self.initial_time = time.time()
+
+        # ================ IMU SENSOR SETUP  ================
+        # ====================================================
+
+        self.imu = IMU(self.robot, self.dt)
+
 
     def __del__(self):
         """Destructor"""
@@ -123,6 +143,12 @@ class SpecificWorker(GenericWorker):
 
     @QtCore.Slot()
     def compute(self):
+        self.show_compute_time_step()
+        acc_measured, angular_vel = self.imu.get_measurement()
+       
+        self.publish_imu_to_dsr(acc_measured, angular_vel)
+
+        p.stepSimulation()
         match self.state:
             case "IDLE":
                 pass
@@ -136,12 +162,28 @@ class SpecificWorker(GenericWorker):
                                             controlMode=p.VELOCITY_CONTROL,
                                             targetVelocity=wheels_velocity[motor_name],
                                             force=10)
-
         
         return True
 
     def startup_check(self):
         QTimer.singleShot(200, QApplication.instance().quit)
+
+
+    # =============== SIMULATION HELPERS  ================
+    # ====================================================
+
+    def show_compute_time_step(self):
+        """
+        Get the time step between compute calls
+        :return: time
+        """
+        time_step = time.time() - self.actual_time
+        self.actual_time = time.time()
+        if time.time() - self.print_time > 2:
+            self.print_time = time.time()
+            console.print(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
+            
+        return time_step
 
     
     # =============== PYBULLET MODELS INFO  ================
@@ -255,34 +297,112 @@ class SpecificWorker(GenericWorker):
         forward_velocity = 0
         angular_velocity = 0
 
-        robot_nodes = self.g.get_nodes_by_type("robot")
-        if len(robot_nodes) > 0:
-            robot_node = robot_nodes[0]
+        robot_node = self.g.get_node("robot")
+        if robot_node is not None:
+            robot_node = robot_node
             if robot_node.attrs["robot_ref_adv_speed"].value is not None:
                 forward_velocity = robot_node.attrs["robot_ref_adv_speed"].value
             if robot_node.attrs["robot_ref_rot_speed"].value is not None:
                 angular_velocity = robot_node.attrs["robot_ref_rot_speed"].value
 
         return forward_velocity, angular_velocity
+    
+
+    def create_imu_node_in_dsr(self, acc_measured, angular_vel):
+        """
+        Create the IMU node in the DSR graph
+
+        :param acc_measured: Measured acceleration
+        :param angular_vel: Angular velocity
+        """
+        imu_node = Node(agent_id=self.agent_id, name="imu_sintetic", type="imu")
+
+        robot_node = self.g.get_node("robot")
+        if robot_node is None:
+            console.print("Robot node not found in DSR graph", style="bold red")
+            return
+
+        imu_node.attrs["pos_x"] = Attribute(float(robot_node.attrs["pos_x"].value) - 100,
+                                                         self.agent_id)
+        imu_node.attrs["pos_y"] = Attribute(float(robot_node.attrs["pos_y"].value) + 100,
+                                                         self.agent_id)
+        imu_node.attrs["level"] = Attribute(robot_node.attrs['level'].value + 1,
+                                                         self.agent_id)
+        imu_node.attrs["parent"] = Attribute(int(robot_node.id), self.agent_id)
+        imu_node.attrs["imu_accelerometer"] = Attribute(acc_measured, self.agent_id)
+        imu_node.attrs["imu_gyroscope"] = Attribute(angular_vel, self.agent_id)
+
+        self.g.insert_node(imu_node)
+
+
+    def update_imu_node_in_dsr(self, imu_node, acc_measured, angular_vel):
+        """
+        Update the IMU node in the DSR graph
+
+        :param imu_node: IMU node in the DSR graph
+        :param acc_measured: Measured acceleration
+        :param angular_vel: Angular velocity
+        """
+        if imu_node.attrs["imu_accelerometer"].value is not None:
+            imu_node.attrs["imu_accelerometer"].value = acc_measured.tolist()
+        if imu_node.attrs["imu_gyroscope"].value is not None:
+            imu_node.attrs["imu_gyroscope"].value = angular_vel.tolist()
+        self.g.update_node(imu_node)
+
+    
+    def create_edge_in_dsr(self, fr_node, to_node, edge_type):
+        """
+        Create an edge in the DSR graph
+
+        :param fr_node: From node
+        :param to_node: To node
+        :param edge_type: Type of the edge
+        """
+        edge = Edge(to_node.id, fr_node.id, edge_type, self.agent_id)
+        self.g.insert_or_assign_edge(edge)
+
+
+    def publish_imu_to_dsr(self, acc_measured, angular_vel):
+        """
+
+        Publish the IMU measurements to the DSR graph or create the node if it does not exist
+
+        :param acc_measured: Measured acceleration
+        :param angular_vel: Angular velocity
+        """
+        
+        imu_node = self.g.get_node("imu_sintetic")
+        if imu_node is not None:
+            self.update_imu_node_in_dsr(imu_node, acc_measured, angular_vel)
+        else:
+            self.create_imu_node_in_dsr(acc_measured, angular_vel)
+            self.create_edge_in_dsr(self.g.get_node("robot"), self.g.get_node("imu_sintetic"), "has")
+
+
 
     # =============== DSR SLOTS  ================
     # =============================================
 
     def update_node_att(self, id: int, attribute_names: [str]):
-        console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
+        if self.print_dsr_signals:
+            console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
 
     def update_node(self, id: int, type: str):
-        console.print(f"UPDATE NODE: {id} {type}", style='green')
+        if self.print_dsr_signals:
+            console.print(f"UPDATE NODE: {id} {type}", style='green')
 
     def delete_node(self, id: int):
-        console.print(f"DELETE NODE:: {id} ", style='green')
+        if self.print_dsr_signals:
+            console.print(f"DELETE NODE:: {id} ", style='green')
 
     def update_edge(self, fr: int, to: int, type: str):
-
-        console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
+        if self.print_dsr_signals:
+            console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
 
     def update_edge_att(self, fr: int, to: int, type: str, attribute_names: [str]):
-        console.print(f"UPDATE EDGE ATT: {fr} to {type} {attribute_names}", style='green')
+        if self.print_dsr_signals:
+            console.print(f"UPDATE EDGE ATT: {fr} to {type} {attribute_names}", style='green')
 
     def delete_edge(self, fr: int, to: int, type: str):
-        console.print(f"DELETE EDGE: {fr} to {type} {type}", style='green')
+        if self.print_dsr_signals:
+            console.print(f"DELETE EDGE: {fr} to {type} {type}", style='green')

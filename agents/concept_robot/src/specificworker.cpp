@@ -99,8 +99,13 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
-    std::vector<float> velocities = getVelocitiesFromDSR();
+    
+	std::vector<float> velocities = getVelocitiesFromDSR();
 	this->omnirobot_proxy->setSpeedBase(0.0, velocities[0], velocities[1]);
+	update_or_create_imu_node();
+
+
+
 }
 
 
@@ -155,6 +160,63 @@ std::vector<float> SpecificWorker::getVelocitiesFromDSR()
 	}
 
 	return velocities;
+}
+
+
+void SpecificWorker::update_or_create_imu_node()
+{
+
+	auto acceleration_raw = this->imu_proxy->getAcceleration();
+	auto angularVel_raw = this->imu_proxy->getAngularVel();
+	std::vector<float> acceleration = {acceleration_raw.XAcc, acceleration_raw.YAcc, acceleration_raw.ZAcc};
+	std::vector<float> angularVel = {angularVel_raw.XGyr, angularVel_raw.YGyr, angularVel_raw.ZGyr};
+
+	if (auto imu_node_opt = G->get_node("imu"); imu_node_opt.has_value())
+	{
+		auto imu_real_node = imu_node_opt.value();
+		G->add_or_modify_attrib_local<imu_accelerometer_att>(imu_real_node, acceleration);
+		G->add_or_modify_attrib_local<imu_gyroscope_att>(imu_real_node, angularVel);
+		G->update_node(imu_real_node);
+	}
+	else
+	{
+		auto robot_node_opt = G->get_node("robot");
+		if (!robot_node_opt.has_value())
+		{
+			std::cerr << "Robot node not found in DSR. Cannot create IMU node without robot node." << std::endl;
+			return;
+		}
+		DSR::Node robot_node = robot_node_opt.value();
+		
+		std::cout << "Creating IMU node in DSR." << std::endl; 
+		DSR::Node imu_node = DSR::Node::create<imu_node_type>("imu");
+		auto pos_x = G->get_attrib_by_name<pos_x_att>(robot_node.id()).value();
+		auto pos_y = G->get_attrib_by_name<pos_y_att>(robot_node.id()).value();
+		auto level = G->get_attrib_by_name<level_att>(robot_node.id()).value();
+		G->add_or_modify_attrib_local<parent_att>(imu_node, robot_node.id());
+		G->add_or_modify_attrib_local<pos_x_att>(imu_node, pos_x+100);
+		G->add_or_modify_attrib_local<pos_y_att>(imu_node, pos_y+100);
+		G->add_or_modify_attrib_local<level_att>(imu_node, level+1);
+
+		G->add_or_modify_attrib_local<imu_accelerometer_att>(imu_node, acceleration);
+		G->add_or_modify_attrib_local<imu_gyroscope_att>(imu_node, angularVel);
+
+		G->insert_node(imu_node);
+		G->update_node(imu_node);
+	
+		
+		DSR::Edge imu_edge;
+		imu_edge.from(robot_node.id());
+		imu_edge.to(imu_node.id());
+		imu_edge.type("has");
+		G->insert_or_assign_edge(imu_edge);
+	
+	}
+
+
+
+
+
 }
 
 //SUBSCRIPTION to newFullPose method from FullPoseEstimationPub interface
