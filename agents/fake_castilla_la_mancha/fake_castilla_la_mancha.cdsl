@@ -1,0 +1,14 @@
+
+
+Component fake_castilla_la_mancha
+{
+    Communications
+    {
+
+    };
+    language python;
+    gui Qt(QMainWindow);
+    options dsr;
+
+};
+

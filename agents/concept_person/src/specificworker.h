@@ -67,7 +67,10 @@ public:
 	void VisualElementsPub_setVisualObjects(RoboCompVisualElementsPub::TData data);
 
 	States agentState = States::IDLE;
-	DSR::Node person_node;
+
+	std::string person_def = "HUMAN_2";
+	std::string robot_def = "shadow";
+	std::unique_ptr<DSR::RT_API> rt;
 
 public slots:
 
@@ -132,6 +135,17 @@ public slots:
 	 * \return A string indicating the state of the follow operation ("RUNNING", "SUCCESS", "FAILED", "STOPPED").
 	 */
 	std::string follow_person();
+
+	/**
+	 * \brief Calculate the cartesian distance between the robot and the person
+	 * \return Return a vector with the cartesian distance
+	 */
+	std::vector<float> get_distance_to_person();
+
+	/**
+	 * \brief Update the distance between the robot and the person in the DSR
+	 */
+	void update_distance_to_person(std::vector<float> distance);
 
 private:
 

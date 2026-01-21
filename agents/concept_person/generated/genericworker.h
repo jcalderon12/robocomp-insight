@@ -1,5 +1,5 @@
 /*
- *    Copyright (C) 2025 by YOUR NAME HERE
+ *    Copyright (C) 2026 by YOUR NAME HERE
  *
  *    This file is part of RoboComp
  *
@@ -43,12 +43,14 @@
 #include <doublebuffer/DoubleBuffer.h>
 
 #include <Camera360RGB.h>
+#include <Gridder.h>
 #include <Lidar3D.h>
 #include <VisualElementsPub.h>
+#include <Webots2Robocomp.h>
 
 #define BASIC_PERIOD 100
 
-using TuplePrx = std::tuple<>;
+using TuplePrx = std::tuple<RoboCompWebots2Robocomp::Webots2RobocompPrxPtr>;
 
 
 class GenericWorker : public QMainWindow, public Ui_guiDlg
@@ -67,6 +69,7 @@ public:
 	std::atomic_bool hibernation = false;
 
 
+	RoboCompWebots2Robocomp::Webots2RobocompPrxPtr webots2robocomp_proxy;
 
 	virtual void VisualElementsPub_setVisualObjects (RoboCompVisualElementsPub::TData data) = 0;
 

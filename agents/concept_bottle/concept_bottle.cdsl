@@ -1,9 +1,11 @@
 import "VisualElementsPub.idsl";
+import "Webots2Robocomp.idsl";
 
 Component concept_bottle
 {
     Communications
-    {
+    {   
+        requires Webots2Robocomp;
         subscribesTo VisualElementsPub;
     };
     language Cpp11;

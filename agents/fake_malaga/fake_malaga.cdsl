@@ -1,0 +1,13 @@
+
+
+Component fake_malaga
+{
+    Communications
+    {
+
+    };
+    language python;
+    gui Qt(QMainWindow);
+    options dsr;
+
+};

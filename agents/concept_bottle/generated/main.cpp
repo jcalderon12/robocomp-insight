@@ -1,5 +1,5 @@
 /*
- *    Copyright (C) 2025 by YOUR NAME HERE
+ *    Copyright (C) 2026 by YOUR NAME HERE
  *
  *    This file is part of RoboComp
  *
@@ -80,14 +80,34 @@
 #include <visualelementspubI.h>
 
 #include <Camera360RGB.h>
+#include <Gridder.h>
 #include <Lidar3D.h>
 #include <VisualElementsPub.h>
+#include <Webots2Robocomp.h>
 
 #define USE_QTGUI
 
 #define PROGRAM_NAME    "concept_bottle"
 #define SERVER_FULL_NAME   "RoboComp concept_bottle::concept_bottle"
 
+
+template <typename ProxyType, typename ProxyPointer>
+void require(const Ice::CommunicatorPtr& communicator,
+             const std::string& proxyConfig, 
+             const std::string& proxyName,
+             ProxyPointer& proxy)
+{
+    try
+    {
+        proxy = Ice::uncheckedCast<ProxyType>(communicator->stringToProxy(proxyConfig));
+        std::cout << proxyName << " initialized Ok!\n";
+    }
+    catch(const Ice::Exception& ex)
+    {
+        std::cout << "[" << PROGRAM_NAME << "]: Exception creating proxy " << proxyName << ": " << ex;
+        throw;
+    }
+}
 
 template <typename SubInterfaceType>
 void subscribe( const Ice::CommunicatorPtr& communicator,
@@ -216,7 +236,12 @@ int concept_bottle::run(int argc, char* argv[])
 	std::shared_ptr<IceStorm::TopicPrx> visualelementspub_topic;
 	Ice::ObjectPrxPtr visualelementspub;
 
+	RoboCompWebots2Robocomp::Webots2RobocompPrxPtr webots2robocomp_proxy;
 
+
+	//Require code
+	require<RoboCompWebots2Robocomp::Webots2RobocompPrx, RoboCompWebots2Robocomp::Webots2RobocompPrxPtr>(communicator(),
+	                    configLoader.get<std::string>("Proxies.Webots2Robocomp"), "Webots2RobocompProxy", webots2robocomp_proxy);
 
 	//Topic Manager code
 
@@ -237,7 +262,7 @@ int concept_bottle::run(int argc, char* argv[])
 		return EXIT_FAILURE;
 	}
 
-	tprx = std::tuple<>();
+	tprx = std::make_tuple(webots2robocomp_proxy);
 	SpecificWorker *worker = new SpecificWorker(this->configLoader, tprx, startup_check_flag);
 	QObject::connect(worker, SIGNAL(kill()), &a, SLOT(quit()));
 

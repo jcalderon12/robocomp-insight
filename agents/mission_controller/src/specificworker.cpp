@@ -20,6 +20,8 @@
 
 SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check) : GenericWorker(configLoader, tprx)
 {
+	qInstallMessageHandler([](QtMsgType, const QMessageLogContext&, const QString&) {});
+
 	this->startup_check_flag = startup_check;
 	if(this->startup_check_flag)
 	{

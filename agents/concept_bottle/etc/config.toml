@@ -3,6 +3,8 @@
 TopicManager = "IceStorm/TopicManager:default -p 9999"
 
 
+# Proxies for required interfaces
+Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 10006"
 
 [Endpoints]
 # Endpoints for subscriptions interfaces

@@ -20,6 +20,8 @@
 
 SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check) : GenericWorker(configLoader, tprx)
 {
+	qInstallMessageHandler([](QtMsgType, const QMessageLogContext&, const QString&) {});
+
 	this->startup_check_flag = startup_check;
 	if(this->startup_check_flag)
 	{
@@ -99,23 +101,22 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
-    std::cout << "Compute worker" << std::endl;
-	//computeCODE
-	//try
-	//{
-	//  camera_proxy->getYImage(0,img, cState, bState);
-    //    if (img.empty())
-    //        emit goToEmergency()
-	//  memcpy(image_gray.data, &img[0], m_width*m_height*sizeof(uchar));
-	//  searchTags(image_gray);
-	//}
-	//catch(const Ice::Exception &e)
-	//{
-	//  std::cout << "Error reading from Camera" << e << std::endl;
-	//}
+	auto bottle_pose = this->webots2robocomp_proxy->getObjectPose("flacon"); //MILLIMETERS
+
+	if(check_bottle_related_robot())
+	{
+		std::cout << "Bottle height: " << bottle_pose.position.z << std::endl;
+		if (bottle_pose.position.z < 300)
+		{
+			std::cout << "The bottle is related to the robot and has fallen." << std::endl;
+			change_rt_from_robot_to_root();
+		}
+		else
+		{
+			std::cout << "The bottle is related to the robot and is upright." << std::endl;
+		}
+	}
 }
-
-
 
 void SpecificWorker::emergency()
 {
@@ -145,6 +146,44 @@ int SpecificWorker::startup_check()
 	return 0;
 }
 
+/**************************************/
+/************ DSR METHODS *************/
+
+bool SpecificWorker::check_bottle_related_robot()
+{
+	auto bottle_node_opt = G->get_node("bottle");
+	if(!bottle_node_opt.has_value())
+		return false;
+	auto bottle_node = bottle_node_opt.value();
+
+	auto robot_node_opt = G->get_node("robot");
+	if(!robot_node_opt.has_value())
+		return false;
+	auto robot_node = robot_node_opt.value();
+
+	auto edge_opt = G->get_edge(robot_node.id(), bottle_node.id(),"RT");
+	if(!edge_opt.has_value())
+		return false;
+
+	return true;
+}
+
+void SpecificWorker::change_rt_from_robot_to_root()
+{
+	G->delete_edge("robot","bottle","RT");
+
+	auto root_node = G->get_node("root").value();
+	auto bottle_node = G->get_node("bottle").value();
+
+	DSR::Edge loss_edge;
+	loss_edge.from(root_node.id());
+	loss_edge.to(bottle_node.id());
+	loss_edge.type("RT");
+	
+	G->insert_or_assign_edge(loss_edge);
+}
+
+
 //SUBSCRIPTION to setVisualObjects method from VisualElementsPub interface
 void SpecificWorker::VisualElementsPub_setVisualObjects(RoboCompVisualElementsPub::TData data)
 {
@@ -153,6 +192,19 @@ void SpecificWorker::VisualElementsPub_setVisualObjects(RoboCompVisualElementsPu
 }
 
 
+
+/**************************************/
+// From the RoboCompWebots2Robocomp you can call this methods:
+// RoboCompWebots2Robocomp::ObjectPose this->webots2robocomp_proxy->getObjectPose(string DEF)
+// RoboCompWebots2Robocomp::void this->webots2robocomp_proxy->resetWebots()
+// RoboCompWebots2Robocomp::void this->webots2robocomp_proxy->setDoorAngle(float angle)
+// RoboCompWebots2Robocomp::void this->webots2robocomp_proxy->setPathToHuman(int humanId, RoboCompGridder::TPath path)
+
+/**************************************/
+// From the RoboCompWebots2Robocomp you can use this types:
+// RoboCompWebots2Robocomp::Vector3
+// RoboCompWebots2Robocomp::Quaternion
+// RoboCompWebots2Robocomp::ObjectPose
 
 /**************************************/
 // From the RoboCompVisualElementsPub you can use this types:

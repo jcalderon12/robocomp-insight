@@ -1,6 +1,9 @@
 # This property is used by the clients to connect to IceStorm.
 Proxies.TopicManager = "IceStorm/TopicManager:default -p 9999"
 
+# Proxies for required interfaces
+Proxies.Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 10006"
+
 # Endpoints for subscriptions interfaces
 Endpoints.VisualElementsPubTopic = "tcp -p 0"
 Endpoints.VisualElementsPubPrefix = ""

@@ -106,7 +106,60 @@
                             }
                         },
                         "src": "200"
+                    },
+                    {
+                        "dst": "203",
+                        "label": "RT",
+                        "linkAttribute": {
+                            "rt_rotation_euler_xyz": {
+                                "type": 3,
+                                "value": [
+                                    0,
+                                    0,
+                                    0
+                                ]
+                            },
+                            "rt_translation": {
+                                "type": 3,
+                                "value": [
+                                    0,
+                                    0,
+                                    0
+                                ]
+                            }
+                        },
+                        "src": "200"
                     }
+                ]
+            },
+            "203": {
+                "attribute": {
+                    "color": {
+                        "type": 0,
+                        "value": "Khaki"
+                    },
+                    "level": {
+                        "type": 1,
+                        "value": 1
+                    },
+                    "pos_x": {
+                        "type": 2,
+                        "value": 200
+                    },
+                    "pos_y": {
+                        "type": 2,
+                        "value": 0
+                    },
+                    "parent": {
+                        "type": 7,
+                        "value": 200
+                    }
+                },
+                "id": "203",
+                "name": "bottle",
+                "type": "bottle",
+                "links": [
+
                 ]
             },
             "300": {

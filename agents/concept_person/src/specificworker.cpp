@@ -20,6 +20,8 @@
 
 SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check) : GenericWorker(configLoader, tprx)
 {
+	qInstallMessageHandler([](QtMsgType, const QMessageLogContext&, const QString&) {});
+
 	this->startup_check_flag = startup_check;
 	if(this->startup_check_flag)
 	{
@@ -31,21 +33,6 @@ SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, 
 			hibernationChecker.start(500);
 		#endif
 		
-		// Example statemachine:
-		/***
-		//Your definition for the statesmachine (if you dont want use a execute function, use nullptr)
-		states["CustomState"] = std::make_unique<GRAFCETStep>("CustomState", period, 
-															std::bind(&SpecificWorker::customLoop, this),  // Cyclic function
-															std::bind(&SpecificWorker::customEnter, this), // On-enter function
-															std::bind(&SpecificWorker::customExit, this)); // On-exit function
-
-		//Add your definition of transitions (addTransition(originOfSignal, signal, dstState))
-		states["CustomState"]->addTransition(states["CustomState"].get(), SIGNAL(entered()), states["OtherState"].get());
-		states["Compute"]->addTransition(this, SIGNAL(customSignal()), states["CustomState"].get()); //Define your signal in the .h file under the "Signals" section.
-
-		//Add your custom state
-		statemachine.addState(states["CustomState"].get());
-		***/
 
 		statemachine.setChildMode(QState::ExclusiveStates);
 		statemachine.start();
@@ -56,6 +43,8 @@ SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, 
 			throw error;
 		}
 	}
+
+	rt = G->get_rt_api();
 }
 
 SpecificWorker::~SpecificWorker()
@@ -87,8 +76,6 @@ void SpecificWorker::initialize()
 	graph_viewer = std::make_unique<DSR::DSRViewer>(this, G, current_opts, main);
 	//graph_viewer->add_custom_widget_to_dock("CustomWidget", &custom_widget);
 
-    auto rt = G->get_rt_api();
-
     /////////GET PARAMS, OPEND DEVICES....////////
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
@@ -99,6 +86,9 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
+	auto distance_to_person = get_distance_to_person();
+	update_distance_to_person(distance_to_person);
+
 	switch (agentState)
 	{
 	case States::IDLE:{
@@ -142,7 +132,7 @@ void SpecificWorker::compute()
 		break;
 
 	case States::STOPPED:
-		std::cout << "Mission stopped by user!" << std::endl;
+		std::cout << "Mission stopped!" << std::endl;
 		break;
 	}	
 }
@@ -176,25 +166,32 @@ int SpecificWorker::startup_check()
 	return 0;
 }
 
-//SUBSCRIPTION to setVisualObjects method from VisualElementsPub interface
-void SpecificWorker::VisualElementsPub_setVisualObjects(RoboCompVisualElementsPub::TData data)
-{
-//subscribesToCODE
+/******* Geometric calculations ********/
 
+std::vector<float> SpecificWorker::get_distance_to_person()
+{
+	RoboCompWebots2Robocomp::ObjectPose person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
+	RoboCompWebots2Robocomp::ObjectPose robot_pose = this->webots2robocomp_proxy->getObjectPose(robot_def);
+
+	return {
+		person_pose.position.x-robot_pose.position.x,
+		person_pose.position.y-robot_pose.position.y,
+		person_pose.position.z-robot_pose.position.z
+	};
 }
 
 /************ DSR Methods *************/
 
 bool SpecificWorker::check_target_assigned()
 {
-	auto robot_node = G->get_node("robot");
-	if (!robot_node.has_value()){
+	auto optional_robot_node = G->get_node("robot");
+	if (!optional_robot_node.has_value()){
 		std::cout << "Robot node not found in DSR." << std::endl;
 		return false;
 	}
-	auto person_nodes = G->get_nodes_by_type("person");
-	if (person_nodes.empty()){
-		std::cout << "No person nodes found in DSR." << std::endl;
+	auto optional_person_node = G->get_node("person");
+	if (!optional_person_node.has_value()){
+		std::cout << "No person node found in DSR." << std::endl;
 		return false;
 	}
 
@@ -204,17 +201,21 @@ bool SpecificWorker::check_target_assigned()
 		return false;
 	}
 	else{
-		DSR::Edge target_edge = target_edges[0];
-		auto target_id = target_edge.to();
-
-		person_node = G->get_node(target_id).value();
-		std::cout << "Target assigned to person with id:" << target_id << std::endl;
+		std::cout << "Target assigned to person" << std::endl;
 		return true;
 	}
 }
 
 bool SpecificWorker::check_affordance_assigned()
 {
+	auto optional_person_node = G->get_node("person");
+	if (!optional_person_node.has_value()){
+		std::cout << "No person node found in DSR." << std::endl;
+		return false;
+	}
+
+	auto person_node = optional_person_node.value();
+
 	auto affordance_nodes = G->get_nodes_by_type("affordance");
 	for (const auto& node : affordance_nodes){
 		auto edge = G->get_edge(person_node.id(), node.id(), "has_intention");
@@ -229,6 +230,14 @@ bool SpecificWorker::check_affordance_assigned()
 
 void SpecificWorker::create_affordance()
 {
+	auto optional_person_node = G->get_node("person");
+	if (!optional_person_node.has_value()){
+		std::cout << "No person node found in DSR." << std::endl;
+		return;
+	}
+
+	auto person_node = optional_person_node.value();
+
 	std::cout << "Creating affordance for the assigned target." << std::endl;
 	DSR::Node affordance_node = DSR::Node::create<affordance_node_type>("follow_me");
 	auto pos_x = G->get_attrib_by_name<pos_x_att>(person_node.id()).value();
@@ -267,6 +276,26 @@ bool SpecificWorker::check_affordance_accepted()
 	}
 }
 
+void SpecificWorker::update_distance_to_person(std::vector<float> distance)
+{
+	auto optional_robot_node = G->get_node("robot");
+	if (!optional_robot_node.has_value()){
+		std::cout << "Robot node not found in DSR." << std::endl;
+		return;
+	}
+
+	auto optional_person_node = G->get_node("person");
+	if (!optional_person_node.has_value()){
+		std::cout << "Person node not found in DSR." << std::endl;
+		return;
+	}
+
+	auto robot_node = optional_robot_node.value();
+	auto person_node = optional_person_node.value();
+
+	rt->insert_or_assign_edge_RT(robot_node,person_node.id(),distance, {0.f, 0.f, 0.f});
+}
+
 std::string SpecificWorker::follow_person()
 {	
 	auto optional_robot_node = G->get_node("robot");
@@ -303,11 +332,32 @@ std::string SpecificWorker::follow_person()
 
 	std::cout << "Following person with id: " << person_node.id() << std::endl;
 
-	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, (float)0.2);
+	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, (float)1.0);
 	G->update_node(robot_node);
 
 	return "RUNNING";
 }
+
+
+//SUBSCRIPTION to setVisualObjects method from VisualElementsPub interface
+void SpecificWorker::VisualElementsPub_setVisualObjects(RoboCompVisualElementsPub::TData data)
+{
+//subscribesToCODE
+
+}
+
+/**************************************/
+// From the RoboCompWebots2Robocomp you can call this methods:
+// RoboCompWebots2Robocomp::ObjectPose this->webots2robocomp_proxy->getObjectPose(string DEF)
+// RoboCompWebots2Robocomp::void this->webots2robocomp_proxy->resetWebots()
+// RoboCompWebots2Robocomp::void this->webots2robocomp_proxy->setDoorAngle(float angle)
+// RoboCompWebots2Robocomp::void this->webots2robocomp_proxy->setPathToHuman(int humanId, RoboCompGridder::TPath path)
+
+/**************************************/
+// From the RoboCompWebots2Robocomp you can use this types:
+// RoboCompWebots2Robocomp::Vector3
+// RoboCompWebots2Robocomp::Quaternion
+// RoboCompWebots2Robocomp::ObjectPose
 
 /**************************************/
 // From the RoboCompVisualElementsPub you can use this types:

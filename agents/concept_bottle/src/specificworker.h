@@ -27,6 +27,8 @@
 #ifndef SPECIFICWORKER_H
 #define SPECIFICWORKER_H
 
+#define DEBUG 0
+
 
 // If you want to reduce the period automatically due to lack of use, you must uncomment the following line
 //#define HIBERNATION_ENABLED
@@ -90,7 +92,16 @@ public slots:
 	void modify_edge_slot(std::uint64_t from, std::uint64_t to,  const std::string &type){};
 	void modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to, const std::string &type, const std::vector<std::string>& att_names){};
 	void del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag){};
-	void del_node_slot(std::uint64_t from){};     
+	void del_node_slot(std::uint64_t from){};
+	
+	/**
+	 * \brief Checks if the bottle is rrelated to the robot in the DSR graph.
+	 * \return True if the bottle is related to the robot, false otherwise.
+	 */
+	bool check_bottle_related_robot();
+
+	void change_rt_from_robot_to_root();
+
 private:
 
 	/**

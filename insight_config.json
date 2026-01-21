@@ -38,5 +38,15 @@
         "name": "concept_person",
         "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/concept_person",
         "command": "bin/concept_person etc/config"
+    },
+    {
+        "name": "fake_castilla_la_mancha",
+        "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/fake_castilla_la_mancha",
+        "command": "bin/fake_castilla_la_mancha etc/config"
+    },
+    {
+        "name": "fake_malaga",
+        "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/fake_malaga",
+        "command": "bin/fake_malaga etc/config"
     }
   ]
