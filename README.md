@@ -96,3 +96,23 @@ To launch all the enviroment just execute Program manager with the INSIGHT confi
 cd ~/software/Program-manager
 python src/ProgramManager.py --config etc/insight_config.json
 ```
+
+## DSR Graph Index
+
+### Nodes
+___
+
+- **ROOT** - This node does not have much functionality; it simply ensures that the graph is never empty and causes problems as a result. 
+- **ROBOT** - This node represents the state of the robot, although it only contains the target speed at which the robot will attempt to move, both linearly and angularly.
+- **BOTTLE** - This node represents the bottle in the graph and does not contain any relevant information within it.
+- **PERSON** - This node represents the person in the graph and does not contain any relevant information within it.
+- **_FOLLOW_ME_** - This node represents a possibility of the node. This node has a **Boolean** variable to indicate whether the possibility is active or paused.
+- **IMU** and **IMU_SINTETIC** - These nodes represent the robot's two IMUs, the first being the "real" IMU from Webots and the second being the "synthetic" IMU from the internal simulator, Pybullet.
+
+### Edges
+___
+
+- **RT** - These types of edges represent a spatial difference between nodes and therefore have attributes to represent that spatial difference. They are sometimes used generically to establish two nodes, for example, in the case of the root node.
+- **TARGET** - These types of edges represents the robot's objective, or what it has focused its attention on.
+- **HAS** - These types of edges represent that the node from which they originate has something and nothing else.
+- **HAS_INTENTION** - These types of edges represent that the robot has some intention regarding another node.
