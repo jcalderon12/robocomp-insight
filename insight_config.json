@@ -16,37 +16,37 @@
     },
     {
         "name": "mission_controller",
-        "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/mission_controller",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/mission_controller",
         "command": "bin/mission_controller etc/config"
     },
     {
         "name": "inner_simulator",
-        "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/inner_simulator",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/inner_simulator",
         "command": "bin/inner_simulator etc/config"
     },
     {
         "name": "concept_robot",
-        "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/concept_robot",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_robot",
         "command": "bin/concept_robot etc/config"
     },
     {
         "name": "concept_bottle",
-        "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/concept_bottle",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_bottle",
         "command": "bin/concept_bottle etc/config"
     },
     {
         "name": "concept_person",
-        "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/concept_person",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_person",
         "command": "bin/concept_person etc/config"
     },
     {
         "name": "fake_castilla_la_mancha",
-        "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/fake_castilla_la_mancha",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/fake_castilla_la_mancha",
         "command": "bin/fake_castilla_la_mancha etc/config"
     },
     {
         "name": "fake_malaga",
-        "directory": "$ROBOCOMP/components/robocomp-INSIGHT/agents/fake_malaga",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/fake_malaga",
         "command": "bin/fake_malaga etc/config"
     }
   ]

@@ -71,6 +71,11 @@ cd ~/software
 git clone https://github.com/alfiTH/Program-manager.git
 ```
 
+Install the dependencies
+```bash
+pip install -r requirements.txt
+```
+
 Create a SSL certificate necesary to this software:
 ```bash
 cd ~/software/Program-manager/certificates
