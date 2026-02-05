@@ -91,10 +91,15 @@ void SpecificWorker::initialize()
 
 	connect(bullshit_publisher_ui.create_node_button, &QPushButton::clicked, this, &SpecificWorker::add_node);
 	connect(bullshit_publisher_ui.delete_node_button, &QPushButton::clicked, this, &SpecificWorker::delete_node);
+	connect(bullshit_publisher_ui.modify_node_button, &QPushButton::clicked, this, &SpecificWorker::modify_node);
+
 	connect(bullshit_publisher_ui.create_edge_button, &QPushButton::clicked, this, &SpecificWorker::add_edge);
 	connect(bullshit_publisher_ui.delete_edge_button, &QPushButton::clicked, this, &SpecificWorker::delete_edge);
-	connect(bullshit_publisher_ui.modify_node_button, &QPushButton::clicked, this, &SpecificWorker::modify_node);
 	connect(bullshit_publisher_ui.modify_edge_button, &QPushButton::clicked, this, &SpecificWorker::modify_edge);
+	
+	connect(bullshit_publisher_ui.create_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::add_RT_edge);
+	connect(bullshit_publisher_ui.delete_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::delete_RT_edge);
+	connect(bullshit_publisher_ui.modify_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::modify_edge_RT);
 
 	graph_viewer->add_custom_widget_to_dock("Bullshit publisher", &bullshit_publisher_widget);
 
@@ -176,14 +181,15 @@ void SpecificWorker::add_edge(){
 	{
 		DSR::Node test_node = test_optional_node.value();
 		DSR::Node test_robot = test_optional_robot.value();
-		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "RT");
+		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "has");
 		if(!test_optional_edge.has_value())
 		{
 			DSR::Edge test_edge;
 			test_edge.from(test_robot.id());
 			test_edge.to(test_node.id());
-			test_edge.type("RT");
-			rt->insert_or_assign_edge_RT(test_robot, test_node.id(), {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
+			test_edge.type("has");
+			G->add_or_modify_attrib_local<robot_target_x_att>(test_edge, (float)std::experimental::randint(-200, 200));
+			G->insert_or_assign_edge(test_edge);
 		}
 
 	}
@@ -199,6 +205,41 @@ void SpecificWorker::delete_edge(){
 	{
 		DSR::Node test_node = test_optional_node.value();
 		DSR::Node test_robot = test_optional_robot.value();
+		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "has");
+		if(test_optional_edge.has_value()){
+			G->delete_edge(test_robot.id(), test_node.id(), "has");
+		}
+	}
+
+}
+
+void SpecificWorker::add_RT_edge(){
+
+	auto test_optional_node = G->get_node("test_node");
+	auto test_optional_robot = G->get_node("robot");
+	if(test_optional_node.has_value() and test_optional_robot.has_value())
+	{
+		DSR::Node test_node = test_optional_node.value();
+		DSR::Node test_robot = test_optional_robot.value();
+		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "RT");
+		if(!test_optional_edge.has_value())
+		{
+			rt->insert_or_assign_edge_RT(test_robot, test_node.id(), {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
+		}
+
+	}
+
+}
+
+
+void SpecificWorker::delete_RT_edge(){
+
+	auto test_optional_node = G->get_node("test_node");
+	auto test_optional_robot = G->get_node("robot");
+	if(test_optional_node.has_value() and test_optional_robot.has_value())
+	{
+		DSR::Node test_node = test_optional_node.value();
+		DSR::Node test_robot = test_optional_robot.value();
 		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "RT");
 		if(test_optional_edge.has_value()){
 			G->delete_edge(test_robot.id(), test_node.id(), "RT");
@@ -206,7 +247,6 @@ void SpecificWorker::delete_edge(){
 	}
 
 }
-
 
 void SpecificWorker::modify_node(){
 	auto robot_optional_node = G->get_node("robot");
@@ -232,6 +272,23 @@ void SpecificWorker::modify_node(){
 
 void SpecificWorker::modify_edge(){
 
+	auto test_optional_node = G->get_node("test_node");
+	auto test_optional_robot = G->get_node("robot");
+	if(test_optional_node.has_value() and test_optional_robot.has_value())
+	{
+		DSR::Node test_node = test_optional_node.value();
+		DSR::Node test_robot = test_optional_robot.value();
+		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "has");
+		if(test_optional_edge.has_value())
+		{
+			auto test_edge = test_optional_edge.value();
+			G->add_or_modify_attrib_local<robot_target_x_att>(test_edge, (float)std::experimental::randint(-200, 200));
+			G->insert_or_assign_edge(test_edge);
+		}
+	}
+}
+
+void SpecificWorker::modify_edge_RT(){
 	auto test_optional_node = G->get_node("test_node");
 	auto test_optional_robot = G->get_node("robot");
 	if(test_optional_node.has_value() and test_optional_robot.has_value())

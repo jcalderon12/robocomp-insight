@@ -95,9 +95,12 @@ public slots:
 	void add_node();
 	void delete_node();
 	void add_edge();
+	void add_RT_edge();
 	void delete_edge();
+	void delete_RT_edge();
 	void modify_node();
 	void modify_edge();
+	void modify_edge_RT();
 
 private:
 

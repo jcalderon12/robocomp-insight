@@ -13,30 +13,16 @@
   <property name="windowTitle">
    <string>Form</string>
   </property>
-  <widget class="QWidget" name="">
+  <widget class="QWidget" name="layoutWidget">
    <property name="geometry">
     <rect>
-     <x>40</x>
+     <x>20</x>
      <y>50</y>
-     <width>301</width>
+     <width>365</width>
      <height>181</height>
     </rect>
    </property>
    <layout class="QGridLayout" name="gridLayout">
-    <item row="0" column="0">
-     <widget class="QPushButton" name="create_node_button">
-      <property name="text">
-       <string>Crear Nodo</string>
-      </property>
-     </widget>
-    </item>
-    <item row="0" column="1">
-     <widget class="QPushButton" name="delete_node_button">
-      <property name="text">
-       <string>Borrar Nodo</string>
-      </property>
-     </widget>
-    </item>
     <item row="1" column="0">
      <widget class="QPushButton" name="create_edge_button">
       <property name="text">
@@ -51,14 +37,49 @@
       </property>
      </widget>
     </item>
+    <item row="0" column="1">
+     <widget class="QPushButton" name="delete_node_button">
+      <property name="text">
+       <string>Borrar Nodo</string>
+      </property>
+     </widget>
+    </item>
     <item row="2" column="0">
+     <widget class="QPushButton" name="create_edge_RT_button">
+      <property name="text">
+       <string>Crear Edge RT</string>
+      </property>
+     </widget>
+    </item>
+    <item row="2" column="1">
+     <widget class="QPushButton" name="delete_edge_RT_button">
+      <property name="text">
+       <string>Borrar Edge RT</string>
+      </property>
+     </widget>
+    </item>
+    <item row="0" column="0">
+     <widget class="QPushButton" name="create_node_button">
+      <property name="text">
+       <string>Crear Nodo</string>
+      </property>
+     </widget>
+    </item>
+    <item row="0" column="2">
      <widget class="QPushButton" name="modify_node_button">
       <property name="text">
        <string>Modificar Nodo</string>
       </property>
      </widget>
     </item>
-    <item row="2" column="1">
+    <item row="2" column="2">
+     <widget class="QPushButton" name="modify_edge_RT_button">
+      <property name="text">
+       <string>Modificar Edge RT</string>
+      </property>
+     </widget>
+    </item>
+    <item row="1" column="2">
      <widget class="QPushButton" name="modify_edge_button">
       <property name="text">
        <string>Modificar Edge</string>
