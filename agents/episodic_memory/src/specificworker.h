@@ -99,6 +99,15 @@ private:
 
 	bool string_check_flag = true;
 
+	using AttributeType = std::variant<std::string, int32_t, float,
+            		std::vector<float>, bool, std::vector<uint8_t>,
+					uint32_t, uint64_t, double, std::vector<uint64_t>,
+					std::array<float, 2>, std::array<float, 3>,
+            		std::array<float, 4>, std::array<float, 6>>;
+
+	std::string value_to_string(const AttributeType &att_value);
+	std::string attribute_value_to_string(const auto &value);
+
 signals:
 	//void customSignal();
 };

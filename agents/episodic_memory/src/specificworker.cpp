@@ -152,31 +152,42 @@ void SpecificWorker::modify_node_slot(std::uint64_t id, const std::string &type)
 	}			
 }
 
+
 void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 	
-	if (!string_check_flag) {std::cout << "Modify node attrs slot - id: " << id << " att_names_size: " << att_names.size() << " att_names: ";
-	for (const auto &att : att_names){ 
-		std::cout << att << " "; 
-		auto node_optional = G->get_node(id);
-		if (node_optional.has_value())
-		{	
-			auto node = node_optional.value();
-			auto timestamp_optional = G->get_attrib_timestamp_by_name(node, att);
-			if (timestamp_optional.has_value()){
-				auto timestamp = timestamp_optional.value();
-				std::cout << " time: " << timestamp << " ";
+	if (!string_check_flag) {
+		std::cout << "Modify node attrs slot - id: " << id << " att_names_size: " << att_names.size() << " att_names: ";
+		for (const auto &att : att_names){ 
+			std::cout << att << " "; 
+			auto node_optional = G->get_node(id);
+			if (node_optional.has_value())
+			{	
+				auto node = node_optional.value();
+				auto timestamp_optional = G->get_attrib_timestamp_by_name(node, att);
+				if (timestamp_optional.has_value()){
+					auto timestamp = timestamp_optional.value();
+					std::cout << " time: " << timestamp << " ";
+				}
 			}
 		}
-	}
-	std::cout << std::endl;
+		std::cout << std::endl;
 	}
 	else {
-		std::cout << __FUNCTION__ << " - " << new_timestamp << "#MNA%" << id;
-		for (const auto &att : att_names)
-			std::cout << "%" << att;
-		std::cout << std::endl;
+		std::string dsr_data = "";
+		dsr_data += std::to_string(new_timestamp); dsr_data += "#MNA%"; dsr_data += std::to_string(id);
+		auto node_optional = G->get_node(id);
+		if(!node_optional.has_value()){std::cerr << __FUNCTION__ << "node_optional has no value" << std::endl; return;}
+		auto node = node_optional.value();
+		for (const auto &att_name : att_names){
+			if (att_name.size() > 0){
+				auto att = node.attrs()[att_name];
+				std::string att_value_str = attribute_value_to_string(att);
+				dsr_data += "%"; dsr_data += att_value_str;
+			}
+		}			
+		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
 	}
 }
 
@@ -227,3 +238,78 @@ void SpecificWorker::del_node_slot(std::uint64_t from){
 	else
 		std::cout << __FUNCTION__ << " - " << new_timestamp << "#DN%" << from << std::endl;
 }
+
+
+std::string SpecificWorker::value_to_string(const AttributeType &value){
+	return std::visit([](const auto &value) -> std::string {
+		using T = std::decay_t<decltype(value)>;
+		if constexpr (std::is_same_v<T, std::string>)
+			return value;
+		else if constexpr (std::is_arithmetic_v<T>)
+			return std::to_string(value);
+		else {
+			std::string out = "[";
+			bool first = true;
+			for (const auto &x : value) {
+				if (!first) out += ", ";
+				out += std::to_string(x);
+				first = false;
+			}
+			out += "]";
+			return out;
+		}
+	}, value);
+}
+
+
+std::string SpecificWorker::attribute_value_to_string(const auto &att) {
+    std::string att_value_str;
+
+    switch (att.value().index()) {
+        case DSR::Types::STRING:
+            att_value_str += value_to_string(std::get<std::string>(att.value()));
+            break;
+        case DSR::Types::INT:
+            att_value_str += value_to_string(std::get<int32_t>(att.value()));
+            break;
+        case DSR::Types::FLOAT:
+            att_value_str += value_to_string(std::get<float>(att.value()));
+            break;
+        case DSR::Types::FLOAT_VEC:
+            att_value_str += value_to_string(std::get<std::vector<float>>(att.value()));
+            break;
+        case DSR::Types::BOOL:
+            att_value_str += value_to_string(std::get<bool>(att.value()));
+            break;
+        case DSR::Types::BYTE_VEC:
+            att_value_str += value_to_string(std::get<std::vector<uint8_t>>(att.value()));
+            break;
+        case DSR::Types::UINT:
+            att_value_str += value_to_string(std::get<uint32_t>(att.value()));
+            break;
+        case DSR::Types::UINT64:
+            att_value_str += value_to_string(std::get<uint64_t>(att.value()));
+            break;
+        case DSR::Types::DOUBLE:
+            att_value_str += value_to_string(std::get<double>(att.value()));
+            break;
+        case DSR::Types::U64_VEC:
+            att_value_str += value_to_string(std::get<std::vector<uint64_t>>(att.value()));
+            break;
+        case DSR::Types::VEC2:
+            att_value_str += value_to_string(std::get<std::array<float, 2>>(att.value()));
+            break;
+        case DSR::Types::VEC3:
+            att_value_str += value_to_string(std::get<std::array<float, 3>>(att.value()));
+            break;
+        case DSR::Types::VEC4:
+            att_value_str += value_to_string(std::get<std::array<float, 4>>(att.value()));
+            break;
+        case DSR::Types::VEC6:
+            att_value_str += value_to_string(std::get<std::array<float, 6>>(att.value()));
+            break;
+    }
+
+    return att_value_str;
+}
+
