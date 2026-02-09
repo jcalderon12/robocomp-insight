@@ -49,9 +49,12 @@ Download and execute the installation script:
 wget https://raw.githubusercontent.com/robocomp/robocomp/development/robocomp_install.sh && bash robocomp_install.sh
 ```
 
-Install the necessary repositories:
+Install the main repository and the others necessaries repositories:
 
 ```bash
+cd $ROBOCOMP/components
+git clone https://github.com/jcalderon12/robocomp-insight.git
+cd $ROBOCOMP/components/robocomp-insight
 vcs import $ROBOCOMP/components < insight.repos --recursive
 ```
 ### Python packages
