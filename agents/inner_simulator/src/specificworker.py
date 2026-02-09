@@ -25,7 +25,7 @@ from rich.console import Console
 from genericworker import *
 import interfaces as ifaces
 
-
+import json
 import pybullet as p
 import numpy as np
 import locale
@@ -34,7 +34,19 @@ import matplotlib
 import pandas as pd
 import time
 import os
+import subprocess
 import sys
+
+# causes.json constants
+JSON_FILE = "causes.json"
+CAUSES = "causes"             # Bump, wheel...
+CAUSE_TYPE = "cause_type"   # Type of the cause (e.g., bump, wheel, etc.)
+COORDINATES = "coordinates" # Coordinates of interest
+CAUSE_RANGE = "cause_range" # The range of the cause from the robot
+WHEEL = "wheel"             # Missing wheel
+INIT_POSE =  "initial_pose" # The initial pose of the robot
+CURR_POSE = "current_pose"  # The current pose of the robot
+ 
 
 matplotlib.use("TkAgg")
 
@@ -49,6 +61,7 @@ from pydsr import *
 
 from pybullet_imu import IMU
 
+from causes_simulator import CausesSimulator
 
 class SpecificWorker(GenericWorker):
     def __init__(self, proxy_map, configData, startup_check=False):
@@ -139,6 +152,34 @@ class SpecificWorker(GenericWorker):
         self.last_imu_measurement = self.imu.get_measurement()
         self.publish_imu_to_dsr(self.last_imu_measurement[0], self.last_imu_measurement[1])
 
+        # ================ CAUSE SIMULATOR  ================
+        # ====================================================
+        # Declare causes data dict
+        self.causes_data = {}
+        # Set initial pose
+        self.causes_data[INIT_POSE] = str(p.getBasePositionAndOrientation(self.robot))
+        
+
+    def writeCausesJson(self):
+        try:
+            file = open(JSON_FILE, "w")
+            json.dump(self.causes_data, file)
+            file.close()
+            print(f"> [writeCausesJson] Writed to {JSON_FILE} the following content:\n{self.causes_data}")
+        except Exception as e:
+            print(f"> [writeCausesJson] Error while writing to {JSON_FILE}: " + str(e))
+
+
+    def loadCausesJson(self):
+        try:
+            file = open(JSON_FILE, "r")
+            causes_data = json.loads(file.read())
+            self.causes_data = causes_data
+            file.close()
+            print(f"> [loadCausesJson] {JSON_FILE} content: \n{causes_data}")
+        except Exception as e:
+            print(f"> [loadCausesJson] Error while reading from {JSON_FILE}: " + str(e))
+
 
     def __del__(self):
         """Destructor"""
@@ -168,15 +209,51 @@ class SpecificWorker(GenericWorker):
                                             controlMode=p.VELOCITY_CONTROL,
                                             targetVelocity=wheels_velocity[motor_name],
                                             force=10)
-        
+                self.causes_data[CURR_POSE] = str(p.getBasePositionAndOrientation(self.robot))
+                if self.check_for_problem(): self.state = "SIMULATE_REASON"
+                
+            case "SIMULATE_REASON":
+
+                # Read JSON to get causes
+                self.loadCausesJson()
+                pids = []
+                ret_codes = {}
+                for cause in self.causes_data[CAUSES]:
+                    # Open the cause simulator as a subprocess
+                    pids.append(subprocess.Popen(["python", "src/causes_simulator.py"], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT))
+                
+                print("Simulating causes...")
+                while (True):
+                    for pid in pids:
+                        ret_code = pid.poll()
+                        if ret_code != None:  ret_codes[pid] = ret_code
+                    if len(ret_codes) == len(pids): break
+                print(f"Simulations finished with the following return codes:\n{ret_codes}")
+                
+                self.state = "IDLE"
+                
         return True
 
     def startup_check(self):
         QTimer.singleShot(200, QApplication.instance().quit)
 
-
     # =============== SIMULATION HELPERS  ================
     # ====================================================
+
+    def check_for_problem(self):
+        # Example problemas
+        p1 = {CAUSE_TYPE: "bump",
+              COORDINATES: str(p.getBasePositionAndOrientation(self.robot)), 
+              CAUSE_RANGE: str(p.getBasePositionAndOrientation(self.robot)), 
+              WHEEL: "none"}
+        p2 = {CAUSE_TYPE: "wheel",
+              COORDINATES: str(p.getBasePositionAndOrientation(self.robot)), 
+              CAUSE_RANGE: str(p.getBasePositionAndOrientation(self.robot)), 
+              WHEEL: "BR"}
+        self.causes_data[CAUSES] = [p1, p2]
+        # Save JSON data to causes.json (DEBUG)
+        self.writeCausesJson()
+        return True # Only for debugging purposes.
 
     def show_compute_time_step(self):
         """

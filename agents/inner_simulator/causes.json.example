@@ -1,0 +1,18 @@
+{
+    "initial_pose": "....",
+    "current_pose": "...",
+    "causes": [
+        {
+            "cause_type": "...",
+            "coordinates": "...",
+            "cause_range": "...",
+            "wheel": "..."
+        },
+        {
+            "cause_type": "...",
+            "coordinates": "...",
+            "cause_range": "...",
+            "wheel": "..."
+        }
+    ]
+}
