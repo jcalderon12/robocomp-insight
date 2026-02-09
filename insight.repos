@@ -1,5 +1,5 @@
 repositories:
-  robocomp_shadow:
+  robocomp-shadow:
     type: git
     url: https://github.com/robocomp/robocomp-shadow.git
     version: main
