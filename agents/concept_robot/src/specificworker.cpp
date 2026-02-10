@@ -93,6 +93,8 @@ void SpecificWorker::initialize()
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
 
+	last_velocities_readed = getVelocitiesFromDSR();
+
 }
 
 
@@ -100,8 +102,14 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
     
-	std::vector<float> velocities = getVelocitiesFromDSR();
-	this->omnirobot_proxy->setSpeedBase(0.0, velocities[0], velocities[1]);
+	std::vector<float> actual_velocities = getVelocitiesFromDSR();
+
+	if (has_significant_change(actual_velocities, last_velocities_readed)){
+		this->omnirobot_proxy->setSpeedBase(0.0, actual_velocities[0], actual_velocities[1]);
+	}
+
+	last_velocities_readed = actual_velocities;	
+	
 	update_or_create_imu_node();
 
 }
@@ -162,19 +170,21 @@ std::vector<float> SpecificWorker::getVelocitiesFromDSR()
 	return velocities;
 }
 
-inline bool not_all_close(const std::vector<float>& a,
-                          const std::vector<float>& b,
-                          double atol=0.001)
+bool SpecificWorker::has_significant_change(const std::vector<float>& a,
+                                            const std::vector<float>& b,
+                                            double atol)
 {
-    if (a.size() != b.size()) return true; // o false, según tu lógica
+    if (a.size() != b.size())
+        return true;
 
     for (size_t i = 0; i < a.size(); ++i) {
-        if (std::abs(a[i] - b[i]) <= atol) {
-            return false;
+        if (std::abs(a[i] - b[i]) > atol) {
+            return true; 
         }
     }
-    return true;
+    return false;
 }
+
 
 void SpecificWorker::update_or_create_imu_node()
 {
@@ -187,8 +197,8 @@ void SpecificWorker::update_or_create_imu_node()
 	if (auto imu_node_opt = G->get_node("imu"); imu_node_opt.has_value())
 	{
 		auto imu_real_node = imu_node_opt.value();
-		if(not_all_close(last_acceleration_measurement, acceleration) 
-		or not_all_close(last_angular_velocity_measurement, angularVel)){
+		if(has_significant_change(last_acceleration_measurement, acceleration) 
+		or has_significant_change(last_angular_velocity_measurement, angularVel)){
 			G->add_or_modify_attrib_local<imu_accelerometer_att>(imu_real_node, acceleration);
 			G->add_or_modify_attrib_local<imu_gyroscope_att>(imu_real_node, angularVel);
 			G->update_node(imu_real_node);
