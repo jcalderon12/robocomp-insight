@@ -99,6 +99,12 @@ public slots:
 	 */
 	void update_or_create_imu_node();
 
+	/**
+	 * \brief Compare whether two vectors are too similar to avoid publishing the same data twice.
+	 * \return Return true if the vector are not to similar
+	 */
+	bool has_significant_change(const std::vector<float>& a,const std::vector<float>& b,double atol=0.001);
+
 	void modify_node_slot(std::uint64_t, const std::string &type){};
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){};
 	void modify_edge_slot(std::uint64_t from, std::uint64_t to,  const std::string &type){};
@@ -114,6 +120,8 @@ private:
 
 	std::vector<float> last_acceleration_measurement;
 	std::vector<float> last_angular_velocity_measurement;
+
+	std::vector<float> last_velocities_readed;
 
 signals:
 	//void customSignal();
