@@ -135,9 +135,9 @@ public slots:
 
 	/**
 	 * \brief Follows the assigned person.
-	 * \return A string indicating the state of the follow operation ("RUNNING", "SUCCESS", "FAILED", "STOPPED").
+	 * \return A boolean indicating if the robot should follow the robot or stop.
 	 */
-	std::string follow_person(std::vector<float> distance);
+	bool follow_person(std::vector<float> distance);
 
 	/**
 	 * \brief Calculate the cartesian distance between the robot and the person
@@ -164,6 +164,11 @@ private:
      * \brief Flag indicating whether startup checks are enabled.
      */
 	bool startup_check_flag;
+
+	/**
+	 * \brief Flag to indicate if want many info
+	 */
+	bool print_extra_info = false;
 
 signals:
 	//void customSignal();
