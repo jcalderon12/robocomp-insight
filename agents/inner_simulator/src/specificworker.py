@@ -46,7 +46,14 @@ CAUSE_RANGE = "cause_range" # The range of the cause from the robot
 WHEEL = "wheel"             # Missing wheel
 INIT_POSE =  "initial_pose" # The initial pose of the robot
 CURR_POSE = "current_pose"  # The current pose of the robot
- 
+LENGTH = "length"           # The length of time
+NUMREP = "num_of_repetitions"  # Number of repetitions to do simulations of the cause
+
+# Keys of 
+TIMESTAMP = "timestamp"
+ACCELEROMETER = "accelerometer"
+GYROSCOPE = "gyroscope"
+SIMULATED_PREFIX = "s_"
 
 matplotlib.use("TkAgg")
 
@@ -89,7 +96,7 @@ class SpecificWorker(GenericWorker):
 
         self.print_dsr_signals = False # PONER A TRUE SI SE QUIERE VER EN CONSOLA LAS SEÑALES DSR
 
-        self.state = "INNER_SIMULATOR" # Possible states: "IDLE", "INNER_SIMULATOR"
+        self.state = "IDLE" # Possible states: "IDLE", "INNER_SIMULATOR"
 
 
         # ================ PYBULLET SIMULATION SETUP  ================
@@ -97,7 +104,7 @@ class SpecificWorker(GenericWorker):
 
         self.physicsClient = p.connect(p.GUI)
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
-        p.setGravity(0, 0, -9.81)
+        
         # p.setRealTimeSimulation(1) # Enable real-time simulation
         p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15,
                                      cameraTargetPosition=[-1.3, -0.5, 0.2])
@@ -105,6 +112,8 @@ class SpecificWorker(GenericWorker):
         self.dt = 1./62. # Simulation time step (60 Hz)
         p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
         
+        p.setGravity(0, 0, -9.81)
+
         # ================= PYBULLET MODELS LOADING  ================
         # ===========================================================
 
@@ -156,14 +165,39 @@ class SpecificWorker(GenericWorker):
         # ====================================================
         # Declare causes data dict
         self.causes_data = {}
-        # Set initial pose
-        self.causes_data[INIT_POSE] = str(p.getBasePositionAndOrientation(self.robot))
-        
+        # Set initial pose (Debugging purposes)
+        self.causes_data[INIT_POSE] = p.getBasePositionAndOrientation(self.robot)
+    
+    def record_imu(self, current_time):       
+        acc, ang = self.imu.get_measurement()
+        self.imu_history[TIMESTAMP].append(current_time)
+        self.imu_history[ACCELEROMETER].append(acc.tolist())
+        self.imu_history[GYROSCOPE].append(ang.tolist())
 
+    # DEBUG: Write fake JSON file
     def writeCausesJson(self):
         try:
+            # Generate random bump location
+            position, orientation = p.getBasePositionAndOrientation(self.robot)
+            position = list(position)
+            position[0] += 2.5
+            position[2] = 0.001
+            
+            # Example problemas
+            p1 = {CAUSE_TYPE: "bump",
+                COORDINATES: [position, orientation], 
+                CAUSE_RANGE: "1",
+                WHEEL: "none"}
+            p2 = {CAUSE_TYPE: "wheel",
+                COORDINATES: [position, orientation], 
+                CAUSE_RANGE: "1",
+                WHEEL: "BR"}
+            self.causes_data[CAUSES] = [p1, p2]
+            self.causes_data[NUMREP] = "100"
+            self.causes_data[LENGTH] =  self.actual_time - self.initial_time
+
             file = open(JSON_FILE, "w")
-            json.dump(self.causes_data, file)
+            json.dump(self.causes_data, file, indent="\t")
             file.close()
             print(f"> [writeCausesJson] Writed to {JSON_FILE} the following content:\n{self.causes_data}")
         except Exception as e:
@@ -198,6 +232,11 @@ class SpecificWorker(GenericWorker):
         p.stepSimulation()
         match self.state:
             case "IDLE":
+                follow_node = self.g.get_node("follow_me")
+                if follow_node is not None and follow_node.attrs["aff_interacting"].value:
+                    self.state = "INNER_SIMULATOR"
+                    self.initial_time = time.time()
+                    self.actual_time = time.time()
                 pass
 
             case "INNER_SIMULATOR":
@@ -209,51 +248,61 @@ class SpecificWorker(GenericWorker):
                                             controlMode=p.VELOCITY_CONTROL,
                                             targetVelocity=wheels_velocity[motor_name],
                                             force=10)
-                self.causes_data[CURR_POSE] = str(p.getBasePositionAndOrientation(self.robot))
-                if self.check_for_problem(): self.state = "SIMULATE_REASON"
+                self.causes_data[CURR_POSE] = p.getBasePositionAndOrientation(self.robot)
+                self.actual_time = time.time()
+                self.record_imu(self.actual_time - self.initial_time)
+                
+                if self.check_for_problem():
+                    
+                    self.state = "SIMULATE_REASON"
                 
             case "SIMULATE_REASON":
 
                 # Read JSON to get causes
                 self.loadCausesJson()
                 pids = []
-                ret_codes = {}
+                historicals = {}
                 for cause in self.causes_data[CAUSES]:
-                    # Open the cause simulator as a subprocess
-                    pids.append(subprocess.Popen(["python", "src/causes_simulator.py"], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT))
-                
+                    rpipe, wpipe = os.pipe()
+                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-n", self.causes_data[NUMREP], "-l", self.causes_data[LENGTH], "-i", str(self.causes_data[INIT_POSE]), "-f", str(self.causes_data[CURR_POSE]), "-t", cause[CAUSE_TYPE], "-c", str(cause[COORDINATES]), "-r", cause[CAUSE_RANGE], "-w", cause[WHEEL], "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
+                    # Close wpipe descriptor
+                    os.close(wpipe)
+                    
                 print("Simulating causes...")
                 while (True):
+                    # pid[0] is the process ID itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
                     for pid in pids:
-                        ret_code = pid.poll()
-                        if ret_code != None:  ret_codes[pid] = ret_code
-                    if len(ret_codes) == len(pids): break
-                print(f"Simulations finished with the following return codes:\n{ret_codes}")
-                
+                        if pid[0] not in historicals:
+                            pipe = os.fdopen(pid[1])
+                            print(f"Now reading pipe of process {pid[0]}...")
+                            historicals[pid[0]] = pipe.read()
+                            pipe.close()
+                            print(f"Pipe for {pid[0]} has been read!")
+                            
+                    if len(historicals) == len(pids): break
+
+                for pid in pids:
+                    historicals[pid[0]] = json.loads(historicals[pid[0]])  
+
+                print(f"Received historicals from {len(historicals)} simulations.")
                 self.state = "IDLE"
                 
         return True
 
     def startup_check(self):
         QTimer.singleShot(200, QApplication.instance().quit)
+        
 
     # =============== SIMULATION HELPERS  ================
     # ====================================================
 
     def check_for_problem(self):
-        # Example problemas
-        p1 = {CAUSE_TYPE: "bump",
-              COORDINATES: str(p.getBasePositionAndOrientation(self.robot)), 
-              CAUSE_RANGE: str(p.getBasePositionAndOrientation(self.robot)), 
-              WHEEL: "none"}
-        p2 = {CAUSE_TYPE: "wheel",
-              COORDINATES: str(p.getBasePositionAndOrientation(self.robot)), 
-              CAUSE_RANGE: str(p.getBasePositionAndOrientation(self.robot)), 
-              WHEEL: "BR"}
-        self.causes_data[CAUSES] = [p1, p2]
-        # Save JSON data to causes.json (DEBUG)
-        self.writeCausesJson()
-        return True # Only for debugging purposes.
+        follow_node = self.g.get_node("follow_me")
+        if follow_node is not None:
+                if not follow_node.attrs["aff_interacting"].value:
+                    self.writeCausesJson()
+                    return True
+        return False
 
     def show_compute_time_step(self):
         """
@@ -268,7 +317,7 @@ class SpecificWorker(GenericWorker):
             
         return time_step
 
-    
+
     # =============== PYBULLET MODELS INFO  ================
     # ======================================================
 
