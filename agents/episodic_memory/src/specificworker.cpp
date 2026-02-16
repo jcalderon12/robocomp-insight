@@ -90,33 +90,39 @@ void SpecificWorker::initialize()
 	//graph_viewer->add_custom_widget_to_dock("CustomWidget", &custom_widget);
 
     //initializeCODE
+	time_check = std::chrono::system_clock::now(); 
+	keyframe_period = std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
+	const auto initial_keyframe_optional = generate_keyframe();
+	if (!initial_keyframe_optional.has_value()) {std::cerr << __FUNCTION__ << " - initial_keyframe_optional has no value!" << std::endl;}
+	else{
+		std::string initial_keyframe = initial_keyframe_optional.value();
+		std::cout << std::endl;
+		std::cout << initial_keyframe << std::endl;
+	}
 
     /////////GET PARAMS, OPEND DEVICES....////////
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
-	
-	// - DECODE TEST
-	// std::string data = "pos_x$i:289%pos_y$f:38,000555200#possad$i:285559%pos_asdsady$f:35558,000555200#";
-    // std::cout << "Procesando string: " << data << "\n\n";
-
-    // auto it = data.begin();
-    // auto end = data.end();
-	
-	// std::cout<< "ssssssssssssssssss"<<std::endl;
-    // decode_string(it, end);
-	// std::cout<< "ssssssssssssssssss"<<std::endl;
-    // decode_string(it, end);
-	// std::cout<< "ssssssssssssssssss"<<std::endl;
-    // decode_string(it, end);
-	// std::cout<< "ssssssssssssssssss"<<std::endl;
-	// - DECODE TEST
-
 }
 
 
 
 void SpecificWorker::compute()
 {
+	auto time_now = std::chrono::system_clock::now();
+	if (time_now - time_check >= keyframe_period){
+		time_check = std::chrono::system_clock::now();
+		// auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count(); 
+		
+		const auto keyframe_optional = generate_keyframe();
+		if (!keyframe_optional.has_value()) {std::cerr << __FUNCTION__ << " - keyframe_optional has no value!" << std::endl;}
+		else{
+			std::string keyframe = keyframe_optional.value();
+			std::cout << std::endl;
+			std::cout << keyframe << std::endl;
+		}
+		// std::cout << __FUNCTION__ << " - 5 segundos! - new_timestamp: " << std::to_string(new_timestamp) << std::endl;
+	}
 
 }
 
@@ -200,8 +206,20 @@ void SpecificWorker::modify_edge_slot(std::uint64_t from, std::uint64_t to,  con
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 	
-	if (!string_check_flag)
+	if (!string_check_flag){
+		auto edges_optional = G->get_edges(from);
+		if (edges_optional.has_value()){
+			auto edge_map = edges_optional.value();
+			for (const auto &e : edge_map){
+				auto key = e.first;
+				std::cout << key.second << std::endl;
+			}
+
+			// auto keys = edges_optional.value().keys();
+			// std::cout << keys.size() << std::endl;
+		}
 		std::cout << "Modify edge slot - from_id: " << from << " to_id: " << to << " type: " << type << std::endl;
+	}
 	else
 	{
 		auto dsr_data_optional = assemble_string(new_timestamp, SChars.ME, std::make_tuple(from, to), type, {});
@@ -305,21 +323,24 @@ std::optional<std::string> SpecificWorker::assemble_string(const auto &timestamp
 			return {std::get<0>(value), std::get<1>(value)};
 	}, id_variant);
 	
-	if(std::get<1>(id_tuple) == NODE_ONLY){ // Node
+	if(std::get<1>(id_tuple) == NODE_ONLY){ // Node ID
 		id_node = std::get<0>(id_tuple);
 		dsr_data += "id"; dsr_data += SChars.ATT_NAME;
+		dsr_data += DSRTypeTrait<uint64_t>::code; dsr_data += SChars.ATT_TYPE;
 		dsr_data += std::to_string(id_node); dsr_data += SChars.ATT_VAL;	
 		
 		node_optional = G->get_node(id_node);
 		if(node_optional.has_value())
 			node = node_optional.value();
 	}
-	else{ // Edge
+	else{ // Edge ID
 		id_from = std::get<0>(id_tuple);
 		id_to = std::get<1>(id_tuple);
 		dsr_data += "idf"; dsr_data += SChars.ATT_NAME;
+		dsr_data += DSRTypeTrait<uint64_t>::code; dsr_data += SChars.ATT_TYPE;
 		dsr_data += std::to_string(id_from); dsr_data += SChars.ATT_VAL;
 		dsr_data += "idt"; dsr_data += SChars.ATT_NAME;
+		dsr_data += DSRTypeTrait<uint64_t>::code; dsr_data += SChars.ATT_TYPE;
 		dsr_data += std::to_string(id_to); dsr_data += SChars.ATT_VAL;
 		
 		if(slot != SChars.DE)
@@ -358,4 +379,98 @@ std::optional<std::string> SpecificWorker::assemble_string(const auto &timestamp
 	dsr_data.back() = SChars.SLOT;
 	
 	return std::make_optional(std::move(dsr_data));
+}
+
+
+std::optional<std::string> SpecificWorker::generate_keyframe(){
+	std::vector<std::string> nodes_str_v;
+	std::vector<std::string> edges_str_v;
+	std::string dsr_kdata = "";
+
+	// timestamp + K
+	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_check.time_since_epoch()).count(); 
+	dsr_kdata += std::to_string(new_timestamp); dsr_kdata += SChars.SLOT;
+	dsr_kdata += SChars.K; dsr_kdata += SChars.SLOT;
+
+	auto nodes = G->get_nodes();
+	for (const auto &node : nodes){
+		// node info
+		std::string node_data = "";
+		
+		// node name
+		node_data += "name"; node_data += SChars.ATT_NAME;
+		node_data += DSRTypeTrait<std::string>::code; node_data += SChars.ATT_TYPE;
+		node_data += node.type(); node_data += SChars.ATT_VAL;
+		
+		// node type
+		node_data += "type"; node_data += SChars.ATT_NAME;
+		node_data += DSRTypeTrait<std::string>::code; node_data += SChars.ATT_TYPE;
+		node_data += node.name(); node_data += SChars.ATT_VAL;
+		
+		// node id
+		node_data += "id"; node_data += SChars.ATT_NAME;
+		node_data += DSRTypeTrait<uint64_t>::code; node_data += SChars.ATT_TYPE;
+		const auto id_optional = G->get_id_from_name(node.name());
+		if (id_optional.has_value()) {
+			node_data += std::to_string(id_optional.value()); node_data += SChars.ATT_VAL; }
+		
+		// node attrs
+		auto attrs = node.attrs();
+		for (const auto &att : attrs){
+			auto att_val_type = attribute_value_and_type_to_string(att.second);
+			node_data += att.first; node_data += SChars.ATT_NAME;
+			node_data += std::get<1>(att_val_type); node_data += SChars.ATT_TYPE;
+			node_data += std::get<0>(att_val_type); node_data += SChars.ATT_VAL;			
+		}
+		node_data += SChars.SLOT; 
+		nodes_str_v.push_back(node_data);
+				
+		// edge info
+		std::string edge_data = "";
+		auto node_edges_optional = G->get_edges(node.id());
+		if (node_edges_optional.has_value()){
+			auto edges_map = node_edges_optional.value();
+			for (const auto &edge_map_element : edges_map){
+				auto key_idto_type = edge_map_element.first; 
+				auto edge = edge_map_element.second;
+
+				// edge type
+				edge_data += "type"; edge_data += SChars.ATT_NAME; 
+				edge_data += DSRTypeTrait<std::string>::code; edge_data += SChars.ATT_TYPE;
+				edge_data += key_idto_type.second; edge_data += SChars.ATT_VAL;
+				
+				// edge id from
+				edge_data += "idf"; edge_data += SChars.ATT_NAME; 
+				edge_data += DSRTypeTrait<uint64_t>::code; edge_data += SChars.ATT_TYPE;
+				if (id_optional.has_value()) {
+					edge_data += std::to_string(id_optional.value()); edge_data += SChars.ATT_VAL; }
+
+				// edge id to
+				edge_data += "idt"; edge_data += SChars.ATT_NAME; 
+				edge_data += DSRTypeTrait<uint64_t>::code; edge_data += SChars.ATT_TYPE;
+				edge_data += std::to_string(key_idto_type.first); edge_data += SChars.ATT_VAL;
+
+				// edge attrs
+				auto attrs = edge.attrs();
+				for (const auto &att : attrs){
+					auto att_val_type = attribute_value_and_type_to_string(att.second);
+					edge_data += att.first; edge_data += SChars.ATT_NAME;
+					edge_data += std::get<1>(att_val_type); edge_data += SChars.ATT_TYPE;
+					edge_data += std::get<0>(att_val_type); edge_data += SChars.ATT_VAL;
+				}
+
+				edge_data += SChars.SLOT;
+			}
+			edges_str_v.push_back(edge_data);
+		} 
+	}
+
+	for (const auto &node_str : nodes_str_v) 
+		dsr_kdata += node_str;
+	dsr_kdata += SChars.K_DIV;
+	for (const auto &edge_str : edges_str_v) 
+		dsr_kdata += edge_str;
+	dsr_kdata += SChars.K_DIV;
+
+	return std::make_optional(std::move(dsr_kdata));
 }

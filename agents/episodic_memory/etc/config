@@ -10,6 +10,7 @@ ViewAgent.3d = true
 
 Period.Compute = 100
 Period.Emergency = 500
+KeyframePeriod = 5000
 
 Ice.Warn.Connections = "0"
 Ice.Trace.Network = "0"

@@ -98,23 +98,16 @@ private:
      * \brief Flag indicating whether startup checks are enabled.
      */
 	bool startup_check_flag;
+	bool string_check_flag = false;
 
-	/**
-	 *
-	 */
-	bool string_check_flag = true;
+	
 
-	/**
-	 *
-	 */
 	using AttributeType = std::variant<std::string, int32_t, float,
             		std::vector<float>, bool, std::vector<uint8_t>,
 					uint32_t, uint64_t, double, std::vector<uint64_t>,
 					std::array<float, 2>, std::array<float, 3>,
-            		std::array<float, 4>, std::array<float, 6>>;
-	/**
-	 *
-	 */
+					std::array<float, 4>, std::array<float, 6>>;
+    
 	struct SpecialChars {
 		const char SLOT = '#';
 		const char ATT_NAME = '$';
@@ -130,16 +123,20 @@ private:
 		const std::string DN = "DN";
 		const std::string DE = "DE";
 	} SChars;
-
-
 	
+	std::map<int64_t, std::string> changes_map;
+	std::chrono::time_point<std::chrono::system_clock> time_check;
+	std::chrono::milliseconds keyframe_period;
+
+	std::optional<std::string> generate_keyframe();
+
 	std::optional<std::string> assemble_string(const auto &timestamp, const std::string &slot, 
 				const std::variant<std::uint64_t, std::tuple<uint64_t, uint64_t>> &id_variant,		
 				const std::string &type, const std::vector<std::string> &att_names);	
 
-
 	std::tuple<std::string, std::string> attribute_value_and_type_to_string(const auto &value);
 
+	
 signals:
 	//void customSignal();
 };
