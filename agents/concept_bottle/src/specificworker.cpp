@@ -105,7 +105,6 @@ void SpecificWorker::compute()
 
 	if(check_bottle_related_robot())
 	{
-		std::cout << "Bottle height: " << bottle_pose.position.z << std::endl;
 		if (bottle_pose.position.z < 300)
 		{
 			std::cout << "The bottle is related to the robot and has fallen." << std::endl;
