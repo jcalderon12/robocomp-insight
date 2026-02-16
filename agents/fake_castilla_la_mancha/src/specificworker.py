@@ -71,7 +71,7 @@ class SpecificWorker(GenericWorker):
         if not bottle_over_robot:
             self.deactivate_affordance()
         
-
+        print(flush=True)
         return True
 
     def startup_check(self):
@@ -97,9 +97,10 @@ class SpecificWorker(GenericWorker):
     def deactivate_affordance(self):
         follow_me_node = self.g.get_node("follow_me")
         if follow_me_node:
-            print("Deactivating the affordance FOLLOW ME")
-            follow_me_node.attrs["aff_interacting"].value = False
-            self.g.update_node(follow_me_node)
+            if follow_me_node.attrs["aff_interacting"].value == True:
+                print("Deactivating the affordance FOLLOW ME")
+                follow_me_node.attrs["aff_interacting"].value = False
+                self.g.update_node(follow_me_node)
 
 
     # =============== DSR SLOTS  ================

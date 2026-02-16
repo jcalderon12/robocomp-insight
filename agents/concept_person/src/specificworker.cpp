@@ -89,51 +89,48 @@ void SpecificWorker::compute()
 	auto distance_to_person = get_distance_to_person();
 	update_distance_to_person(distance_to_person);
 
-	switch (agentState)
-	{
-	case States::IDLE:{
-		bool is_target_assigned = check_target_assigned();
-		if (is_target_assigned)
-			agentState = States::ASSIGNED;
-		break;
-	}
-
-	case States::ASSIGNED:{
-		bool affordance_existed = check_affordance_assigned();
-		if (!affordance_existed)
-			create_affordance();
-		bool affordance_acepted = check_affordance_accepted();
-		if (affordance_acepted)
-			agentState = States::FOLLOWME;
-		break;
-	}
-
-	case States::FOLLOWME:{
-		auto state = follow_person(distance_to_person);
-		if (state == "RUNNING")
+	switch (agentState){
+		case States::IDLE:
+		{
+			bool is_target_assigned = check_target_assigned();
+			if (is_target_assigned){
+				std::cout << "Target assigned to person" << std::endl;
+				agentState = States::ASSIGNED;
+			}
 			break;
-		else {
-			if (state == "SUCCESS")
-				agentState = States::SUCCESS;
-			if (state == "FAILED")
-				agentState = States::FAILED;
-			if (state == "STOPPED")
-				agentState = States::STOPPED;
 		}
-		break;
-	}
 
-	case States::SUCCESS:
-		std::cout << "Mission success!" << std::endl;
-		break;
+		case States::ASSIGNED:
+		{
+			bool affordance_existed = check_affordance_assigned();
+			if (!affordance_existed)
+				create_affordance();
+			bool affordance_acepted = check_affordance_accepted();
+			if (affordance_acepted){
+				std::cout << "Affordance accepted for the assigned target." << std::endl;
+				agentState = States::FOLLOWME;
+			}
+			break;
+		}
 
-	case States::FAILED:
-		std::cout << "Mission failed!" << std::endl;
-		break;
+		case States::FOLLOWME:
+		{
+			auto state = follow_person(distance_to_person);
+			if (state == false){
+				std::cout << "Mission finished" << std::endl;
+				agentState = States::SUCCESS;
+			}
+			break;
+		}
 
-	case States::STOPPED:
-		std::cout << "Mission stopped!" << std::endl;
-		break;
+		case States::SUCCESS:
+			break;
+
+		case States::FAILED:
+			break;
+
+		case States::STOPPED:
+			break;
 	}	
 }
 
@@ -206,31 +203,33 @@ bool SpecificWorker::check_target_assigned()
 {
 	auto optional_robot_node = G->get_node("robot");
 	if (!optional_robot_node.has_value()){
-		std::cout << "Robot node not found in DSR." << std::endl;
+		if(print_extra_info == true)
+			std::cout << "Robot node not found in DSR." << std::endl;
 		return false;
 	}
 	auto optional_person_node = G->get_node("person");
 	if (!optional_person_node.has_value()){
-		std::cout << "No person node found in DSR." << std::endl;
+		if(print_extra_info == true)
+			std::cout << "No person node found in DSR." << std::endl;
 		return false;
 	}
 
 	auto target_edges = G->get_edges_by_type("TARGET");
 	if (target_edges.empty()){
-		std::cout << "No TARGET edge found from robot to person." << std::endl;
+		if(print_extra_info == true)
+			std::cout << "No TARGET edge found from robot to person." << std::endl;
 		return false;
 	}
-	else{
-		std::cout << "Target assigned to person" << std::endl;
-		return true;
-	}
+	
+	return true;
 }
 
 bool SpecificWorker::check_affordance_assigned()
 {
 	auto optional_person_node = G->get_node("person");
 	if (!optional_person_node.has_value()){
-		std::cout << "No person node found in DSR." << std::endl;
+		if (print_extra_info)
+			std::cout << "No person node found in DSR." << std::endl;
 		return false;
 	}
 
@@ -240,11 +239,13 @@ bool SpecificWorker::check_affordance_assigned()
 	for (const auto& node : affordance_nodes){
 		auto edge = G->get_edge(person_node.id(), node.id(), "has_intention");
 		if (edge.has_value()){
-			std::cout << "Affordance already exists for the assigned target." << std::endl;
+			if(print_extra_info)
+				std::cout << "Affordance already exists for the assigned target." << std::endl;
 			return true;
 		}
 	}
-	std::cout << "No affordance exists for the assigned target." << std::endl;
+	if (print_extra_info)
+		std::cout << "No affordance exists for the assigned target." << std::endl;
 	return false;
 }
 
@@ -288,7 +289,6 @@ bool SpecificWorker::check_affordance_accepted()
 		DSR::Node affordance_node = optional_node.value();
 		auto interacting = G->get_attrib_by_name<aff_interacting_att>(affordance_node.id());
 		if (interacting.has_value() && interacting.value() == true){
-			std::cout << "Affordance accepted for the assigned target." << std::endl;
 			return true;
 		}
 		else
@@ -316,24 +316,27 @@ void SpecificWorker::update_distance_to_person(std::vector<float> distance)
 	rt->insert_or_assign_edge_RT(robot_node,person_node.id(),distance, {0.f, 0.f, 0.f});
 }
 
-std::string SpecificWorker::follow_person(std::vector<float> distance)
+bool SpecificWorker::follow_person(std::vector<float> distance)
 {	
 	auto optional_robot_node = G->get_node("robot");
 	if (!optional_robot_node.has_value()){
-		std::cout << "Robot node not found in DSR." << std::endl;
-		return "FAILED";
+		if (print_extra_info)
+			std::cout << "Robot node not found in DSR." << std::endl;
+		return false;
 	}
 
 	auto optional_person_node = G->get_node("person");
 	if (!optional_person_node.has_value()){
-		std::cout << "Person node not found in DSR." << std::endl;
-		return "FAILED";
+		if (print_extra_info)
+			std::cout << "Person node not found in DSR." << std::endl;
+		return false;
 	}
 
 	auto optional_affordance_node = G->get_node("follow_me");
 	if (!optional_affordance_node.has_value()){
-		std::cout << "Affordance node not found in DSR." << std::endl;
-		return "FAILED";
+		if (print_extra_info)
+			std::cout << "Affordance node not found in DSR." << std::endl;
+		return false;
 	}
 
 	auto robot_node = optional_robot_node.value();
@@ -342,22 +345,23 @@ std::string SpecificWorker::follow_person(std::vector<float> distance)
 
 	auto interacting = G->get_attrib_by_name<aff_interacting_att>(affordance_node.id());
 	if (!interacting.has_value() || interacting.value() == false){
-		std::cout << "Affordance interaction stopped by user." << std::endl;
+		if (print_extra_info)
+			std::cout << "Affordance interaction stopped by user." << std::endl;
 		G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, (float)0.0);
 		G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, (float)0.0);
 		G->update_node(robot_node);
 		G->update_node(robot_node);
-		return "STOPPED";
+		return false;
 	}
-
-	std::cout << "Following person with id: " << person_node.id() << std::endl;
+	if (print_extra_info)
+		std::cout << "Following person with id: " << person_node.id() << std::endl;
 
 	auto linear_speed = calculate_linear_speed_from_distance(distance);
 
 	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, (float)linear_speed);
 	G->update_node(robot_node);
 
-	return "RUNNING";
+	return true;
 }
 
 

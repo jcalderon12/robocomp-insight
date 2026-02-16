@@ -77,6 +77,8 @@ git clone https://github.com/alfiTH/Program-manager.git
 Install the dependencies
 ```bash
 pip install -r requirements.txt
+#Codium download
+mkdir ~/software 2> /dev/null; cd ~/software && wget https://github.com/VSCodium/vscodium/releases/download/1.109.21026/vscodium-reh-web-linux-x64-1.109.21026.tar.gz && mkdir vscodium-server && tar -xzf vscodium-reh-web-linux-x64-1.109.21026.tar.gz -C vscodium-server && cd -
 ```
 
 Create a SSL certificate necesary to this software:
