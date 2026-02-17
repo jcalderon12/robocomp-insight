@@ -36,6 +36,7 @@ import time
 import os
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor
 
 # causes.json constants
 JSON_FILE = "causes.json"
@@ -167,9 +168,21 @@ class SpecificWorker(GenericWorker):
         self.causes_data = {}
         # Set initial pose (Debugging purposes)
         self.causes_data[INIT_POSE] = p.getBasePositionAndOrientation(self.robot)
+
+
+
+    def init_imu_record(self):
+        self.imu_history = {}
+        self.imu_history[TIMESTAMP] = []
+        self.imu_history[ACCELEROMETER] = []
+        self.imu_history[GYROSCOPE] = []
     
-    def record_imu(self, current_time):       
-        acc, ang = self.imu.get_measurement()
+    def record_imu(self, current_time):
+        # Get real IMU node data from DSR
+        real_imu_node = self.g.get_node("imu")
+        if real_imu_node is not None:
+            acc = real_imu_node.attrs["imu_accelerometer"].value
+            ang = real_imu_node.attrs["imu_gyroscope"].value
         self.imu_history[TIMESTAMP].append(current_time)
         self.imu_history[ACCELEROMETER].append(acc.tolist())
         self.imu_history[GYROSCOPE].append(ang.tolist())
@@ -178,7 +191,7 @@ class SpecificWorker(GenericWorker):
     def writeCausesJson(self):
         try:
             # Generate random bump location
-            position, orientation = p.getBasePositionAndOrientation(self.robot)
+            position, orientation = self.causes_data[INIT_POSE]
             position = list(position)
             position[0] += 2.5
             position[2] = 0.001
@@ -235,6 +248,7 @@ class SpecificWorker(GenericWorker):
                 follow_node = self.g.get_node("follow_me")
                 if follow_node is not None and follow_node.attrs["aff_interacting"].value:
                     self.state = "INNER_SIMULATOR"
+                    self.init_imu_record()
                     self.initial_time = time.time()
                     self.actual_time = time.time()
                 pass
@@ -257,18 +271,21 @@ class SpecificWorker(GenericWorker):
                     self.state = "SIMULATE_REASON"
                 
             case "SIMULATE_REASON":
-
                 # Read JSON to get causes
                 self.loadCausesJson()
+
+                # Launch subprocesses for simulation
+                print("Launching subprocesses...")                
                 pids = []
                 historicals = {}
                 for cause in self.causes_data[CAUSES]:
                     rpipe, wpipe = os.pipe()
-                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-n", self.causes_data[NUMREP], "-l", self.causes_data[LENGTH], "-i", str(self.causes_data[INIT_POSE]), "-f", str(self.causes_data[CURR_POSE]), "-t", cause[CAUSE_TYPE], "-c", str(cause[COORDINATES]), "-r", cause[CAUSE_RANGE], "-w", cause[WHEEL], "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
+                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-n", str(self.causes_data[NUMREP]), "-l", str(self.causes_data[LENGTH]), "-i", str(self.causes_data[INIT_POSE]), "-f", str(self.causes_data[CURR_POSE]), "-t", cause[CAUSE_TYPE], "-c", str(cause[COORDINATES]), "-r", str(cause[CAUSE_RANGE]), "-w", cause[WHEEL], "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
                     # Close wpipe descriptor
                     os.close(wpipe)
-                    
-                print("Simulating causes...")
+                
+                # Wait for subprocesses and collect pipe data
+                print("Waiting for subprocesses...")
                 while (True):
                     # pid[0] is the process ID itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
                     for pid in pids:
@@ -281,10 +298,25 @@ class SpecificWorker(GenericWorker):
                             
                     if len(historicals) == len(pids): break
 
+                # Transform pipe data
                 for pid in pids:
                     historicals[pid[0]] = json.loads(historicals[pid[0]])  
-
+    
                 print(f"Received historicals from {len(historicals)} simulations.")
+                i = 0
+                for h in historicals:
+                    print(f"    Historical {i} frames: {len(historicals[h])}")
+                    i += 1
+                print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
+
+                # Check for any possible matches between causes and real IMU's
+                threads = []
+                with ProcessPoolExecutor(max_workers=2) as executor:
+                    for h in historicals:
+                        threads.append(executor.submit(self.find_matching_imu_recordings, self.imu_history, historicals[h]))
+
+                    for thread in threads:
+                        if thread.result() 
                 self.state = "IDLE"
                 
         return True
@@ -317,9 +349,31 @@ class SpecificWorker(GenericWorker):
             
         return time_step
 
+    def find_matching_imu_recordings(self, rimu, simu):
+        # TODO: este código no permite un margen de error en las medidas
+        is_matching = True
+
+        # for each simu simulation...
+        for s in range(len(simu)):
+            # for each frame of the simulation...
+            for i in range(len(simu[s])):
+                # check against each rimu frame...
+                for j in range(len(rimu[TIMESTAMP])):
+
+                    if simu[s][TIMESTAMP][i] == rimu[TIMESTAMP][j]: # If matching timestamps...
+                        # Does it match acc?
+                        if not simu[s][ACCELEROMETER][i] == rimu[ACCELEROMETER][j]: is_matching = False
+                        # Does it match gyro?
+                        if not simu[s][GYROSCOPE][i] == rimu[GYROSCOPE][j]: is_matching = False
+                
+                # if not matching timestamp, skip...
+
+        return is_matching
+    
 
     # =============== PYBULLET MODELS INFO  ================
     # ======================================================
+
 
 
     def get_joints_info(self, robot_id):

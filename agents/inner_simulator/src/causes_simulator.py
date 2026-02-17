@@ -8,6 +8,7 @@ import numpy as np
 import os
 import json
 from pybullet_imu import IMU
+import random as rnd
 
 # Keys of 
 TIMESTAMP = "timestamp"
@@ -28,6 +29,22 @@ class CausesSimulator:
         self.cause_range = cause_range
         self.pipe = int(pipe)
         self.wheel = wheel
+        match self.wheel:
+            case "BL":
+                self.wheel = "frame_back_left2motor_back_left"
+                pass
+            case "BR":
+                self.wheel = "frame_back_right2motor_back_right"
+                pass
+            case "TL":
+                self.wheel = "frame_front_left2motor_front_left"
+                pass
+            case "TR":
+                self.wheel = "frame_front_right2motor_front_right"
+                pass
+            case _:
+                self.wheel = None
+                pass
         self.real_time = real_time
         self.physicsClient = p.connect(p.GUI)
         self.stepCount = 0
@@ -35,6 +52,7 @@ class CausesSimulator:
         self.forwardSpeed = 0.7
         self.angularSpeed = 0.0
         self.historical = []
+        self.wheel_malfunction_timeout = None
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         p.setGravity(0, 0, -9.81)
         # p.setRealTimeSimulation(1) # Enable real-time simulation
@@ -93,32 +111,27 @@ class CausesSimulator:
 
 
     def simulate(self) -> str | None:
-        #print("Simulated simulation...")
         stepCount = 0
+        simulation_time = 0
         # Simulate
-        while (stepCount * self.dt) < float(self.simulation_length):
+        while (simulation_time) < float(self.simulation_length):
+            
             it = time.time()
-            wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.forwardSpeed, self.angularSpeed)
-            for motor_name in self.motors:
-                p.setJointMotorControl2(bodyUniqueId=self.robot,
-                                        jointIndex=self.joints_name[motor_name],
-                                        controlMode=p.VELOCITY_CONTROL,
-                                        targetVelocity=wheels_velocity[motor_name],
-                                        force=10)
+            self.do_acceleration_robot(simulation_time)
             p.stepSimulation()
-            self.record_imu(stepCount * self.dt)
+            self.record_imu(simulation_time)
+            stepCount += 1
+            simulation_time = stepCount * self.dt
             et = time.time()
-            stepCount += 1 
+            
             if self.real_time:
                 time.sleep(max(0, self.dt - (et - it))) # Sleep to maintain real-time simulation
-        #print("Simulation finished.")
         return None
     
     def doSimulation(self) -> str | None:
         self.intialState = p.saveState()
-        for i in range(self.num_of_repetitions):
-            
-            self.placeObject()
+        for i in range(self.num_of_repetitions):        
+            self.produceCause()
             self.init_imu_record()
             res = self.simulate()
             if res is not None:
@@ -145,22 +158,41 @@ class CausesSimulator:
         return coordinate
         
 
-    def placeObject(self):
+    def produceCause(self):
         match self.cause_type:
             case "bump":
                 position:list = self.calculateRandomObjectPosition()
-                print(f"Generating bump at {position}")
+                #print(f"Generating bump at {position}")
                 self.currentObject = p.loadURDF("../../etc/URDFs/bump/bump_100x5cm.urdf", position)
                 
             case "wheel":
-                
+                self.wheel_malfunction_timeout = rnd.random() * self.simulation_length 
                 pass
+                
             case _:
                 print(f"Unknown cause type {self.cause_type}")
                 pass
 
     # =============== ROBOT KINEMATICS  ================
     # ==================================================
+
+    def do_acceleration_robot(self, sim_time : float):
+        wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.forwardSpeed, self.angularSpeed)
+        for motor_name in self.motors:
+        
+            if (self.wheel == motor_name) and (sim_time >= self.wheel_malfunction_timeout):
+                p.setJointMotorControl2(bodyUniqueId=self.robot,
+                                        jointIndex=self.joints_name[motor_name],
+                                        controlMode=p.VELOCITY_CONTROL,
+                                        targetVelocity=0,
+                                        force=10)            
+            else:
+                p.setJointMotorControl2(bodyUniqueId=self.robot,
+                                        jointIndex=self.joints_name[motor_name],
+                                        controlMode=p.VELOCITY_CONTROL,
+                                        targetVelocity=wheels_velocity[motor_name],
+                                        force=10)
+            
 
     def get_forward_velocity(self):
         """
@@ -224,7 +256,7 @@ class CausesSimulator:
         num_joints = p.getNumJoints(robot_id)
         # print("Num joints:", num_joints)
 
-        # Populate the dictionary with joint names and IDs
+        # Populate the dictionary with joint nad
         for i in range(num_joints):
             joint_info = p.getJointInfo(robot_id, i)
             joint_name = joint_info[1].decode("utf-8")
