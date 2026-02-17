@@ -2,7 +2,7 @@
 # Change id
 Agent.id = 8
 Agent.name = "episodic_memory"
-Agent.configFile = "episodic_dsr.json"
+Agent.configFile = ""
 ViewAgent.tree = true
 ViewAgent.graph = true
 ViewAgent.2d = true

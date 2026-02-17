@@ -112,7 +112,7 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
-    
+
 }
 
 
@@ -204,6 +204,16 @@ void SpecificWorker::on_stopMission_clicked()
 	}
 	else{
 		std::cout << "Follow me affordance node not found in DSR." << std::endl;
+	}
+}
+
+void SpecificWorker::show_local_edges_from_node(DSR::Node node)
+{
+	auto edges = G->get_edges_to_id(node.id());
+	if(!edges.empty()){
+		for(auto n : edges){
+			std::cout << n.type() << std::endl;
+		}
 	}
 }
 

@@ -36,6 +36,7 @@
 
 
 
+
 /**
  * \brief Class SpecificWorker implements the core functionality of the component.
  */
@@ -130,6 +131,12 @@ private:
 		const std::string DN = "DN";
 		const std::string DE = "DE";
 	} SChars;
+
+
+
+	QMainWindow *window2;
+	std::shared_ptr<DSR::DSRGraph> G2;
+	std::unique_ptr<DSR::DSRViewer> graph_viewer2;
 
 
 	

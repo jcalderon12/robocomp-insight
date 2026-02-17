@@ -57,6 +57,9 @@ SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, 
 			qWarning() << error;
 			throw error;
 		}
+
+    G2 = std::make_shared<DSR::DSRGraph>(0, agent_name, agent_id, "episodic_dsr.json", true, 1); // Init nodes
+
 	}
 }
 
@@ -64,6 +67,8 @@ SpecificWorker::~SpecificWorker()
 {
 	std::cout << "Destroying SpecificWorker" << std::endl;
 	//G->write_to_json_file("./"+agent_name+".json");
+	delete window2;
+
 }
 
 
@@ -87,6 +92,11 @@ void SpecificWorker::initialize()
 	***/
 
 	graph_viewer = std::make_unique<DSR::DSRViewer>(this, G, current_opts, main);
+	
+	window2 = new QMainWindow;
+	graph_viewer2 = std::make_unique<DSR::DSRViewer>(window2, G2, DSR::DSRViewer::view::graph,  DSR::DSRViewer::view::none);
+	window2->show();
+
 	//graph_viewer->add_custom_widget_to_dock("CustomWidget", &custom_widget);
 
     //initializeCODE
@@ -117,6 +127,19 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
+	auto node_optional = G->get_node("root");
+	if (node_optional.has_value())
+	{
+		std::cout<< node_optional.value().id()<< std::endl;
+	}
+
+	node_optional = G2->get_node("root");
+	if (node_optional.has_value())
+	{
+		std::cout<< node_optional.value().id()<< std::endl;
+	}
+
+	std::cout<<"------------------------------------------------"<< std::endl;
 
 }
 

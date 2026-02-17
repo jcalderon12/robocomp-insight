@@ -96,6 +96,11 @@ public slots:
 	 */
 	void on_startMission_clicked();
 
+	/**
+	 * \brief A debugging method that only prints the type of edges pointing to a node.
+	 */
+	void show_local_edges_from_node(DSR::Node node);
+
 	void modify_node_slot(std::uint64_t, const std::string &type){};
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){};
 	void modify_edge_slot(std::uint64_t from, std::uint64_t to,  const std::string &type){};
@@ -111,6 +116,7 @@ private:
 
 	Ui::mission_controller mission_controller_ui;
 	QWidget mission_controller_widget;
+
 	std::map<std::string, int> mission_types;
 
 signals:
