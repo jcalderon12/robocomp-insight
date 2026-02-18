@@ -97,15 +97,20 @@ void SpecificWorker::initialize()
 
 }
 
+inline bool hasFallen(const SpecificWorker::BottlePose& pose, float threshold_degrees = 45.0f)
+{
+    float z_world = 1.0f - 2.0f * (pose.qx*pose.qx + pose.qy*pose.qy);
+    float cos_threshold = std::cos(threshold_degrees * M_PI / 180.0f);
+    return z_world < cos_threshold;
+}
 
 
 void SpecificWorker::compute()
 {
-	auto bottle_pose = this->webots2robocomp_proxy->getObjectPose("flacon"); //MILLIMETERS
-
 	if(check_bottle_related_robot())
 	{
-		if (bottle_pose.position.z < 300)
+		auto bottle_pose = detect_bottle();
+		if (bottle_pose.z < 300 or hasFallen(bottle_pose))
 		{
 			std::cout << "The bottle is related to the robot and has fallen." << std::endl;
 			change_rt_from_robot_to_root();
@@ -180,6 +185,44 @@ void SpecificWorker::change_rt_from_robot_to_root()
 	loss_edge.type("RT");
 	
 	G->insert_or_assign_edge(loss_edge);
+}
+
+
+/**************************************/
+/********* DETECTION METHODS **********/
+
+SpecificWorker::BottlePose SpecificWorker::detect_bottle()
+{	
+	RoboCompWebots2Robocomp::ObjectPose bottle_pose;
+
+	if (simulated)
+	{	
+		std::cout << "Detecting bottle in simulation..." << std::endl;
+		bottle_pose = this->webots2robocomp_proxy->getObjectPose("flacon"); //MILLIMETERS
+	}
+	else
+	{
+		// TODO: Implement real detection method here and fill the bottle_pose variable with the obtained values.
+		// Example of filling the bottle_pose variable with dummy values:
+		bottle_pose.position.x = 100.0; // Replace with actual x position
+		bottle_pose.position.y = 200.0; // Replace with actual y position
+		bottle_pose.position.z = 300.0; // Replace with actual z position
+		bottle_pose.orientation.x = 0.0; // Replace with actual qx orientation
+		bottle_pose.orientation.y = 0.0; // Replace with actual qy orientation
+		bottle_pose.orientation.z = 0.0; // Replace with actual qz orientation
+		bottle_pose.orientation.w = 1.0; // Replace with actual qw orientation
+	}
+
+	SpecificWorker::BottlePose pose;
+	pose.x = bottle_pose.position.x;
+	pose.y = bottle_pose.position.y;
+	pose.z = bottle_pose.position.z;
+	pose.qx = bottle_pose.orientation.x;
+	pose.qy = bottle_pose.orientation.y;
+	pose.qz = bottle_pose.orientation.z;
+	pose.qw = bottle_pose.orientation.w;
+
+	return pose;
 }
 
 
