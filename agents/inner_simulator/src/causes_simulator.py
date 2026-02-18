@@ -9,6 +9,7 @@ import os
 import json
 from pybullet_imu import IMU
 import random as rnd
+from uuid import uuid4
 
 # Keys of 
 TIMESTAMP = "timestamp"
@@ -17,45 +18,49 @@ GYROSCOPE = "gyroscope"
 
 class CausesSimulator:
 
-    def __init__(self, num_of_repetitions, simulation_length, initial_position, final_position, cause_type, coordinates, cause_range, pipe, wheel=None, real_time=False):
+    def __init__(self, num_of_repetitions, simulation_length, initial_position, final_position, cause_file_path, pipe, real_time=False):
         # ================ PYBULLET SIMULATION SETUP  ================
         # ============================================================
+        
+        # Maps
+        self.initialze_wheel_simplified_names_map()
+        self.initialize_wheels_movement_map()
+        self.initialize_bodies_map()
+
+        # Simulation-related parameters
         self.num_of_repetitions = int(num_of_repetitions)
         self.simulation_length = ast.literal_eval(simulation_length)
         self.initial_position = ast.literal_eval(initial_position)
         self.final_position = final_position
-        self.cause_type = cause_type
-        self.coordinates = ast.literal_eval(coordinates)
-        self.cause_range = cause_range
+        self.cause_file_path = cause_file_path
+        self.cause = None
+        
+        # Import the cause class from the cause file path. The cause class name is always "Cause".
+        spec = None
+        cause_module = None
+        try:
+            from importlib.util import spec_from_file_location, module_from_spec
+            spec = spec_from_file_location("cause_module", self.cause_file_path)
+            cause_module = module_from_spec(spec)
+            spec.loader.exec_module(cause_module)
+            self.cause = cause_module.Cause()
+        except Exception as e:
+            print(f"Error importing cause from file {self.cause_file_path}: {e}")
+            sys.exit(1)
+        
+        
+        # Working parameters
         self.pipe = int(pipe)
-        self.wheel = wheel
-        match self.wheel:
-            case "BL":
-                self.wheel = "frame_back_left2motor_back_left"
-                pass
-            case "BR":
-                self.wheel = "frame_back_right2motor_back_right"
-                pass
-            case "TL":
-                self.wheel = "frame_front_left2motor_front_left"
-                pass
-            case "TR":
-                self.wheel = "frame_front_right2motor_front_right"
-                pass
-            case _:
-                self.wheel = None
-                pass
         self.real_time = real_time
-        self.physicsClient = p.connect(p.GUI)
-        self.stepCount = 0
-        self.currentObject = None
+        self.simulationTime = 0.0
         self.forwardSpeed = 0.7
         self.angularSpeed = 0.0
         self.historical = []
-        self.wheel_malfunction_timeout = None
+        
+        # Engine parameters
+        self.physicsClient = p.connect(p.GUI)
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         p.setGravity(0, 0, -9.81)
-        # p.setRealTimeSimulation(1) # Enable real-time simulation
         p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15,
                                         cameraTargetPosition=[-1.3, -0.5, 0.2])
 
@@ -88,90 +93,116 @@ class CausesSimulator:
         time.sleep(0.5)
 
 
-
-
     # ================ LOGGING  ===============
     # ==================================================
 
     def init_imu_record(self):
+        """ Initialize the real IMU history dictionary for recording sensor data during the mission. """
         self.imu_history = {}
         self.imu_history[TIMESTAMP] = []
         self.imu_history[ACCELEROMETER] = []
         self.imu_history[GYROSCOPE] = []
 
-    def record_imu(self, current_time):       
+    def record_imu(self):
+        """" Record the current real IMU measurements and store it at the IMU history dictionary. """       
         acc, ang = self.imu.get_measurement()
-        self.imu_history[TIMESTAMP].append(current_time)
+        self.imu_history[TIMESTAMP].append(self.simulationTime)
         self.imu_history[ACCELEROMETER].append(acc.tolist())
         self.imu_history[GYROSCOPE].append(ang.tolist())
         
+    def save_imu(self):
+        """ Save the current iteration IMU history in the historical list. """
+        self.historical.append(self.imu_history)
+        
     def send_history_to_parent(self):
+        """ Send the recorded IMU history to the parent process through the pipe. """
         with os.fdopen(self.pipe, "w") as channel:
             json.dump(self.historical, channel)
 
 
-    def simulate(self) -> str | None:
+
+
+    # ================ SIMULATION  ===============
+    # ==================================================
+
+    def simulate(self):
+        """ Simulates a step of the current iteration. """
         stepCount = 0
-        simulation_time = 0
+        self.simulationTime = 0.0
         # Simulate
-        while (simulation_time) < float(self.simulation_length):
+        while (self.simulationTime) < float(self.simulation_length):
             
             it = time.time()
-            self.do_acceleration_robot(simulation_time)
+            self.apply_compute_actions()
             p.stepSimulation()
-            self.record_imu(simulation_time)
+            self.record_imu()
             stepCount += 1
-            simulation_time = stepCount * self.dt
+            self.simulationTime = stepCount * self.dt
             et = time.time()
             
-            if self.real_time:
+            if self.realTime:
                 time.sleep(max(0, self.dt - (et - it))) # Sleep to maintain real-time simulation
-        return None
+        return
     
-    def doSimulation(self) -> str | None:
-        self.intialState = p.saveState()
-        for i in range(self.num_of_repetitions):        
-            self.produceCause()
+    def doSimulations(self):
+        """ Simulates as many iterations as the number of repetitions specified,collecting all
+        IMU recordings from each iteration and sending them to the parent process at the end. """
+        self.intialState = p.saveState() # Save clean state
+        for i in range(self.num_of_repetitions):
+            self.apply_actions()
             self.init_imu_record()
-            res = self.simulate()
-            if res is not None:
-                return res
-            if self.currentObject: p.removeBody(self.currentObject)
-            p.restoreState(stateId=self.intialState)
-            self.historical.append(self.imu_history)
-        self.send_history_to_parent()
-
-
-        return None
+            self.simulate()
+            self.save_imu()
+            self.clean_bodies()
+            p.restoreState(stateId=self.intialState) # Restore the clean state
+        return
     
-    def calculateRandomObjectPosition(self):
-        coordinate = []
-        
-        # Generate random number with uniform
-        dx, dy = np.random.uniform(-float(self.cause_range), float(self.cause_range), 2)
-        
-        # Calculate new position
-        coordinate.append(self.coordinates[0][0] + dx)
-        coordinate.append(self.coordinates[0][1] + dy)
-        coordinate.append(self.coordinates[0][2])
-        
-        return coordinate
+    def clean_bodies(self):
+        """ Remove all bodies from the simulation except the plane and the robot. """
+        for body_id in self.loaded_bodies.values():
+            p.removeBody(body_id)
+        self.loaded_bodies = {}
+
+    # ================= ENGINE DATA ====================
+    # ==================================================
+
+    def initialize_wheels_movement_map(self):
+        self.wheel_movement = {}
+        self.wheel_movement["frame_front_right2motor_front_right"] = True
+        self.wheel_movement["frame_back_right2motor_back_right"] = True
+        self.wheel_movement["frame_front_left2motor_front_left"] = True
+        self.wheel_movement["frame_back_left2motor_back_left"] = True
+    
+    def initialze_wheel_simplified_names_map(self):
+        self.wheel_names = {}
+        self.wheel_names["FL"] = "frame_front_left2motor_front_left"
+        self.wheel_names["FR"] = "frame_front_right2motor_front_right"
+        self.wheel_names["BL"] = "frame_back_left2motor_back_left"
+        self.wheel_names["BR"] = "frame_back_right2motor_back_right"
         
 
-    def produceCause(self):
-        match self.cause_type:
-            case "bump":
-                position:list = self.calculateRandomObjectPosition()
-                #print(f"Generating bump at {position}")
-                self.currentObject = p.loadURDF("../../etc/URDFs/bump/bump_100x5cm.urdf", position)
-                
-            case "wheel":
-                self.wheel_malfunction_timeout = rnd.random() * self.simulation_length 
-                pass
-                
-            case _:
-                print(f"Unknown cause type {self.cause_type}")
-                pass
+    def initialize_bodies_map(self):
+        self.loaded_bodies = {}
+    
+
+ 
+    # ================= ENGINE "API" ===================
+    # ==================================================
+
+    def get_pybullet_instance(self):
+        return p
+    
+    def instantiate_body(self, body_file:str, body_position:tuple, identifier:str=str(uuid4())):
+        self.loaded_bodies[identifier] = p.loadURDF(body_file, basePosition=body_position)
+
+    def set_robot_wheel_moving(self, simplified_wheel_name:str, moving:bool):
+        self.wheel_movement[self.wheel_names[simplified_wheel_name]] = moving
+    
+    def set_gravity(self, gravity:float=-9.81):
+        p.setGravity(0, 0, gravity)
+        
+    def get_simulation_time(self):
+        return self.simulationTime
 
     # =============== ROBOT KINEMATICS  ================
     # ==================================================
@@ -294,7 +325,7 @@ def main():
     print("Starting causes simulator...")
     parser = argparse.ArgumentParser(
         prog = "Causes simulator",
-        description = "Initis a simulation of a cause given its data.",
+        description = "Simulates multiple iterations of a scenary and a cause given its data.",
         epilog = "RoboLab - 2026"
     )
     
@@ -302,24 +333,25 @@ def main():
     parser.add_argument('-l', '--length', required=True, help="The length of the simulation (float)")
     parser.add_argument('-i', '--initial_position', required=True, help="The initial position of the robot (string quaternion in list format)")
     parser.add_argument('-f', '--final_position', required=True, help="The final position of the robot (string quaternion in list format)")
-    parser.add_argument('-t', '--cause_type', required=True, help="The type of the cause (string)")
-    parser.add_argument('-c', '--coordinates', required=True, help="The coordinates of the cause (string quaternion in list format)")
-    parser.add_argument('-r', '--cause_range', required=True, help="The range of the cause (float)")
-    parser.add_argument('-w', '--wheel', required=False, help="The wheel of the robot that is affected by the cause (string)")
-    parser.add_argument('-rt', '--real_time', required=False, action='store_true')
-    parser.add_argument('-p',  '--pipe', required=True, help="Name of the pipe with which inner simulator will comunicate with the cause simulator instance")
+    parser.add_argument('-p', '--pipe', required=True, help="Name of the pipe with which inner simulator will comunicate with the cause simulator instance")
+    parser.add_argument('-rt', '--real_time', required=False, help="Run simulations at real-time speed. Not recommended outside of debugging.", action='store_true')
     args = parser.parse_args()
     
     print("Arguments parsed successfully.")
-    simulator = CausesSimulator(args.num_of_repetitions, args.length, args.initial_position, args.final_position, args.cause_type, args.coordinates, args.cause_range, args.pipe, args.wheel, args.real_time)
-    print("Simulator initialized.")
-    res = simulator.doSimulation()
-    print("Simulation done.")
-    if res is not None:
-        print("Cause location:", res)
-        #devolver quat
-    else:
-        print("No cause detected.")
+    simulator = CausesSimulator(args.num_of_repetitions, args.length, args.initial_position, args.final_position, args.pipe, args.real_time)
+    
+    print("Starting simulations...")
+    simulator.doSimulations()    
+    
+    print(f"""Simulations done.
+    Historical data:
+        Number of historicals: {len(simulator.historical)}
+        Combined number of recordings: {sum(len(h[TIMESTAMP]) for h in simulator.historical)}""")
+    
+    print("Sending historicals to parent process...")
+    simulator.send_history_to_parent()
+    
+    print("Sent. Exiting...")
 
 
 if __name__ == "__main__":

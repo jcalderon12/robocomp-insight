@@ -281,13 +281,13 @@ class SpecificWorker(GenericWorker):
                 for cause in self.causes_data[CAUSES]:
                     rpipe, wpipe = os.pipe()
                     pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-n", str(self.causes_data[NUMREP]), "-l", str(self.causes_data[LENGTH]), "-i", str(self.causes_data[INIT_POSE]), "-f", str(self.causes_data[CURR_POSE]), "-t", cause[CAUSE_TYPE], "-c", str(cause[COORDINATES]), "-r", str(cause[CAUSE_RANGE]), "-w", cause[WHEEL], "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
-                    # Close wpipe descriptor
+                    # Close wpipe descriptor to prevent deadlocks
                     os.close(wpipe)
                 
                 # Wait for subprocesses and collect pipe data
                 print("Waiting for subprocesses...")
                 while (True):
-                    # pid[0] is the process ID itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
+                    # pid[0] is the Popen class itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
                     for pid in pids:
                         if pid[0] not in historicals:
                             pipe = os.fdopen(pid[1])
@@ -298,7 +298,7 @@ class SpecificWorker(GenericWorker):
                             
                     if len(historicals) == len(pids): break
 
-                # Transform pipe data
+                # Transform pipe data from JSON string to dictionary
                 for pid in pids:
                     historicals[pid[0]] = json.loads(historicals[pid[0]])  
     
@@ -311,12 +311,23 @@ class SpecificWorker(GenericWorker):
 
                 # Check for any possible matches between causes and real IMU's
                 threads = []
+                possible_causes = []
                 with ProcessPoolExecutor(max_workers=2) as executor:
+                    # Launch proccesses
                     for h in historicals:
                         threads.append(executor.submit(self.find_matching_imu_recordings, self.imu_history, historicals[h]))
-
+                    # Wait for processes and check results
+                    i = 0
                     for thread in threads:
-                        if thread.result() 
+                        res = thread.result()
+                        if res:
+                            print(f"Match found in simulation {res} for cause {self.causes_data[CAUSES][i][CAUSE_TYPE]}!")
+                            # We store [simulation ID, cause type] in possible_causes
+                            possible_causes.append([res, self.causes_data[CAUSES][res][CAUSE_TYPE]])
+                        else:
+                            print(f"No match found for cause {self.causes_data[CAUSES][i][CAUSE_TYPE]}.")
+                        i += 1
+                            
                 self.state = "IDLE"
                 
         return True
@@ -350,11 +361,18 @@ class SpecificWorker(GenericWorker):
         return time_step
 
     def find_matching_imu_recordings(self, rimu, simu):
+        """
+        Find if there is any match between the real IMU recordings and the simulated ones.
+        If there is a match, it means that the cause being simulated could be the reason behind the problem detected in the real robot.
+        :param rimu: Dictionary with frames of the real IMU recordings (timestamp, accelerometer and gyroscope)
+        :param simu: List of dictioraries, each one with frames of the simulated IMU recordings (timestamp, accelerometer, gyroscope)
+        :return: int, the ID of the simulation that matched the real IMU. If no match, return None.
+        """
         # TODO: este código no permite un margen de error en las medidas
-        is_matching = True
 
         # for each simu simulation...
         for s in range(len(simu)):
+            is_matching = True
             # for each frame of the simulation...
             for i in range(len(simu[s])):
                 # check against each rimu frame...
@@ -365,10 +383,14 @@ class SpecificWorker(GenericWorker):
                         if not simu[s][ACCELEROMETER][i] == rimu[ACCELEROMETER][j]: is_matching = False
                         # Does it match gyro?
                         if not simu[s][GYROSCOPE][i] == rimu[GYROSCOPE][j]: is_matching = False
-                
-                # if not matching timestamp, skip...
+                    if not is_matching: break
+                    
+                if not is_matching: break
+            
+            if is_matching: # No mismatch found in any of the frames of this simulation, so we have a match!
+                return s
 
-        return is_matching
+        return None # No match found in any of the simulations
     
 
     # =============== PYBULLET MODELS INFO  ================

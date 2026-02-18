@@ -1,0 +1,6 @@
+{
+    "name":"bump",
+    "bump_file": "../../etc/URDFs/bump/bump_100x5cm.urdf",
+    "x_range": 0.5,
+    "y_range": 0.5
+}

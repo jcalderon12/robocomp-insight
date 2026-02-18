@@ -1,0 +1,31 @@
+{
+    "name": "bump",
+    "description": "A bump in the way.",
+    "instance_generators": 
+    [
+        {
+        "type": "random_range_coordinates"
+        },
+        {
+        "type": "simple_random"   
+        },
+        {
+        "type": "instance_none"
+        }
+    ],
+    "apply_actions": [
+        {
+            "type": "instantiate_body",
+            "body_name": "bump",
+            "body_position_input": "random_range_coordinates"
+        }
+    ],
+    "apply_compute_actions": [
+        {
+            "type": "stop_robot_wheel",
+            "label": "fr",
+            "wheel": "FR",
+            "time_input": "simple_random"
+        }
+    ]
+}
