@@ -32,7 +32,13 @@
 //#define HIBERNATION_ENABLED
 
 #include <genericworker.h>
-#include "DSRTypeTrait.tpp"
+#include "ui_historic_debugger.h"
+#include "DSRDecoder.h"
+#include "DSRTypeTrait.h"
+
+#include "test_decoder.h"
+
+
 
 
 
@@ -85,6 +91,7 @@ public slots:
      */
 	int startup_check();
 
+	// G Changes SLOTS
 	void modify_node_slot(std::uint64_t, const std::string &type);
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names);
 	void modify_edge_slot(std::uint64_t from, std::uint64_t to,  const std::string &type);
@@ -92,44 +99,40 @@ public slots:
 	void del_node_slot(std::uint64_t from);     
 	void del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag);
 
+	// UI SLOTS
+	void local_changes_management(int value);
+	void global_changes_management(int value);
+
+
 private:
 
 	/**
      * \brief Flag indicating whether startup checks are enabled.
      */
 	bool startup_check_flag;
-	bool string_check_flag = false;
+	bool string_check_flag = true;
 
-	
-
-	using AttributeType = std::variant<std::string, int32_t, float,
-            		std::vector<float>, bool, std::vector<uint8_t>,
-					uint32_t, uint64_t, double, std::vector<uint64_t>,
-					std::array<float, 2>, std::array<float, 3>,
-					std::array<float, 4>, std::array<float, 6>>;
+	// using AttributeType = std::variant<std::string, int32_t, float,
+    //         		std::vector<float>, bool, std::vector<uint8_t>,
+	// 				uint32_t, uint64_t, double, std::vector<uint64_t>,
+	// 				std::array<float, 2>, std::array<float, 3>,
+	// 				std::array<float, 4>, std::array<float, 6>>;
     
-	struct SpecialChars {
-		const char SLOT = '#';
-		const char ATT_NAME = '$';
-		const char ATT_TYPE = ':';
-		const char ATT_VAL = '%';
-		const char K_DIV = '@';
+	// Historic window, graph and viewer
+	QMainWindow *historic_window;
+	std::shared_ptr<DSR::DSRGraph> historic_graph;
+	std::unique_ptr<DSR::DSRViewer> historic_viewer;
 
-		const std::string K = "K";
-		const std::string MN = "MN";
-		const std::string MNA = "MNA";
-		const std::string ME = "ME";
-		const std::string MEA = "MEA";
-		const std::string DN = "DN";
-		const std::string DE = "DE";
-	} SChars;
-	
+	// Historic debugger widget
+	Ui::historic_debugger historic_debugger_ui;
+	QWidget historic_debugger_widget;
+	int historic_value;
+
 	std::map<int64_t, std::string> changes_map;
 	std::chrono::time_point<std::chrono::system_clock> time_check;
 	std::chrono::milliseconds keyframe_period;
 
-	std::optional<std::string> generate_keyframe();
-
+	void generate_keyframe();
 	std::optional<std::string> assemble_string(const auto &timestamp, const std::string &slot, 
 				const std::variant<std::uint64_t, std::tuple<uint64_t, uint64_t>> &id_variant,		
 				const std::string &type, const std::vector<std::string> &att_names);	
