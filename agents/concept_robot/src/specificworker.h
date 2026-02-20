@@ -121,6 +121,14 @@ public slots:
 	void follow_target(float max_forward_speed_factor = 0.6f, float max_angular_speed_factor = 0.6f, float desired_distance = 0.5f);
 
 	/**
+	 * \brief This method calculates the robot position in the actual room and update the DSR graph with this information. 
+	 * It uses the auto_localization method to get the robot position and orientation, and then updates the corresponding attributes in the DSR graph. 
+	 * If the robot node does not exist in the DSR graph, it creates it.
+	 * \return The robot pose in the format {x, y, z, qx, qy, qz, qw}.
+	 */
+	std::vector<float> auto_localization();
+
+	/**
 	 * \brief Method to check if there is an active affordance in the DSR graph. 
 	 * An active affordance is an affordance node that comes from the person node target and has the attribute aff_interacting_att to true.
 	 * \return Return true if there is an active affordance. false otherwise.
@@ -149,8 +157,11 @@ private:
 	std::vector<float> last_angular_velocity_measurement;
 
 	std::vector<float> last_velocities_readed;
+	std::vector<float> last_robot_pose;
 
 	bool print_extra_info = false;
+	bool simulated = true;
+	std::string robot_DEF = "shadow";
 
 	std::unique_ptr<DSR::RT_API> rt;
 

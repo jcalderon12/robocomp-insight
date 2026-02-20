@@ -24,8 +24,14 @@ module RoboCompWebots2Robocomp
 		float z;
 		float w;
 	};
+	struct ObjectPose
+	{
+		Vector3 position;
+		Quaternion orientation;
+	};
 	interface Webots2Robocomp
 	{
+		ObjectPose getObjectPose (string DEF);
 		void resetWebots ();
 		void setDoorAngle (float angle);
 		void setPathToHuman (int humanId, RoboCompGridder::TPath path);

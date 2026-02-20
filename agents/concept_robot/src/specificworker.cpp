@@ -102,6 +102,8 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
+	auto_localization();
+
     if (queck_affordance_active())
 	{
 		follow_target(0.3f, 0.5f, 1.2f);
@@ -151,7 +153,7 @@ int SpecificWorker::startup_check()
 	return 0;
 }
 
-#pragma region ROBOT_CONTROL
+#pragma region ROBOT_METHODS
 
 void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance)
 {
@@ -233,9 +235,78 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     G->update_node(robot_node);
 }
 
+std::vector<float> SpecificWorker::auto_localization()
+{
+	std::vector<float> robot_pose = {0,0,0,0,0,0,1}; // {x, y, z, qx, qy, qz, qw}
+	if (simulated){
+		auto webots_pose = this->webots2robocomp_proxy->getObjectPose(robot_DEF);
+		robot_pose[0] = webots_pose.position.x / 1000.f;
+		robot_pose[1] = webots_pose.position.y / 1000.f;
+		robot_pose[2] = webots_pose.position.z / 1000.f;
+		Eigen::Quaternionf quat(webots_pose.orientation.w, webots_pose.orientation.x, webots_pose.orientation.y, webots_pose.orientation.z);
+		quat.normalize();
+		robot_pose[3] = quat.x();
+		robot_pose[4] = quat.y();
+		robot_pose[5] = quat.z();
+		robot_pose[6] = quat.w();
+	}
+	else{
+		//Real robot localization code here
+	}
 
+	if (!has_significant_change(robot_pose, last_robot_pose))
+	{
+		last_robot_pose = robot_pose;
+		return robot_pose;
+	}
 
-#pragma endregion ROBOT_CONTROL
+	auto robot_node_opt = G->get_node("robot");
+    auto room_node_opt = G->get_node("room");
+
+	DSR::Node room_node, robot_node;
+
+	if (!robot_node_opt.has_value())
+	{
+		std::cerr << "Robot node not found in DSR . Creating new robot node." << std::endl;
+		robot_node = DSR::Node::create<robot_node_type>("robot");
+		G->insert_node(robot_node);
+	}
+	else 
+		robot_node = robot_node_opt.value();
+
+	if (!room_node_opt.has_value())
+	{
+		std::cerr << "Room node not found in DSR. Creating new room node." << std::endl;
+		room_node = DSR::Node::create<room_node_type>("room");
+		G->insert_node(room_node);
+	}
+	else
+		room_node = room_node_opt.value();
+
+	auto rt_edge_opt = rt->get_edge_RT(room_node, robot_node.id());
+	if (!rt_edge_opt.has_value())
+	{
+		std::cerr << "RT edge between room and robot not found. Creating new RT edge." << std::endl;
+		DSR::Edge new_rt_edge;
+		new_rt_edge.from(room_node.id());
+		new_rt_edge.to(robot_node.id());
+		new_rt_edge.type("RT");
+		G->add_or_modify_attrib_local<rt_translation_att>(new_rt_edge, (std::vector<float>){robot_pose[0], robot_pose[1], robot_pose[2]});
+		G->add_or_modify_attrib_local<rt_quaternion_att>(new_rt_edge, (std::vector<float>){robot_pose[3], robot_pose[4], robot_pose[5], robot_pose[6]});
+		G->insert_or_assign_edge(new_rt_edge);
+	}
+	else
+	{
+		DSR::Edge rt_edge = rt_edge_opt.value();
+		G->add_or_modify_attrib_local<rt_translation_att>(rt_edge, (std::vector<float>){robot_pose[0], robot_pose[1], robot_pose[2]});
+		G->add_or_modify_attrib_local<rt_quaternion_att>(rt_edge, (std::vector<float>){robot_pose[3], robot_pose[4], robot_pose[5], robot_pose[6]});
+		G->insert_or_assign_edge(rt_edge);
+	}
+
+	return robot_pose;
+}
+
+#pragma endregion ROBOT_METHODS
 
 #pragma region DSR
 
@@ -449,6 +520,7 @@ void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimatio
 
 /**************************************/
 // From the RoboCompWebots2Robocomp you can call this methods:
+// RoboCompWebots2Robocomp::ObjectPose this->webots2robocomp_proxy->getObjectPose(string DEF)
 // RoboCompWebots2Robocomp::void this->webots2robocomp_proxy->resetWebots()
 // RoboCompWebots2Robocomp::void this->webots2robocomp_proxy->setDoorAngle(float angle)
 // RoboCompWebots2Robocomp::void this->webots2robocomp_proxy->setPathToHuman(int humanId, RoboCompGridder::TPath path)
@@ -457,4 +529,5 @@ void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimatio
 // From the RoboCompWebots2Robocomp you can use this types:
 // RoboCompWebots2Robocomp::Vector3
 // RoboCompWebots2Robocomp::Quaternion
+// RoboCompWebots2Robocomp::ObjectPose
 
