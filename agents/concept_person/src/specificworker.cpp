@@ -80,14 +80,24 @@ void SpecificWorker::initialize()
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
 
+	last_relative_pose = get_person_relative_pose();
 }
 
 
 
 void SpecificWorker::compute()
 {
-	auto distance_to_person = get_distance_to_person();
-	update_distance_to_person(distance_to_person);
+	auto relative_pose = get_person_relative_pose();
+
+
+	if (has_significant_change(relative_pose, last_relative_pose)){
+			for (int i = 0; i < 7; ++i) {
+				std::cout << "Relative pose[" << i << "]: " << relative_pose[i] << std::endl;
+			}
+			std::cout << "-----------------------------" << std::endl;
+		update_relative_pose_to_person(relative_pose);
+		last_relative_pose = relative_pose;
+	}
 
 	switch (agentState){
 		case States::IDLE:
@@ -115,8 +125,8 @@ void SpecificWorker::compute()
 
 		case States::FOLLOWME:
 		{
-			auto state = follow_person(distance_to_person);
-			if (state == false){
+			bool affordance_state = check_affordance_active();
+			if (affordance_state == false){
 				std::cout << "Mission finished" << std::endl;
 				agentState = States::SUCCESS;
 			}
@@ -165,17 +175,54 @@ int SpecificWorker::startup_check()
 
 /******* Geometric calculations ********/
 
-std::vector<float> SpecificWorker::get_distance_to_person()
+bool SpecificWorker::has_significant_change(const std::vector<float>& a,
+                                            const std::vector<float>& b,
+                                            double atol)
 {
-	RoboCompWebots2Robocomp::ObjectPose person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
-	RoboCompWebots2Robocomp::ObjectPose robot_pose = this->webots2robocomp_proxy->getObjectPose(robot_def);
+    if (a.size() != b.size())
+        return true;
 
-	return {
-		(person_pose.position.x-robot_pose.position.x)/1000,
-		(person_pose.position.y-robot_pose.position.y)/1000,
-		(person_pose.position.z-robot_pose.position.z)/1000
-	};
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::abs(a[i] - b[i]) > atol) {
+            return true; 
+        }
+    }
+    return false;
 }
+
+std::vector<float> SpecificWorker::get_person_relative_pose()
+{
+    auto person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
+    auto robot_pose  = this->webots2robocomp_proxy->getObjectPose(robot_def);
+
+    Eigen::Vector3f p_pos(person_pose.position.x / 1000.f, 
+                          person_pose.position.y / 1000.f, 
+                          person_pose.position.z / 1000.f);
+                          
+    Eigen::Vector3f r_pos(robot_pose.position.x / 1000.f, 
+                          robot_pose.position.y / 1000.f, 
+                          robot_pose.position.z / 1000.f);
+
+    Eigen::Quaternionf p_quat(person_pose.orientation.w, person_pose.orientation.x, 
+                              person_pose.orientation.y, person_pose.orientation.z);
+                              
+    Eigen::Quaternionf r_quat(robot_pose.orientation.w, robot_pose.orientation.x, 
+                              robot_pose.orientation.y, robot_pose.orientation.z);
+
+	p_quat.normalize();
+	r_quat.normalize();
+
+
+    Eigen::Vector3f relative_pos = r_quat.inverse() * (p_pos - r_pos);
+
+    Eigen::Quaternionf relative_quat = r_quat.inverse() * p_quat;
+
+    return {
+        relative_pos.x(), relative_pos.y(), relative_pos.z(),
+        relative_quat.x(), relative_quat.y(), relative_quat.z(), relative_quat.w()
+    };
+}
+
 
 float SpecificWorker::calculate_linear_speed_from_distance(std::vector<float> distance)
 {
@@ -296,24 +343,64 @@ bool SpecificWorker::check_affordance_accepted()
 	}
 }
 
-void SpecificWorker::update_distance_to_person(std::vector<float> distance)
+void SpecificWorker::update_relative_pose_to_person(std::vector<float> relative_pose)
 {
 	auto optional_robot_node = G->get_node("robot");
-	if (!optional_robot_node.has_value()){
-		std::cout << "Robot node not found in DSR." << std::endl;
-		return;
-	}
+    auto optional_person_node = G->get_node("person");
 
-	auto optional_person_node = G->get_node("person");
-	if (!optional_person_node.has_value()){
-		std::cout << "Person node not found in DSR." << std::endl;
-		return;
-	}
+    if (!optional_robot_node || !optional_person_node)
+    {
+        std::cout << "Robot or Person node not found in DSR." << std::endl;
+        return;
+    }
 
 	auto robot_node = optional_robot_node.value();
 	auto person_node = optional_person_node.value();
 
-	rt->insert_or_assign_edge_RT(robot_node,person_node.id(),distance, {0.f, 0.f, 0.f});
+	auto rt_edge_opt = rt->get_edge_RT(robot_node, person_node.id());
+	if (!rt_edge_opt.has_value())
+	{
+		DSR::Edge new_rt_edge;
+		new_rt_edge.from(robot_node.id());
+		new_rt_edge.to(person_node.id());
+		new_rt_edge.type("RT");
+		G->add_or_modify_attrib_local<rt_translation_att>(new_rt_edge, (std::vector<float>){relative_pose[0], relative_pose[1], relative_pose[2]});
+		G->add_or_modify_attrib_local<rt_quaternion_att>(new_rt_edge, (std::vector<float>){relative_pose[3], relative_pose[4], relative_pose[5], relative_pose[6]});
+		G->insert_or_assign_edge(new_rt_edge);
+	}
+	else
+	{
+		DSR::Edge rt_edge = rt_edge_opt.value();
+		G->add_or_modify_attrib_local<rt_translation_att>(rt_edge, (std::vector<float>){relative_pose[0], relative_pose[1], relative_pose[2]});
+		G->add_or_modify_attrib_local<rt_quaternion_att>(rt_edge, (std::vector<float>){relative_pose[3], relative_pose[4], relative_pose[5], relative_pose[6]});
+		G->insert_or_assign_edge(rt_edge);
+	}
+}
+
+
+
+bool SpecificWorker::check_affordance_active()
+{
+	auto target_edges = G->get_edges_by_type("TARGET");
+	auto has_intention_edges = G->get_edges_by_type("has_intention");
+	for (const auto& target_edge : target_edges)
+	{
+		for (const auto& intention_edge : has_intention_edges)
+		{
+			if (intention_edge.from() == target_edge.to())
+			{
+				auto affordance_node_opt = G->get_node(intention_edge.to());
+				if (affordance_node_opt.has_value())
+				{
+					DSR::Node affordance_node = affordance_node_opt.value();
+					bool aff_interacting = G->get_attrib_by_name<aff_interacting_att>(affordance_node.id()).value();
+					
+					return aff_interacting;
+				}
+			}
+		}
+	}
+	return false;
 }
 
 bool SpecificWorker::follow_person(std::vector<float> distance)
@@ -348,8 +435,6 @@ bool SpecificWorker::follow_person(std::vector<float> distance)
 		if (print_extra_info)
 			std::cout << "Affordance interaction stopped by user." << std::endl;
 		G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, (float)0.0);
-		G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, (float)0.0);
-		G->update_node(robot_node);
 		G->update_node(robot_node);
 		return false;
 	}

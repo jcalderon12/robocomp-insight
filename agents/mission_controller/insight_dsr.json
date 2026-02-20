@@ -28,12 +28,13 @@
                         "dst": "200",
                         "label": "RT",
                         "linkAttribute": {
-                            "rt_rotation_euler_xyz": {
+                            "rt_quaternion": {
                                 "type": 3,
                                 "value": [
                                     0,
                                     0,
-                                    0
+                                    0,
+                                    1
                                 ]
                             },
                             "rt_translation": {
@@ -88,12 +89,13 @@
                         "dst": "300",
                         "label": "RT",
                         "linkAttribute": {
-                            "rt_rotation_euler_xyz": {
+                            "rt_quaternion": {
                                 "type": 3,
                                 "value": [
                                     0,
                                     0,
-                                    0
+                                    0,
+                                    1
                                 ]
                             },
                             "rt_translation": {
@@ -111,12 +113,13 @@
                         "dst": "203",
                         "label": "RT",
                         "linkAttribute": {
-                            "rt_rotation_euler_xyz": {
+                            "rt_quaternion": {
                                 "type": 3,
                                 "value": [
                                     0,
                                     0,
-                                    0
+                                    0,
+                                    1
                                 ]
                             },
                             "rt_translation": {

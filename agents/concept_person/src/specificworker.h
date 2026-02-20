@@ -27,14 +27,16 @@
 #ifndef SPECIFICWORKER_H
 #define SPECIFICWORKER_H
 
-#define WEBOTS_MAX_LINEAR_SPEED 1.5 //meters per second
-#define WEBOTS_MAX_ANGULAR_SPEED 4.03 //radians per second 
+// Robot maximum speeds
+static constexpr float WEBOTS_MAX_LINEAR_SPEED  = 1.5f; //meters per second
+static constexpr float WEBOTS_MAX_ANGULAR_SPEED = 4.03f; //radians per second 
 
 
 // If you want to reduce the period automatically due to lack of use, you must uncomment the following line
 //#define HIBERNATION_ENABLED
 
 #include <genericworker.h>
+#include <Eigen/Geometry>
 
 enum class States
 {
@@ -140,16 +142,29 @@ public slots:
 	bool follow_person(std::vector<float> distance);
 
 	/**
-	 * \brief Calculate the cartesian distance between the robot and the person
-	 * \return Return a vector with the cartesian distance
+	 * \brief Method to check if there is an active affordance in the DSR graph. 
+	 * An active affordance is an affordance node that comes from the person node target and has the attribute aff_interacting_att to true.
+	 * \return Return true if there is an active affordance. false otherwise.
 	 */
-	std::vector<float> get_distance_to_person();
+	bool check_affordance_active();
 
 	/**
-	 * \brief Update the distance between the robot and the person in the DSR
-	 * \param distance The distance between the robot and the person
+	 * \brief Calculate the relative pose between the robot and the person
+	 * \return Return a vector with the relative pose (x, y, z, qx, qy, qz, qw)
 	 */
-	void update_distance_to_person(std::vector<float> distance);
+	std::vector<float> get_person_relative_pose();
+
+	/**
+	 * \brief Compare whether two vectors are too similar to avoid publishing the same data twice.
+	 * \return Return true if the vector are not to similar
+	 */
+	bool has_significant_change(const std::vector<float>& a,const std::vector<float>& b,double atol=0.001);
+
+	/**
+	 * \brief Update the relative pose between the robot and the person in the DSR
+	 * \param relative_pose The relative pose between the robot and the person
+	 */
+	void update_relative_pose_to_person(std::vector<float> relative_pose);
 
 	/**
 	 * \brief Calculate the speed that the robot must have to reach the person
@@ -169,6 +184,8 @@ private:
 	 * \brief Flag to indicate if want many info
 	 */
 	bool print_extra_info = false;
+
+	std::vector<float> last_relative_pose = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // {x, y, z, qx, qy, qz, qw}
 
 signals:
 	//void customSignal();

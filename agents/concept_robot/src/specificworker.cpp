@@ -93,20 +93,27 @@ void SpecificWorker::initialize()
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
 
-	last_velocities_readed = getVelocitiesFromDSR();
+	rt = G->get_rt_api();
 
+	last_velocities_readed = getVelocitiesFromDSR();
 }
 
 
 
 void SpecificWorker::compute()
 {
-    
+    if (queck_affordance_active())
+	{
+		follow_target(0.3f, 0.5f, 1.2f);
+	}
+	else{
+		stop_robot();
+	}
+
 	std::vector<float> actual_velocities = getVelocitiesFromDSR();
 
-	if (has_significant_change(actual_velocities, last_velocities_readed)){
-		this->omnirobot_proxy->setSpeedBase(0.0, actual_velocities[0], actual_velocities[1]);
-	}
+	if (has_significant_change(actual_velocities, last_velocities_readed))
+		this->omnirobot_proxy->setSpeedBase(0.0, actual_velocities[0], -actual_velocities[1]);
 
 	last_velocities_readed = actual_velocities;	
 	
@@ -144,6 +151,92 @@ int SpecificWorker::startup_check()
 	return 0;
 }
 
+#pragma region ROBOT_CONTROL
+
+void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance)
+{
+    auto robot_node_opt = G->get_node("robot");
+    if (!robot_node_opt.has_value())
+    {
+        std::cerr << "Robot node not found in DSR." << std::endl;
+        return;
+    }
+    DSR::Node robot_node = robot_node_opt.value();
+
+    auto target_edges = G->get_edges_by_type("TARGET");
+    if (target_edges.empty())
+    {
+        std::cerr << "No target edges found in DSR." << std::endl;
+        return;
+    }
+    DSR::Edge target_edge = target_edges[0];
+
+    auto rt_edge_opt = rt->get_edge_RT(robot_node, target_edge.to());
+    if (!rt_edge_opt.has_value())
+    {
+        std::cerr << "RT edge not found." << std::endl;
+        return;
+    }
+    DSR::Edge rt_edge = rt_edge_opt.value();
+
+    auto rt_translation_opt = G->get_attrib_by_name<rt_translation_att>(rt_edge);
+    if (!rt_translation_opt.has_value())
+    {
+        std::cerr << "RT translation missing." << std::endl;
+        return;
+    }
+
+    std::vector<float> t = rt_translation_opt.value(); 
+
+    float x = t[0];   
+    float y = t[1];   
+
+    float distance_to_target = std::sqrt(x*x + y*y);
+    float angle_to_target = std::atan2(y, x);
+
+	float distance_error = distance_to_target - desired_distance;
+
+    if (distance_error < 0.0f)
+        distance_error = 0.0f;
+
+    float Kp_lin = 1.0f;
+    float Kp_ang = 2.0f;
+
+    float linear_velocity  = Kp_lin * distance_error;
+    float angular_velocity = Kp_ang * angle_to_target;
+
+    if (std::abs(angle_to_target) > 0.4f)
+        linear_velocity *= 0.3f;
+
+    linear_velocity = std::clamp(
+        linear_velocity,
+        0.0f,
+        WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor
+    );
+
+    angular_velocity = std::clamp(
+        angular_velocity,
+        -WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
+         WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
+    );
+
+	if (print_extra_info)
+		std::cout << "Distance: " << distance_to_target
+				<< "  Error: " << distance_error
+				<< "  Angle: " << angle_to_target
+				<< "  Linear Vel: " << linear_velocity
+				<< "  Angular Vel: " << angular_velocity << std::endl;
+
+
+    G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
+    G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
+    G->update_node(robot_node);
+}
+
+
+
+#pragma endregion ROBOT_CONTROL
+
 #pragma region DSR
 
 std::vector<float> SpecificWorker::getVelocitiesFromDSR()
@@ -163,7 +256,7 @@ std::vector<float> SpecificWorker::getVelocitiesFromDSR()
 		auto optional_rot_speed = G->get_attrib_by_name<robot_ref_rot_speed_att>(robot_node.id());
 		if (optional_rot_speed.has_value())
 		{
-			velocities[1] = optional_rot_speed.value() * 1000;
+			velocities[1] = optional_rot_speed.value();
 		}
 	}
 
@@ -240,7 +333,49 @@ void SpecificWorker::update_or_create_imu_node()
 		G->insert_or_assign_edge(imu_edge);
 	
 	}
+}
 
+bool SpecificWorker::queck_affordance_active()
+{
+	auto target_edges = G->get_edges_by_type("TARGET");
+	auto has_intention_edges = G->get_edges_by_type("has_intention");
+	for (const auto& target_edge : target_edges)
+	{
+		for (const auto& intention_edge : has_intention_edges)
+		{
+			if (intention_edge.from() == target_edge.to())
+			{
+				auto affordance_node_opt = G->get_node(intention_edge.to());
+				if (affordance_node_opt.has_value())
+				{
+					DSR::Node affordance_node = affordance_node_opt.value();
+					bool aff_interacting = G->get_attrib_by_name<aff_interacting_att>(affordance_node.id()).value();
+					
+					return aff_interacting;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+void SpecificWorker::stop_robot()
+{
+	auto robot_node_opt = G->get_node("robot");
+	if (!robot_node_opt.has_value())	{
+		std::cerr << "Robot node not found in DSR. Cannot stop robot without robot node." << std::endl;
+		return;
+	}
+
+	auto DSR_velocities = getVelocitiesFromDSR();
+	if (DSR_velocities[0] == 0.0 && DSR_velocities[1] == 0.0){
+		return; // Robot is already stopped in DSR, no need to update.
+	}
+
+	DSR::Node robot_node = robot_node_opt.value();
+	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, (float)0.0);
+	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, (float)0.0);
+	G->update_node(robot_node);
 }
 
 #pragma endregion DSR
