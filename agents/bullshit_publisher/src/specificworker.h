@@ -93,17 +93,19 @@ public slots:
 	void del_node_slot(std::uint64_t from){};     
 	void del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag){};
 	
-	
+	// Nodes
 	void add_node();
 	void delete_node();
+	void modify_node();
+	
+	// Edges
 	void add_edge();
 	void add_RT_edge();
 	void delete_edge();
 	void delete_RT_edge();
-	void modify_node();
 	void modify_edge();
 	void modify_edge_RT();
-
+	
 private:
 
 	/**

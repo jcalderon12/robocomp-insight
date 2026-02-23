@@ -5,7 +5,6 @@ Component episodic_memory
 
     };
     language Cpp11;
-    gui Qt(QMainWindow);
     options dsr;
 
 };

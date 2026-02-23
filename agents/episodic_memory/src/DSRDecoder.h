@@ -29,7 +29,7 @@ struct DSREvent {
 
 class DSRDecoder{
 public:
-    std::unique_ptr<DSREvent> decode(const std::string &raw_message) {
+    static std::unique_ptr<DSREvent> decode(const std::string &raw_message) {
         auto mod = std::make_unique<DSREvent>();
 
         // Take timestamp and modification type
@@ -47,7 +47,7 @@ public:
     }
 
 private:
-    std::tuple<uint64_t, std::string, std::string> split_header(const std::string &msg) {
+    static std::tuple<uint64_t, std::string, std::string> split_header(const std::string &msg) {
         // Find first character -> first hash
         size_t first_hash = msg.find(DSRSpecialChars::SLOT);
         // Find next character from previous -> second hash
@@ -63,7 +63,7 @@ private:
         return {ts, type, content};
     }
 
-    void parse_modification(const std::string &content, DSREvent &mod) {
+    static void parse_modification(const std::string &content, DSREvent &mod) {
         // Get other attributes
         parse_attributes(content, mod.attributes);
         
@@ -100,7 +100,7 @@ private:
         }
     }
     
-    void parse_keyframe(const std::string &content, DSREvent &mod){
+    static void parse_keyframe(const std::string &content, DSREvent &mod){
         // Split nodes and edges
         std::string div = std::string(1, DSRSpecialChars::SLOT) + std::string(1, DSRSpecialChars::K_DIV);
         size_t nodes_edges_div = content.find(div);
@@ -119,7 +119,7 @@ private:
         parse_edges_section(edges_section, mod.edges);
     }
 
-    void parse_nodes_section(const std::string &section, std::vector<DSR::Node> &nodes){
+    static void parse_nodes_section(const std::string &section, std::vector<DSR::Node> &nodes){
         size_t pos = 0;
         while (pos < section.size()){
             size_t next_hash = section.find(DSRSpecialChars::SLOT, pos);
@@ -156,7 +156,7 @@ private:
         }
     }
 
-    void parse_edges_section(const std::string &section, std::vector<DSR::Edge> &edges){
+    static void parse_edges_section(const std::string &section, std::vector<DSR::Edge> &edges){
         size_t pos = 0;
         while (pos < section.size()){
             size_t next_hash = section.find(DSRSpecialChars::SLOT, pos);
@@ -193,7 +193,7 @@ private:
         }
     }
 
-    void parse_attributes(const std::string &attrs_str, std::map<std::string, DSR::Attribute> &attrs){
+    static void parse_attributes(const std::string &attrs_str, std::map<std::string, DSR::Attribute> &attrs){
         size_t pos = 0;
 
         while (pos < attrs_str.size()){
@@ -238,7 +238,7 @@ private:
         }
     }
 
-    DSR::ValType parse_value_by_code(const std::string &value_str, const std::string &type_code){
+    static DSR::ValType parse_value_by_code(const std::string &value_str, const std::string &type_code){
         if (type_code == DSRTypeTrait<std::string>::code)
             return value_str;
         if (type_code == DSRTypeTrait<int32_t>::code)
@@ -273,7 +273,7 @@ private:
 
     // Parse vectors
     template<typename T>
-    std::vector<T> parse_vector(const std::string &str){
+    static std::vector<T> parse_vector(const std::string &str){
         std::vector<T> result;
         size_t start = str.find('[');
         size_t end = str.find(']');
@@ -301,7 +301,7 @@ private:
 
     // Parse arrays
     template<typename T, size_t N>
-    std::array<T, N> parse_array(const std::string &str){
+    static std::array<T, N> parse_array(const std::string &str){
         auto vec = parse_vector<T>(str);
         std::array<T, N> result{};
         std::copy_n(vec.begin(), std::min(vec.size(), N), result.begin());

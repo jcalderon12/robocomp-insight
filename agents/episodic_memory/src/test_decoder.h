@@ -1,8 +1,11 @@
+#ifndef TEST_DECODER_H
+#define TEST_DECODER_H
+
 #include "DSRDecoder.h"
 #include <iostream>
 
 // Función auxiliar para imprimir un AttributeType
-void print_attribute(const std::string& name, const DSRAttributeTypes::AttributeType& attr) {
+inline void print_attribute(const std::string& name, const DSRAttributeTypes::AttributeType& attr) {
     std::visit([&name](const auto& value) {
         using T = std::decay_t<decltype(value)>;
         std::cout << "  " << name << " = ";
@@ -28,7 +31,7 @@ void print_attribute(const std::string& name, const DSRAttributeTypes::Attribute
     }, attr);
 }
 
-void test_decoder() {
+inline void test_decoder() {
     DSRDecoder decoder;
     
     // Ejemplo 1: Modify Node (MN)
@@ -79,14 +82,14 @@ void test_decoder() {
     std::cout << "Timestamp: " << mea_mod->timestamp << std::endl;
     std::cout << "Operation: " << mea_mod->modification_type << std::endl;
     std::cout << "Edge: " << *mea_mod->edge_from_id << " -> " << *mea_mod->edge_to_id << std::endl;
-    std::cout << "Edge Type: " << *mea_mod->edge_type << std::endl;
+    std::cout << "Edge Type: " << *mea_mod->type << std::endl;
     std::cout << "Modified attributes:" << std::endl;
     for (const auto& [name, value] : mea_mod->attributes) {
         // Saltar atributos estructurales
         if (name != DSRAttributeNames::IDF && 
             name != DSRAttributeNames::IDT && 
             name != DSRAttributeNames::TYPE) {
-            print_attribute(name, valuevalue());
+            print_attribute(name, value.value());
         }
     }
     std::cout << std::endl;
@@ -98,8 +101,8 @@ void test_decoder() {
     std::cout << "=== DELETE EDGE (DE) ===" << std::endl;
     std::cout << "Timestamp: " << de_mod->timestamp << std::endl;
     std::cout << "Operation: " << de_mod->modification_type << std::endl;
-    std::cout << "Deleting edge: " << *de_mod->edge_from << " -> " << *de_mod->edge_to << std::endl;
-    std::cout << "Edge Type: " << *de_mod->edge_type << std::endl;
+    std::cout << "Deleting edge: " << *de_mod->edge_from_id << " -> " << *de_mod->edge_to_id << std::endl;
+    std::cout << "Edge Type: " << *de_mod->type << std::endl;
     std::cout << std::endl;
     
     // Ejemplo 6: Delete Node (DN)
@@ -126,7 +129,7 @@ void test_decoder() {
     for (size_t i = 0; i < k_mod->nodes.size(); ++i) {
         std::cout << "  Node " << i << ":" << std::endl;
         for (const auto& [name, value] : k_mod->nodes[i].attrs()) {
-            print_attribute(name, value);
+            print_attribute(name, value.value());
         }
     }
     
@@ -134,7 +137,9 @@ void test_decoder() {
     for (size_t i = 0; i < k_mod->edges.size(); ++i) {
         std::cout << "  Edge " << i << ":" << std::endl;
         for (const auto& [name, value] : k_mod->edges[i].attrs()) {
-            print_attribute(name, value);
+            print_attribute(name, value.value());
         }
     }    
 }
+
+#endif // TEST_DECODER_H

@@ -32,9 +32,11 @@
 //#define HIBERNATION_ENABLED
 
 #include <genericworker.h>
+#include <fstream>
 #include "ui_historic_debugger.h"
 #include "DSRDecoder.h"
 #include "DSRTypeTrait.h"
+
 
 #include "test_decoder.h"
 
@@ -111,13 +113,7 @@ private:
      */
 	bool startup_check_flag;
 	bool string_check_flag = true;
-
-	// using AttributeType = std::variant<std::string, int32_t, float,
-    //         		std::vector<float>, bool, std::vector<uint8_t>,
-	// 				uint32_t, uint64_t, double, std::vector<uint64_t>,
-	// 				std::array<float, 2>, std::array<float, 3>,
-	// 				std::array<float, 4>, std::array<float, 6>>;
-    
+ 
 	// Historic window, graph and viewer
 	QMainWindow *historic_window;
 	std::shared_ptr<DSR::DSRGraph> historic_graph;
@@ -128,9 +124,11 @@ private:
 	QWidget historic_debugger_widget;
 	int historic_value;
 
-	std::map<int64_t, std::string> changes_map;
+	std::map<uint64_t, std::string> changes_map;
+	std::map<uint64_t, DSREvent> decoded_data;
 	std::chrono::time_point<std::chrono::system_clock> time_check;
 	std::chrono::milliseconds keyframe_period;
+	bool show_deb;	
 
 	void generate_keyframe();
 	std::optional<std::string> assemble_string(const auto &timestamp, const std::string &slot, 
@@ -139,7 +137,11 @@ private:
 
 	std::tuple<std::string, std::string> attribute_value_and_type_to_string(const auto &value);
 
-	
+	void save_changes_to_file(const std::string& filename = "mission.txt");
+	void load_changes(const std::string filename = "mission.txt");
+
+	void display_debugger_graph();
+
 signals:
 	//void customSignal();
 };

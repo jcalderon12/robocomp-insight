@@ -39,8 +39,11 @@
            <height>16777215</height>
           </size>
          </property>
+         <property name="inputMethodHints">
+          <set>Qt::ImhDigitsOnly</set>
+         </property>
          <property name="text">
-          <string>Input time...</string>
+          <string>0</string>
          </property>
          <property name="alignment">
           <set>Qt::AlignCenter</set>

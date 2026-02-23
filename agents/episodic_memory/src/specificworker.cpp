@@ -30,8 +30,6 @@ SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, 
 		#ifdef HIBERNATION_ENABLED
 			hibernationChecker.start(500);
 		#endif
-		
-		qInstallMessageHandler([](QtMsgType, const QMessageLogContext&, const QString&) {});
 
 		// Example statemachine:
 		/***
@@ -58,7 +56,7 @@ SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, 
 			throw error;
 		}
 
-		historic_graph = std::make_shared<DSR::DSRGraph>(0, agent_name, agent_id, "root_dsr.json", true, 1);
+		// historic_graph = std::make_shared<DSR::DSRGraph>(0, agent_name, agent_id, "root_dsr.json", true, 1);
 	}
 }
 
@@ -73,6 +71,8 @@ SpecificWorker::~SpecificWorker()
 void SpecificWorker::initialize()
 {
     std::cout << "initialize worker" << std::endl;
+	GenericWorker::initialize();
+
 	//dsr update signals
 	connect(G.get(), &DSR::DSRGraph::update_node_signal, this, &SpecificWorker::modify_node_slot);
 	connect(G.get(), &DSR::DSRGraph::update_edge_signal, this, &SpecificWorker::modify_edge_slot);
@@ -89,17 +89,16 @@ void SpecificWorker::initialize()
 	The add_custom_widget_to_dock method receives a name for the widget and a reference to the class instance.
 	***/
 
-	graph_viewer = std::make_unique<DSR::DSRViewer>(this, G, current_opts, main);
-	//graph_viewer->add_custom_widget_to_dock("CustomWidget", &custom_widget);
+	//graph_viewers.at("")->add_custom_widget_to_dock("CustomWidget", &custom_widget);
 
-	historic_window = new QMainWindow;
-	historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window, historic_graph, current_opts, main);
-	historic_window->show();
+	// historic_window = new QMainWindow;
+	// historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window, historic_graph, current_opts, main);
+	// historic_window->show();
 
 	historic_debugger_ui.setupUi(&historic_debugger_widget);
 	connect(historic_debugger_ui.local_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::local_changes_management);
 	connect(historic_debugger_ui.global_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::global_changes_management);
-	historic_viewer->add_custom_widget_to_dock("Historic debugger", &historic_debugger_widget);
+	graph_viewers.at("episodic")->add_custom_widget_to_dock("Historic debugger", &historic_debugger_widget);
 
 	keyframe_period = std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
 	time_check = std::chrono::system_clock::now(); 
@@ -109,7 +108,6 @@ void SpecificWorker::initialize()
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
 
-	test_decoder();
 }
 
 
@@ -117,13 +115,24 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	// Generate a new keyframe every X seconds
-	// auto time_now = std::chrono::system_clock::now();
-	// if (time_now - time_check >= keyframe_period){
-	// 	time_check = std::chrono::system_clock::now();		
-	// 	generate_keyframe();
-	// }
-}
+	static int delete_me = 0;
+	auto time_now = std::chrono::system_clock::now();
+	if (time_now - time_check >= keyframe_period){
+		time_check = std::chrono::system_clock::now();		
+		
+		if (delete_me != -1) delete_me++;
+		if (delete_me <= 3 && delete_me != -1) {
+				generate_keyframe();
+		}
+		else if (delete_me != -1) {
+			show_deb = true;
+			delete_me = -1;
+			save_changes_to_file("mission.txt");
+			load_changes("mission.txt");
 
+		}
+	}
+}
 
 
 void SpecificWorker::emergency()
@@ -131,10 +140,9 @@ void SpecificWorker::emergency()
     std::cout << "Emergency worker" << std::endl;
     //emergencyCODE
     //
-    //if (SUCCESSFUL) //The componet is safe for continue
+    //if (SUCCESSFUL) //The component is safe for continue
     //  emmit goToRestore()
 }
-
 
 
 //Execute one when exiting to emergencyState
@@ -157,13 +165,84 @@ int SpecificWorker::startup_check()
 
 void SpecificWorker::local_changes_management(int value){
 	// historic_debugger_ui.slider_label->setNum(value);
-	std::cout << "Local changed value: " << value << std::endl;
+	std::cout << "Local scroll bar position: " << value << std::endl;
+	// if (!decoded_data.empty())
+
 }
 
 
 void SpecificWorker::global_changes_management(int value){
 	// historic_debugger_ui.slider_label->setNum(value);
-	std::cout << "Global changed value: " << value << std::endl;
+	std::cout << "Global scroll bar position: " << value << std::endl;	
+	// if (!decoded_data.empty())
+	
+
+
+	// if (show_deb){
+
+	// }
+}
+
+
+void SpecificWorker::save_changes_to_file(const std::string& filename){
+	// Check if change map is empty
+	if (changes_map.empty()){ std::cout << __FUNCTION__ << " - Empty change map. Nothing to save." << std::endl; return; }
+
+	// Open file in write mode - app: append (add at the end without overwrite)
+	std::ofstream out_file(filename, std::ios::app);
+	if (!out_file.is_open()) { std::cerr << __FUNCTION__ << " - Error: File " << filename << " couldn't be open for writting." << std::endl; return; }
+
+	// Write data
+	for (const auto &[timestamp, dsr_data] : changes_map)
+		out_file << dsr_data << "\n";
+
+	// Close file
+	out_file.close();
+	std::cout << __FUNCTION__ << " - File " << filename << " created with " << changes_map.size() << " changes." << std::endl;
+
+	// Clear changes map
+	changes_map.clear();
+}
+
+
+void SpecificWorker::load_changes(const std::string filename){
+	// Open file in read mode
+	std::ifstream in_file(filename);
+	if (!in_file.is_open()) { std::cerr << __FUNCTION__ << " - Error: File " << filename << " couldn't be open for reading." << std::endl; return; }
+	
+	std::string line;
+	int line_count = 0;
+	while (std::getline(in_file, line)) {
+		line_count++;
+
+		// Ignore empty lines
+		if (line.empty()) continue;
+
+		// Decode line
+		try { 
+			if (auto data_ptr = DSRDecoder::decode(line); data_ptr)
+				decoded_data[data_ptr->timestamp] = *data_ptr;
+		}
+		catch (const std::exception &e) {
+			std::cerr << __FUNCTION__ << " - Error decoding line " << line_count << ": " << e.what() << "\nData: " << line << std::endl;
+		}
+	}
+
+	// Close file
+	in_file.close();
+	std::cout << __FUNCTION__ << " - File " << filename << " readed and decoded. Changes loaded: " << decoded_data.size() << std::endl;
+}
+
+
+void SpecificWorker::display_debugger_graph(){
+	// Check if display data is empty
+	if (decoded_data.empty()) { std::cout << __FUNCTION__ << " - Empty decoded data. Nothing to display." << std::endl; return; }
+
+	// int keyframe_number = 0;
+	// for (const auto &event : decoded_data) {
+
+	// }	
+
 }
 
 

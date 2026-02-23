@@ -31,19 +31,26 @@
                             "rt_rotation_euler_xyz": {
                                 "type": 3,
                                 "value": [
-                                    0,
-                                    0,
-                                    0
+                                    1,
+                                    2,
+                                    3
                                 ]
                             },
                             "rt_translation": {
                                 "type": 3,
                                 "value": [
-                                    0,
-                                    0,
-                                    0
+                                    4,
+                                    5,
+                                    6
                                 ]
                             }
+                        },
+                        "src": "100"
+                    },
+                    {
+                        "dst": "200",
+                        "label": "has",
+                        "linkAttribute": {
                         },
                         "src": "100"
                     }
