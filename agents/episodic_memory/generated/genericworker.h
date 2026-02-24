@@ -20,15 +20,6 @@
 #define GENERICWORKER_H
 
 #include <stdint.h>
-
-#if Qt5_FOUND
-	#include <QtWidgets>
-#else
-	#include <QtGui>
-#endif
-#include <ui_mainUI.h>
-#define USE_QTGUI
-
 #include <grafcetStep/GRAFCETStep.h>
 #include <ConfigLoader/ConfigLoader.h>
 #include <QStateMachine>
@@ -43,6 +34,7 @@
 #include "dsr/api/dsr_api.h"
 #include "dsr/gui/dsr_gui.h"
 #include <doublebuffer/DoubleBuffer.h>
+#include <memory>
 
 
 #define BASIC_PERIOD 100
@@ -50,7 +42,7 @@
 using TuplePrx = std::tuple<>;
 
 
-class GenericWorker : public QMainWindow, public Ui_guiDlg
+class GenericWorker : public QObject
 {
 Q_OBJECT
 public:
@@ -71,17 +63,17 @@ public:
 protected:
 	std::unordered_map<std::string, std::unique_ptr<GRAFCETStep>> states;
 	ConfigLoader configLoader;
-	// DSR graph
-	std::shared_ptr<DSR::DSRGraph> G;
-
 	//DSR params
 	std::string agent_name;
 	int agent_id;
-	int current_opts = 0;
-	DSR::DSRViewer::view main = DSR::DSRViewer::view::none;
+
+	// DSR graph
+	std::unordered_map<std::string, std::shared_ptr<DSR::DSRGraph>> Graphs;
+	std::shared_ptr<DSR::DSRGraph> G;
 	// DSR graph viewer
-	std::unique_ptr<DSR::DSRViewer> graph_viewer;
-	QHBoxLayout mainLayout;
+	std::unordered_map<std::string, std::shared_ptr<DSR::DSRViewer>> graph_viewers;
+	std::unordered_map<std::string, std::unique_ptr<QMainWindow>> windows;
+	std::shared_ptr<DSR::DSRViewer> setupViewer(std::shared_ptr<DSR::DSRGraph> graph, const std::string& prefix, QMainWindow* parent);
 
 
 
