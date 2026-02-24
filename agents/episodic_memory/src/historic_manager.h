@@ -221,6 +221,8 @@ private:
      */
     void apply_modify_node(const DSREvent &mod) {
         if (!mod.node_id.has_value() || !mod.type.has_value() || !mod.node_name.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MN: Missing required fields" << std::endl; return; }
+        
+        // Check if node already exists
         auto node_optional = G->get_node(*mod.node_name);
         if (!node_optional.has_value()) {
             DSR::Node node;
@@ -230,7 +232,7 @@ private:
             G->insert_node(node);
         } else { 
             auto node = node_optional.value();
-            if (!(node.id == mod.node_id && node.name == mod.node_name && node.type == mod.type)) {
+            if (!(node.id == *mod.node_id && node.name == *mod.node_name && node.type == *mod.type)) {
                 node.id(*mod.node_id);
                 node.type(*mod.type);
                 node.name(*mod.node_name);
@@ -242,41 +244,118 @@ private:
      * @brief Apply MNE - Modify Node Attributes
      */
     void apply_modify_node_attrs(const DSREvent &mod) {
-        if (!mod.node_id.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Missing required fields" << std::endl; return; };
+        if (!mod.node_id.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Missing required fields" << std::endl; return; }
 
+        // Check if node exists
         auto node_optional = G->get_node(*mod.node_id);
-        if (!node_optional.has_value())
+        if (!node_optional.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Node " << *mod.node_id << " not found" << std::endl; return; }
+
+        for(const auto &[name, attr] : mod.attributes)
+            if (name != DSRAttributeNames::ID)
+                G->add_or_modify_attrib_local(node_optional.value(), name, attr);
+        
+        G->update_node(node_optional.value());
     }
 
     /**
      * @brief Apply ME - Modify Edge
      */
     void apply_modify_edge(const DSREvent &mod) {
-
+        if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() || !mod.type.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] ME: Missing required fields" << std::endl; return; }
+        
+        // Check if edge already exists
+        auto edge_optional = G->get_edge(*mod.edge_from_id, *mod.edge_to_id, *mod.type);
+        if (!node_optional.has_value()) {
+            DSR::Edge edge;
+            edge.from(*mod.edge_from_id);
+            edge.to(*mod.edge_to_id);
+            edge.type(*mod.type);
+            G->insert_or_assign_edge(edge);
+        } else { 
+            auto edge = edge_optional.value();
+            if (!(edge.from == *mod.edge_from_id && edge.to == *mod.edge_to_id && edge.type == *mod.type)) {
+                edge.from(*mod.edge_from_id);
+                edge.to(*mod.edge_to_id);
+                edge.type(*mod.type);
+            }
+        }
     }
 
     /**
      * @brief Apply MEA - Modify Edge Attributes
      */
     void apply_modify_edge_attrs(const DSREvent &mod) {
+        if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() || !mod.type.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MEA: Missing required fields" << std::endl; return; }
 
+        // Check if edge exists
+        auto edge_optional = G->get_edge(*mod.edge_from_id, *mod.edge_to_id, *mod.type);
+        if (!edge_optional.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MEA: Edge not found" << std::endl; return; }
+
+        for(const auto &[name, attr] : mod.attributes)
+            if (name != DSRAttributeNames::IDF &&
+                name != DSRAttributeNames::IDT &&
+                name != DSRAttributeNames::TYPE)
+                G->add_or_modify_attrib_local(edge_optional.value(), name, attr);
+        
+        G->insert_or_assign_edge(edge_optional.value());
     }
 
     /**
      * @brief Apply DN - Delete Node
      */
     void apply_delete_node(const DSREvent &mod) {
-
+        // Check if node exists
+        if (!mod.node_id.has_value()) return;
+        G->delete_node(*mod.node_id);
     }
 
     /**
      * @brief Apply DE - Delete Edge
      */
     void apply_delete_edge(const DSREvent &mod) {
-
+        if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() || !mod.type.has_value()) return;
+        G->delete_edge(*mod.edge_from_id, *mod.edge_to_id, *mod.type)
     }
 
+    /**
+     * @brief Apply every local change from a keyframe
+     */
+    void apply_all_local_changes(size_t keyframe_idx) {
+        auto it = local_changes_metadata.find(keyframe_idx);
+        if (it == local_changes_metadata.end()) return;
 
+        for (const auto &meta : it->second) {
+            DSREvent* change = get_event_by_metadata(meta);
+            if (change) apply_modification_to_graph(*change);
+        }
+    }
+
+    /**
+     * @brief Clean every node and edge from graph
+     */
+    void clear_graph() {
+        auto nodes = G->get_nodes();
+        for (const auto &node : nodes)
+            G->delete_node(node.id());
+    }
+
+    /**
+     * @brief Initiates the background pre-load of keyframes around
+     */
+    void start_preload(size_t center_idx) {
+        if (preloading) return;
+
+        if (preload_thread.joinable())
+            preload_thread.join()
+
+        preload_thread = std::thread([this, center_idx]() {
+            preloading = true;
+            for (int offset = 1; offset <= 3; ++offset) {
+                // Onwards
+                if (center_idx + offset )
+            }
+        });
+    }
 
 };
 
