@@ -1,0 +1,18 @@
+{
+    "name": "wheel",
+    "description": "A wheel that stops working.",
+    "instance_generators": 
+    [
+        {
+            "type": "simple_random"
+        }
+    ],
+    "apply_actions": [],
+    "apply_compute_actions": [
+        {
+            "type": "stop_robot_wheel",
+            "label": "id",
+            "time_input": "simple_random"
+        }
+    ]
+}

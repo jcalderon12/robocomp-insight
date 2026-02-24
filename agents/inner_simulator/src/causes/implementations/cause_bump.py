@@ -35,6 +35,8 @@ class CauseBump(BaseModel, Cause):
         x, y, z = self.random_range_coordinates()
         
         coordinates = [x, y, z]
+
+        print("Range is", self.x_range, self.y_range, "; Bump at: ", coordinates)
         
         engine.instantiate_body(self.bump_file, coordinates)
         

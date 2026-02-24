@@ -13,14 +13,13 @@ class Engine(ABC):
         pass
 
     @abstractmethod
-    def modify_robot(self):
-        "Modify the robot in the simulation scene"
-        pass
-
-    @abstractmethod
     def disable_robot_wheel(self, wheel_name):
         "Disable the robot wheel in the simulation scene"
         pass
     
+    @abstractmethod
+    def get_simulation_length(self):
+        "Get the whole simulation length"
+        pass
         
     

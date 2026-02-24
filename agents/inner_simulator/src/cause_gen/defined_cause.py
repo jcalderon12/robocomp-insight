@@ -5,7 +5,7 @@ from instance_generator.instance_none import InstanceNone
 from apply_action.apply_action_instantiate_body import ApplyActionInstantiateBody
 from apply_action.apply_action_stop_robot_wheel import ApplyActionStopRobotWheel
 from pydantic import BaseModel
-from typing import Union, Annotated
+from typing import Union
 import argparse
 
 
@@ -22,7 +22,12 @@ InstanceGeneratorUnion = Union[InstanceRandomRangeCoordinates, InstanceSimpleRan
 ApplyActionUnion = Union[ApplyActionInstantiateBody, ApplyActionStopRobotWheel]
 CauseTemplate:Template = Template(
     
-'''from cause import Cause
+'''
+"""
+This cause has been generated.
+"""
+
+from causes.cause import Cause
 from engines.engine import Engine
 from pydantic import BaseModel
 from typing import Literal
@@ -39,12 +44,14 @@ class Cause{{cause_name.capitalize()}}(BaseModel, Cause):
         {% for call in apply_calls %}
         {{call}}
         {% endfor %}
+        pass
     
     {{ compute_variables | join('\n    ') }}
     def apply_compute(self, engine:Engine):
         {% for call in compute_calls %}
         {{call}}
         {% endfor %}
+        pass
 '''
     )
 

@@ -1,5 +1,5 @@
-{
-    "cause": {
+[
+    {
         "name":"bump",
         "bump_file": "../../etc/URDFs/bump/bump_100x5cm.urdf",
         "x_range": 2.5,
@@ -8,5 +8,9 @@
         "x_origin": 1.6243424440469048,
         "y_origin": -0.6229300424174075,
         "z_origin": 0.01
+    },
+    {
+        "name":"wheel",
+        "id_wheel": "BR"
     }
-}
+]

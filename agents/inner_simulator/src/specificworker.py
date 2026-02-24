@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QApplication
 from rich.console import Console
 from genericworker import *
 import interfaces as ifaces
+from src.simulation_scene import SimulationScene
 
 import json
 import pybullet as p
@@ -39,16 +40,7 @@ import sys
 from concurrent.futures import ProcessPoolExecutor
 
 # causes.json constants
-JSON_FILE = "causes.json"
-CAUSES = "causes"             # Bump, wheel...
-CAUSE_TYPE = "cause_type"   # Type of the cause (e.g., bump, wheel, etc.)
-COORDINATES = "coordinates" # Coordinates of interest
-CAUSE_RANGE = "cause_range" # The range of the cause from the robot
-WHEEL = "wheel"             # Missing wheel
-INIT_POSE =  "initial_pose" # The initial pose of the robot
-CURR_POSE = "current_pose"  # The current pose of the robot
-LENGTH = "length"           # The length of time
-NUMREP = "num_of_repetitions"  # Number of repetitions to do simulations of the cause
+JSON_FILE = "src/causes.json"
 
 # Keys of 
 TIMESTAMP = "timestamp"
@@ -117,6 +109,8 @@ class SpecificWorker(GenericWorker):
 
         # ================= PYBULLET MODELS LOADING  ================
         # ===========================================================
+# Keys of 
+
 
         flags = p.URDF_USE_INERTIA_FROM_FILE
 
@@ -151,9 +145,7 @@ class SpecificWorker(GenericWorker):
         self.init_pos, self.init_orn = p.getBasePositionAndOrientation(self.robot)
         self.forward_vel, self.angular_vel = 0, 0
 
-        self.print_time = time.time()
-        self.actual_time = time.time()
-        self.initial_time = time.time()
+        self.print_time = self.actual_time = self.initial_time = time.time()
 
         # ================ IMU SENSOR SETUP  ================
         # ====================================================
@@ -165,19 +157,23 @@ class SpecificWorker(GenericWorker):
         # ================ CAUSE SIMULATOR  ================
         # ====================================================
         # Declare causes data dict
-        self.causes_data = {}
+        self.sim_scene = SimulationScene.model_construct()
         # Set initial pose (Debugging purposes)
-        self.causes_data[INIT_POSE] = p.getBasePositionAndOrientation(self.robot)
-
+        self.sim_scene.gravity = -9.81
+        self.sim_scene.initial_robot_position, self.sim_scene.initial_robot_orientation = p.getBasePositionAndOrientation(self.robot)
+        self.sim_scene.robot_velocity = 0
 
 
     def init_imu_record(self):
+        """ Initialize the real IMU history dictionary for recording sensor data during the mission. """
         self.imu_history = {}
         self.imu_history[TIMESTAMP] = []
         self.imu_history[ACCELEROMETER] = []
         self.imu_history[GYROSCOPE] = []
-    
+
+
     def record_imu(self, current_time):
+        """" Record the current real IMU measurements and store it at the IMU history dictionary. """ 
         # Get real IMU node data from DSR
         real_imu_node = self.g.get_node("imu")
         if real_imu_node is not None:
@@ -187,37 +183,22 @@ class SpecificWorker(GenericWorker):
         self.imu_history[ACCELEROMETER].append(acc.tolist())
         self.imu_history[GYROSCOPE].append(ang.tolist())
 
-    # DEBUG: Write fake JSON file
-    def writeCausesJson(self):
-        try:
-            # Generate random bump location
-            position, orientation = self.causes_data[INIT_POSE]
-            position = list(position)
-            position[0] += 2.5
-            position[2] = 0.001
-            
-            # Example problemas
-            p1 = {CAUSE_TYPE: "bump",
-                COORDINATES: [position, orientation], 
-                CAUSE_RANGE: "1",
-                WHEEL: "none"}
-            p2 = {CAUSE_TYPE: "wheel",
-                COORDINATES: [position, orientation], 
-                CAUSE_RANGE: "1",
-                WHEEL: "BR"}
-            self.causes_data[CAUSES] = [p1, p2]
-            self.causes_data[NUMREP] = "100"
-            self.causes_data[LENGTH] =  self.actual_time - self.initial_time
 
-            file = open(JSON_FILE, "w")
-            json.dump(self.causes_data, file, indent="\t")
-            file.close()
-            print(f"> [writeCausesJson] Writed to {JSON_FILE} the following content:\n{self.causes_data}")
-        except Exception as e:
-            print(f"> [writeCausesJson] Error while writing to {JSON_FILE}: " + str(e))
+    # DEBUG: Write fake JSON file
+    def writeSimulationScene(self):
+       """ DEBUG: Write fake JSON file """
+       # Fake SIM_SCENE JSON file
+       self.sim_scene.problem_position, self.sim_scene.problem_orientation = p.getBasePositionAndOrientation(self.robot)
+       self.sim_scene.simulation_length = self.actual_time - self.initial_time
+       self.sim_scene.num_of_repetitions = 300
+       self.sim_scene.model_validate(self.sim_scene.__dict__)
+       file = open("src/sim_scene.json", "w")
+       file.write(self.sim_scene.model_dump_json(indent=4))
+       file.close()
 
 
     def loadCausesJson(self):
+        """ Loads the causes JSON file """
         try:
             file = open(JSON_FILE, "r")
             causes_data = json.loads(file.read())
@@ -262,8 +243,9 @@ class SpecificWorker(GenericWorker):
                                             controlMode=p.VELOCITY_CONTROL,
                                             targetVelocity=wheels_velocity[motor_name],
                                             force=10)
-                self.causes_data[CURR_POSE] = p.getBasePositionAndOrientation(self.robot)
+                self.sim_scene.final_robot_position, self.sim_scene.final_robot_orientation = p.getBasePositionAndOrientation(self.robot)
                 self.actual_time = time.time()
+                self.sim_scene.robot_velocity = max(self.get_velocities_from_dsr()[0], self.sim_scene.robot_velocity)
                 self.record_imu(self.actual_time - self.initial_time)
                 
                 if self.check_for_problem():
@@ -278,9 +260,12 @@ class SpecificWorker(GenericWorker):
                 print("Launching subprocesses...")                
                 pids = []
                 historicals = {}
-                for cause in self.causes_data[CAUSES]:
+                for cause in self.causes_data:
                     rpipe, wpipe = os.pipe()
-                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-n", str(self.causes_data[NUMREP]), "-l", str(self.causes_data[LENGTH]), "-i", str(self.causes_data[INIT_POSE]), "-f", str(self.causes_data[CURR_POSE]), "-t", cause[CAUSE_TYPE], "-c", str(cause[COORDINATES]), "-r", str(cause[CAUSE_RANGE]), "-w", cause[WHEEL], "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
+                    json_data = {"cause": cause}
+                    json_data = json.dumps(json_data)
+
+                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe), "-rt"], pass_fds=[wpipe]), rpipe])
                     # Close wpipe descriptor to prevent deadlocks
                     os.close(wpipe)
                 
@@ -305,7 +290,7 @@ class SpecificWorker(GenericWorker):
                 print(f"Received historicals from {len(historicals)} simulations.")
                 i = 0
                 for h in historicals:
-                    print(f"    Historical {i} frames: {len(historicals[h])}")
+                    print(f"    Historical {i} recordings: {len(historicals[h])}")
                     i += 1
                 print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
 
@@ -315,17 +300,17 @@ class SpecificWorker(GenericWorker):
                 with ProcessPoolExecutor(max_workers=2) as executor:
                     # Launch proccesses
                     for h in historicals:
-                        threads.append(executor.submit(self.find_matching_imu_recordings, self.imu_history, historicals[h]))
+                        threads.append(executor.submit(SpecificWorker.find_matching_imu_recordings, self.imu_history, historicals[h]))
                     # Wait for processes and check results
                     i = 0
                     for thread in threads:
                         res = thread.result()
                         if res:
-                            print(f"Match found in simulation {res} for cause {self.causes_data[CAUSES][i][CAUSE_TYPE]}!")
+                            print(f"Match found in simulation {res} for cause {self.causes_data[i]["name"]}!")
                             # We store [simulation ID, cause type] in possible_causes
-                            possible_causes.append([res, self.causes_data[CAUSES][res][CAUSE_TYPE]])
+                            possible_causes.append([res, self.causes_data[res]["name"]])
                         else:
-                            print(f"No match found for cause {self.causes_data[CAUSES][i][CAUSE_TYPE]}.")
+                            print(f"No match found for cause {self.causes_data[i]["name"]}.")
                         i += 1
                             
                 self.state = "IDLE"
@@ -343,7 +328,7 @@ class SpecificWorker(GenericWorker):
         follow_node = self.g.get_node("follow_me")
         if follow_node is not None:
                 if not follow_node.attrs["aff_interacting"].value:
-                    self.writeCausesJson()
+                    self.writeSimulationScene()
                     return True
         return False
 
@@ -360,15 +345,16 @@ class SpecificWorker(GenericWorker):
             
         return time_step
 
-    def find_matching_imu_recordings(self, rimu, simu):
+    @staticmethod
+    def find_matching_imu_recordings(rimu, simu, margin=0.05):
         """
         Find if there is any match between the real IMU recordings and the simulated ones.
         If there is a match, it means that the cause being simulated could be the reason behind the problem detected in the real robot.
         :param rimu: Dictionary with frames of the real IMU recordings (timestamp, accelerometer and gyroscope)
         :param simu: List of dictioraries, each one with frames of the simulated IMU recordings (timestamp, accelerometer, gyroscope)
+        :param margin: (Default=0.05) Margin of error to consider a match between real and simulated IMU measurements
         :return: int, the ID of the simulation that matched the real IMU. If no match, return None.
         """
-        # TODO: este código no permite un margen de error en las medidas
 
         # for each simu simulation...
         for s in range(len(simu)):
@@ -380,9 +366,9 @@ class SpecificWorker(GenericWorker):
 
                     if simu[s][TIMESTAMP][i] == rimu[TIMESTAMP][j]: # If matching timestamps...
                         # Does it match acc?
-                        if not simu[s][ACCELEROMETER][i] == rimu[ACCELEROMETER][j]: is_matching = False
+                        if not np.allclose(simu[s][ACCELEROMETER][i], rimu[ACCELEROMETER][j], atol=margin): is_matching = False
                         # Does it match gyro?
-                        if not simu[s][GYROSCOPE][i] == rimu[GYROSCOPE][j]: is_matching = False
+                        if not np.allclose(simu[s][GYROSCOPE][i], rimu[GYROSCOPE][j], atol=margin): is_matching = False
                     if not is_matching: break
                     
                 if not is_matching: break
@@ -392,11 +378,10 @@ class SpecificWorker(GenericWorker):
 
         return None # No match found in any of the simulations
     
+    
 
     # =============== PYBULLET MODELS INFO  ================
     # ======================================================
-
-
 
     def get_joints_info(self, robot_id):
         """
@@ -443,6 +428,8 @@ class SpecificWorker(GenericWorker):
             link_name = link_info[12].decode("utf-8")
             link_name_to_id[link_name] = i
         return link_name_to_id
+    
+    
     
     # =============== ROBOT KINEMATICS  ================
     # ==================================================
