@@ -8,8 +8,8 @@
 //******************************************************************
 #ifndef ROBOCOMPVISUALELEMENTSPUB_ICE
 #define ROBOCOMPVISUALELEMENTSPUB_ICE
-#include <Lidar3D.ice>
 #include <Camera360RGB.ice>
+#include <Lidar3D.ice>
 module RoboCompVisualElementsPub
 {
 	dictionary <string, string> TAttributes;

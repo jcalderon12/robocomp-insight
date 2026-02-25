@@ -176,11 +176,17 @@ void SpecificWorker::change_rt_from_robot_to_root()
 {
 	G->delete_edge("robot","bottle","RT");
 
-	auto root_node = G->get_node("root").value();
-	auto bottle_node = G->get_node("bottle").value();
+	auto room_node_opt = G->get_node("room");
+	auto bottle_node_opt = G->get_node("bottle");
+	if(!room_node_opt.has_value() || !bottle_node_opt.has_value()){
+		std::cout << "Either room or bottle node is missing in the graph." << std::endl;
+		return;
+	}
+	DSR::Node room_node = room_node_opt.value();
+	DSR::Node bottle_node = bottle_node_opt.value();
 
 	DSR::Edge loss_edge;
-	loss_edge.from(root_node.id());
+	loss_edge.from(room_node.id());
 	loss_edge.to(bottle_node.id());
 	loss_edge.type("RT");
 	

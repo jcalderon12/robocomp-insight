@@ -1,5 +1,5 @@
 /*
- *    Copyright (C) 2025 by YOUR NAME HERE
+ *    Copyright (C) 2026 by YOUR NAME HERE
  *
  *    This file is part of RoboComp
  *
@@ -20,8 +20,6 @@
 
 SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check) : GenericWorker(configLoader, tprx)
 {
-	qInstallMessageHandler([](QtMsgType, const QMessageLogContext&, const QString&) {});
-
 	this->startup_check_flag = startup_check;
 	if(this->startup_check_flag)
 	{
@@ -70,6 +68,8 @@ SpecificWorker::~SpecificWorker()
 void SpecificWorker::initialize()
 {
     std::cout << "initialize worker" << std::endl;
+	GenericWorker::initialize();
+
 	//dsr update signals
 	//connect(G.get(), &DSR::DSRGraph::update_node_signal, this, &SpecificWorker::modify_node_slot);
 	//connect(G.get(), &DSR::DSRGraph::update_edge_signal, this, &SpecificWorker::modify_edge_slot);
@@ -86,8 +86,7 @@ void SpecificWorker::initialize()
 	The add_custom_widget_to_dock method receives a name for the widget and a reference to the class instance.
 	***/
 
-	graph_viewer = std::make_unique<DSR::DSRViewer>(this, G, current_opts, main);
-	//graph_viewer->add_custom_widget_to_dock("CustomWidget", &custom_widget);
+	//graph_viewers.at("")->add_custom_widget_to_dock("CustomWidget", &custom_widget);
 
     /////////GET PARAMS, OPEND DEVICES....////////
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
