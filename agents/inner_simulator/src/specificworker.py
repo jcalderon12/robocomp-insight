@@ -24,8 +24,9 @@ from PySide6.QtWidgets import QApplication
 from rich.console import Console
 from genericworker import *
 import interfaces as ifaces
+from src.simulation_scene import SimulationScene
 
-
+import json
 import pybullet as p
 import numpy as np
 import locale
@@ -34,7 +35,18 @@ import matplotlib
 import pandas as pd
 import time
 import os
+import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor
+
+# causes.json constants
+JSON_FILE = "src/causes.json"
+
+# Keys of 
+TIMESTAMP = "timestamp"
+ACCELEROMETER = "accelerometer"
+GYROSCOPE = "gyroscope"
+SIMULATED_PREFIX = "s_"
 
 matplotlib.use("TkAgg")
 
@@ -49,6 +61,7 @@ from pydsr import *
 
 from pybullet_imu import IMU
 
+from causes_simulator import CausesSimulator
 
 class SpecificWorker(GenericWorker):
     def __init__(self, proxy_map, configData, startup_check=False):
@@ -76,7 +89,7 @@ class SpecificWorker(GenericWorker):
 
         self.print_dsr_signals = False # PONER A TRUE SI SE QUIERE VER EN CONSOLA LAS SEÑALES DSR
 
-        self.state = "INNER_SIMULATOR" # Possible states: "IDLE", "INNER_SIMULATOR"
+        self.state = "IDLE" # Possible states: "IDLE", "INNER_SIMULATOR"
 
 
         # ================ PYBULLET SIMULATION SETUP  ================
@@ -84,7 +97,7 @@ class SpecificWorker(GenericWorker):
 
         self.physicsClient = p.connect(p.GUI)
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
-        p.setGravity(0, 0, -9.81)
+        
         # p.setRealTimeSimulation(1) # Enable real-time simulation
         p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15,
                                      cameraTargetPosition=[-1.3, -0.5, 0.2])
@@ -92,8 +105,12 @@ class SpecificWorker(GenericWorker):
         self.dt = 1./62. # Simulation time step (60 Hz)
         p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
         
+        p.setGravity(0, 0, -9.81)
+
         # ================= PYBULLET MODELS LOADING  ================
         # ===========================================================
+# Keys of 
+
 
         flags = p.URDF_USE_INERTIA_FROM_FILE
 
@@ -128,9 +145,7 @@ class SpecificWorker(GenericWorker):
         self.init_pos, self.init_orn = p.getBasePositionAndOrientation(self.robot)
         self.forward_vel, self.angular_vel = 0, 0
 
-        self.print_time = time.time()
-        self.actual_time = time.time()
-        self.initial_time = time.time()
+        self.print_time = self.actual_time = self.initial_time = time.time()
 
         # ================ IMU SENSOR SETUP  ================
         # ====================================================
@@ -138,6 +153,60 @@ class SpecificWorker(GenericWorker):
         self.imu = IMU(self.robot, self.dt)
         self.last_imu_measurement = self.imu.get_measurement()
         self.publish_imu_to_dsr(self.last_imu_measurement[0], self.last_imu_measurement[1])
+
+        # ================ CAUSE SIMULATOR  ================
+        # ====================================================
+        # Declare causes data dict
+        self.sim_scene = SimulationScene.model_construct()
+        # Set initial pose (Debugging purposes)
+        self.sim_scene.gravity = -9.81
+        self.sim_scene.initial_robot_position, self.sim_scene.initial_robot_orientation = p.getBasePositionAndOrientation(self.robot)
+        self.sim_scene.robot_velocity = 0
+
+
+    def init_imu_record(self):
+        """ Initialize the real IMU history dictionary for recording sensor data during the mission. """
+        self.imu_history = {}
+        self.imu_history[TIMESTAMP] = []
+        self.imu_history[ACCELEROMETER] = []
+        self.imu_history[GYROSCOPE] = []
+
+
+    def record_imu(self, current_time):
+        """" Record the current real IMU measurements and store it at the IMU history dictionary. """ 
+        # Get real IMU node data from DSR
+        real_imu_node = self.g.get_node("imu")
+        if real_imu_node is not None:
+            acc = real_imu_node.attrs["imu_accelerometer"].value
+            ang = real_imu_node.attrs["imu_gyroscope"].value
+        self.imu_history[TIMESTAMP].append(current_time)
+        self.imu_history[ACCELEROMETER].append(acc.tolist())
+        self.imu_history[GYROSCOPE].append(ang.tolist())
+
+
+    # DEBUG: Write fake JSON file
+    def writeSimulationScene(self):
+       """ DEBUG: Write fake JSON file """
+       # Fake SIM_SCENE JSON file
+       self.sim_scene.problem_position, self.sim_scene.problem_orientation = p.getBasePositionAndOrientation(self.robot)
+       self.sim_scene.simulation_length = self.actual_time - self.initial_time
+       self.sim_scene.num_of_repetitions = 300
+       self.sim_scene.model_validate(self.sim_scene.__dict__)
+       file = open("src/sim_scene.json", "w")
+       file.write(self.sim_scene.model_dump_json(indent=4))
+       file.close()
+
+
+    def loadCausesJson(self):
+        """ Loads the causes JSON file """
+        try:
+            file = open(JSON_FILE, "r")
+            causes_data = json.loads(file.read())
+            self.causes_data = causes_data
+            file.close()
+            print(f"> [loadCausesJson] {JSON_FILE} content: \n{causes_data}")
+        except Exception as e:
+            print(f"> [loadCausesJson] Error while reading from {JSON_FILE}: " + str(e))
 
 
     def __del__(self):
@@ -157,6 +226,12 @@ class SpecificWorker(GenericWorker):
         p.stepSimulation()
         match self.state:
             case "IDLE":
+                follow_node = self.g.get_node("follow_me")
+                if follow_node is not None and follow_node.attrs["aff_interacting"].value:
+                    self.state = "INNER_SIMULATOR"
+                    self.init_imu_record()
+                    self.initial_time = time.time()
+                    self.actual_time = time.time()
                 pass
 
             case "INNER_SIMULATOR":
@@ -168,15 +243,94 @@ class SpecificWorker(GenericWorker):
                                             controlMode=p.VELOCITY_CONTROL,
                                             targetVelocity=wheels_velocity[motor_name],
                                             force=10)
-        
+                self.sim_scene.final_robot_position, self.sim_scene.final_robot_orientation = p.getBasePositionAndOrientation(self.robot)
+                self.actual_time = time.time()
+                self.sim_scene.robot_velocity = max(self.get_velocities_from_dsr()[0], self.sim_scene.robot_velocity)
+                self.record_imu(self.actual_time - self.initial_time)
+                
+                if self.check_for_problem():
+                    
+                    self.state = "SIMULATE_REASON"
+                
+            case "SIMULATE_REASON":
+                # Read JSON to get causes
+                self.loadCausesJson()
+
+                # Launch subprocesses for simulation
+                print("Launching subprocesses...")                
+                pids = []
+                historicals = {}
+                for cause in self.causes_data:
+                    rpipe, wpipe = os.pipe()
+                    json_data = {"cause": cause}
+                    json_data = json.dumps(json_data)
+
+                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
+                    # Close wpipe descriptor to prevent deadlocks
+                    os.close(wpipe)
+                
+                # Wait for subprocesses and collect pipe data
+                print("Waiting for subprocesses...")
+                while (True):
+                    # pid[0] is the Popen class itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
+                    for pid in pids:
+                        if pid[0] not in historicals:
+                            pipe = os.fdopen(pid[1])
+                            print(f"Now reading pipe of process {pid[0]}...")
+                            historicals[pid[0]] = pipe.read()
+                            pipe.close()
+                            print(f"Pipe for {pid[0]} has been read!")
+                            
+                    if len(historicals) == len(pids): break
+
+                # Transform pipe data from JSON string to dictionary
+                for pid in pids:
+                    historicals[pid[0]] = json.loads(historicals[pid[0]])  
+    
+                print(f"Received historicals from {len(historicals)} simulations.")
+                i = 0
+                for h in historicals:
+                    print(f"    Historical {i} recordings: {len(historicals[h])}")
+                    i += 1
+                print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
+
+                # Check for any possible matches between causes and real IMU's
+                threads = []
+                possible_causes = []
+                with ProcessPoolExecutor(max_workers=2) as executor:
+                    # Launch proccesses
+                    for h in historicals:
+                        threads.append(executor.submit(SpecificWorker.find_matching_imu_recordings, self.imu_history, historicals[h]))
+                    # Wait for processes and check results
+                    i = 0
+                    for thread in threads:
+                        res = thread.result()
+                        if res:
+                            print(f"Match found in simulation {res} for cause {self.causes_data[i]["name"]}!")
+                            # We store [simulation ID, cause type] in possible_causes
+                            possible_causes.append([res, self.causes_data[res]["name"]])
+                        else:
+                            print(f"No match found for cause {self.causes_data[i]["name"]}.")
+                        i += 1
+                            
+                self.state = "IDLE"
+                
         return True
 
     def startup_check(self):
         QTimer.singleShot(200, QApplication.instance().quit)
-
+        
 
     # =============== SIMULATION HELPERS  ================
     # ====================================================
+
+    def check_for_problem(self):
+        follow_node = self.g.get_node("follow_me")
+        if follow_node is not None:
+                if not follow_node.attrs["aff_interacting"].value:
+                    self.writeSimulationScene()
+                    return True
+        return False
 
     def show_compute_time_step(self):
         """
@@ -191,10 +345,43 @@ class SpecificWorker(GenericWorker):
             
         return time_step
 
+    @staticmethod
+    def find_matching_imu_recordings(rimu, simu, margin=0.05):
+        """
+        Find if there is any match between the real IMU recordings and the simulated ones.
+        If there is a match, it means that the cause being simulated could be the reason behind the problem detected in the real robot.
+        :param rimu: Dictionary with frames of the real IMU recordings (timestamp, accelerometer and gyroscope)
+        :param simu: List of dictioraries, each one with frames of the simulated IMU recordings (timestamp, accelerometer, gyroscope)
+        :param margin: (Default=0.05) Margin of error to consider a match between real and simulated IMU measurements
+        :return: int, the ID of the simulation that matched the real IMU. If no match, return None.
+        """
+
+        # for each simu simulation...
+        for s in range(len(simu)):
+            is_matching = True
+            # for each frame of the simulation...
+            for i in range(len(simu[s])):
+                # check against each rimu frame...
+                for j in range(len(rimu[TIMESTAMP])):
+
+                    if simu[s][TIMESTAMP][i] == rimu[TIMESTAMP][j]: # If matching timestamps...
+                        # Does it match acc?
+                        if not np.allclose(simu[s][ACCELEROMETER][i], rimu[ACCELEROMETER][j], atol=margin): is_matching = False
+                        # Does it match gyro?
+                        if not np.allclose(simu[s][GYROSCOPE][i], rimu[GYROSCOPE][j], atol=margin): is_matching = False
+                    if not is_matching: break
+                    
+                if not is_matching: break
+            
+            if is_matching: # No mismatch found in any of the frames of this simulation, so we have a match!
+                return s
+
+        return None # No match found in any of the simulations
     
+    
+
     # =============== PYBULLET MODELS INFO  ================
     # ======================================================
-
 
     def get_joints_info(self, robot_id):
         """
@@ -241,6 +428,8 @@ class SpecificWorker(GenericWorker):
             link_name = link_info[12].decode("utf-8")
             link_name_to_id[link_name] = i
         return link_name_to_id
+    
+    
     
     # =============== ROBOT KINEMATICS  ================
     # ==================================================
