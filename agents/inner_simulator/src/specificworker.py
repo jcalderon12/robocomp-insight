@@ -265,7 +265,7 @@ class SpecificWorker(GenericWorker):
                     json_data = {"cause": cause}
                     json_data = json.dumps(json_data)
 
-                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe), "-rt"], pass_fds=[wpipe]), rpipe])
+                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
                     # Close wpipe descriptor to prevent deadlocks
                     os.close(wpipe)
                 
