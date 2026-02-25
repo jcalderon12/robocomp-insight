@@ -91,10 +91,6 @@ void SpecificWorker::compute()
 
 
 	if (has_significant_change(relative_pose, last_relative_pose)){
-			for (int i = 0; i < 7; ++i) {
-				std::cout << "Relative pose[" << i << "]: " << relative_pose[i] << std::endl;
-			}
-			std::cout << "-----------------------------" << std::endl;
 		update_relative_pose_to_person(relative_pose);
 		last_relative_pose = relative_pose;
 	}
