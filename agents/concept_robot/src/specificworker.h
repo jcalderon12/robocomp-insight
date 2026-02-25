@@ -35,6 +35,10 @@
 #include <vector>
 #include <cmath>
 
+// Robot maximum speeds
+static constexpr float WEBOTS_MAX_LINEAR_SPEED  = 1.5f; //meters per second
+static constexpr float WEBOTS_MAX_ANGULAR_SPEED = 4.03f; //radians per second 
+
 
 /**
  * \brief Class SpecificWorker implements the core functionality of the component.
@@ -105,6 +109,37 @@ public slots:
 	 */
 	bool has_significant_change(const std::vector<float>& a,const std::vector<float>& b,double atol=0.001);
 
+	/**
+	 * \brief This method calculates the desired linear and angular velocities to follow a target while maintaining a certain distance. 
+	 * It uses a proportional controller to compute the velocities based on the distance and angle to the target, and then sends these velocities to the DSR graph. 
+	 * If the target is too close, it stops the robot.
+	 * \param max_forward_speed_factor: Maximum forward speed factor to apply to the robot (between 0 and 1).
+	 * \param max_angular_speed_factor: Maximum angular speed factor to apply to the robot (between 0 and 1).
+	 * \param desired_distance: Desired distance to the target in meters.
+	 * 
+	 */
+	void follow_target(float max_forward_speed_factor = 0.6f, float max_angular_speed_factor = 0.6f, float desired_distance = 0.5f);
+
+	/**
+	 * \brief This method calculates the robot position in the actual room and update the DSR graph with this information. 
+	 * It uses the auto_localization method to get the robot position and orientation, and then updates the corresponding attributes in the DSR graph. 
+	 * If the robot node does not exist in the DSR graph, it creates it.
+	 * \return The robot pose in the format {x, y, z, qx, qy, qz, qw}.
+	 */
+	std::vector<float> auto_localization();
+
+	/**
+	 * \brief Method to check if there is an active affordance in the DSR graph. 
+	 * An active affordance is an affordance node that comes from the person node target and has the attribute aff_interacting_att to true.
+	 * \return Return true if there is an active affordance. false otherwise.
+	 */
+	bool queck_affordance_active();
+
+	/**
+	 * \brief Method to set the robot speed in zero.
+	 */
+	void stop_robot();
+
 	void modify_node_slot(std::uint64_t, const std::string &type){};
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){};
 	void modify_edge_slot(std::uint64_t from, std::uint64_t to,  const std::string &type){};
@@ -122,6 +157,13 @@ private:
 	std::vector<float> last_angular_velocity_measurement;
 
 	std::vector<float> last_velocities_readed;
+	std::vector<float> last_robot_pose;
+
+	bool print_extra_info = false;
+	bool simulated = true;
+	std::string robot_DEF = "shadow";
+
+	std::unique_ptr<DSR::RT_API> rt;
 
 signals:
 	//void customSignal();

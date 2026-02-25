@@ -42,8 +42,8 @@ SET (SOURCES
 
 #ROBOCOMP
 ROBOCOMP_INITIALIZE( $ENV{ROBOCOMP}/ )
-ROBOCOMP_IDSL_TO_ICE(Gridder IMU GenericBase Webots2Robocomp FullPoseEstimationPub CameraRGBDSimple OmniRobot Camera360RGB FullPoseEstimation Lidar3D)
-ROBOCOMP_ICE_TO_SRC(Gridder IMU GenericBase Webots2Robocomp FullPoseEstimationPub CameraRGBDSimple OmniRobot Camera360RGB FullPoseEstimation Lidar3D)
+ROBOCOMP_IDSL_TO_ICE(CameraRGBDSimple Camera360RGB OmniRobot IMU Webots2Robocomp FullPoseEstimationPub FullPoseEstimation Lidar3D GenericBase Gridder)
+ROBOCOMP_ICE_TO_SRC(CameraRGBDSimple Camera360RGB OmniRobot IMU Webots2Robocomp FullPoseEstimationPub FullPoseEstimation Lidar3D GenericBase Gridder)
 SET (EXECUTABLE_OUTPUT_PATH ${RC_COMPONENT_DEVEL_PATH}/bin)
 set(CMAKE_AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 

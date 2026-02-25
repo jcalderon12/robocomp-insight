@@ -58,6 +58,15 @@ public:
 
 	void VisualElementsPub_setVisualObjects(RoboCompVisualElementsPub::TData data);
 
+	struct BottlePose {
+		float x;
+		float y;
+		float z;
+		float qx;
+		float qy;
+		float qz;
+		float qw;
+	};
 
 public slots:
 
@@ -100,7 +109,16 @@ public slots:
 	 */
 	bool check_bottle_related_robot();
 
+	/**
+	 * \brief Changes the reference frame from the robot to the root in the DSR graph.
+	 */
 	void change_rt_from_robot_to_root();
+
+	/**
+	 * \brief Detects the bottle and returns its position as a vector of floats.
+	 * \return A vector of floats representing the position of the detected bottle.
+	 */
+	BottlePose detect_bottle();
 
 private:
 
@@ -108,6 +126,8 @@ private:
      * \brief Flag indicating whether startup checks are enabled.
      */
 	bool startup_check_flag;
+
+	bool simulated = configLoader.get<bool>("Simulated");
 
 signals:
 	//void customSignal();
