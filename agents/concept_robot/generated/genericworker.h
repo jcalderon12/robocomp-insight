@@ -20,15 +20,6 @@
 #define GENERICWORKER_H
 
 #include <stdint.h>
-
-#if Qt5_FOUND
-	#include <QtWidgets>
-#else
-	#include <QtGui>
-#endif
-#include <ui_mainUI.h>
-#define USE_QTGUI
-
 #include <grafcetStep/GRAFCETStep.h>
 #include <ConfigLoader/ConfigLoader.h>
 #include <QStateMachine>
@@ -61,7 +52,7 @@
 using TuplePrx = std::tuple<RoboCompCamera360RGB::Camera360RGBPrxPtr,RoboCompIMU::IMUPrxPtr,RoboCompLidar3D::Lidar3DPrxPtr,RoboCompOmniRobot::OmniRobotPrxPtr,RoboCompWebots2Robocomp::Webots2RobocompPrxPtr>;
 
 
-class GenericWorker : public QMainWindow, public Ui_guiDlg
+class GenericWorker : public QObject
 {
 Q_OBJECT
 public:

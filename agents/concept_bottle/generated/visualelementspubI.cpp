@@ -21,7 +21,7 @@
 VisualElementsPubI::VisualElementsPubI(GenericWorker *_worker, const size_t id): worker(_worker), id(id)
 {
 	setVisualObjectsHandlers = {
-		[this](auto a) { return worker->VisualElementsPub_setVisualObjects(a); }
+		[this](auto &a) { return worker->VisualElementsPub_setVisualObjects(a); }
 	};
 
 }

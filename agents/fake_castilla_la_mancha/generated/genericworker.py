@@ -21,18 +21,11 @@
 import sys, Ice, os
 from PySide6 import QtWidgets, QtCore
 from pydsr import DSRGraph
+from ConfigLoader import ConfigLoader
 
 
 
-try:
-    from pathlib import Path
-    sys.path.append(str(Path(__file__).parent.parent))
-    from src.ui_mainUI import *
-except:
-    print("Can't import UI file. Did you run 'make'?")
-    sys.exit(-1)
-
-class GenericWorker(QtWidgets.QMainWindow):
+class GenericWorker(QtCore.QObject):
 
     kill = QtCore.Signal()
 
@@ -40,16 +33,40 @@ class GenericWorker(QtWidgets.QMainWindow):
         super(GenericWorker, self).__init__()
 
 
-        self.ui = Ui_guiDlg()
-        self.ui.setupUi(self)
-        self.show()
-
         self.configData = configData
 
         self.Period = 30
         self.timer = QtCore.QTimer(self)
-        self.agent_id = configData["Agent"]["id"]
-        self.g = DSRGraph(0, configData["Agent"]["name"], self.agent_id, configData["Agent"]["configFile"])
+        self.agent_name = configData.get("Agent", {}).get("name")
+        self.agent_id = configData.get("Agent", {}).get("id")
+
+        # Initialize DSR
+        sur_names = ConfigLoader.get_sur_names(configData, "Agent")
+
+        self.graphs = {}
+        self.g = None
+        if not sur_names:
+            domain = configData.get("Agent", {}).get("domain", 0)
+            config_file = configData.get("Agent", {}).get("configFile")
+    
+            new_graph = DSRGraph(0, self.agent_name, self.agent_id, config_file, True, domain)
+            self.g = new_graph
+    
+            print("Graph loaded")
+            self.graphs[""] = self.g
+        else:
+            print(f"Multiple graphs found: {len(sur_names)}")
+    
+            for name in sur_names:
+                prefix_data = configData["Agent"][name]
+        
+                config_file = prefix_data.get("configFile")
+                domain = prefix_data.get("domain", 0)
+
+                self.graphs[name] = DSRGraph(0, self.agent_name, self.agent_id, config_file, True, domain)
+                print(f"Graph {name} loaded")
+
+            self.g = self.graphs[sur_names[0]]
 
     @QtCore.Slot()
     def killYourSelf(self):

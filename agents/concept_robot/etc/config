@@ -21,10 +21,10 @@ Agent.name = "concept_robot"
 # Use this if you only have one graph.
 Agent.configFile = ""
 Agent.domain = 0
-Agent.tree = true
-Agent.graph = true
-Agent.2d = true
-Agent.3d = true
+Agent.tree = false
+Agent.graph = false
+Agent.2d = false
+Agent.3d = false
 
 # --- Multiple Instance Template ---
 # If you define sub-instances, the single instance config above will be ignored.
@@ -39,7 +39,7 @@ Agent.3d = true
 Period.Compute = 16
 Period.Emergency = 500
 
-Component.Debug.Verbose = true
+Component.Debug.Verbose = false
 
 Ice.Warn.Connections = "0"
 Ice.Trace.Network = "0"

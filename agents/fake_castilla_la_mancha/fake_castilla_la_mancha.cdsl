@@ -7,7 +7,6 @@ Component fake_castilla_la_mancha
 
     };
     language python;
-    gui Qt(QMainWindow);
     options dsr;
 
 };
