@@ -34,6 +34,7 @@
 #include <genericworker.h>
 #include <fstream>
 #include "ui_historic_debugger.h"
+#include "historic_manager.h"
 #include "DSRDecoder.h"
 #include "DSRTypeTrait.h"
 
@@ -114,10 +115,11 @@ private:
 	bool startup_check_flag;
 	bool string_check_flag = true;
  
-	// Historic window, graph and viewer
+	// Historic window, graph, viewer and manager
 	QMainWindow *historic_window;
 	std::shared_ptr<DSR::DSRGraph> historic_graph;
 	std::unique_ptr<DSR::DSRViewer> historic_viewer;
+	std::unique_ptr<HistoricManager> historic_manager;
 
 	// Historic debugger widget
 	Ui::historic_debugger historic_debugger_ui;
@@ -141,6 +143,7 @@ private:
 	void load_changes(const std::string filename = "mission.txt");
 
 	void display_debugger_graph();
+	void update_local_scrollbar(size_t keyframe_idx);
 
 signals:
 	//void customSignal();

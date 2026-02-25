@@ -72,14 +72,16 @@ void SpecificWorker::initialize()
 {
     std::cout << "initialize worker" << std::endl;
 	GenericWorker::initialize();
+	G = Graphs.at("work");
+	historic_graph = Graphs.at("episodic");
 
 	//dsr update signals
-	connect(G.get(), &DSR::DSRGraph::update_node_signal, this, &SpecificWorker::modify_node_slot);
-	connect(G.get(), &DSR::DSRGraph::update_edge_signal, this, &SpecificWorker::modify_edge_slot);
-	connect(G.get(), &DSR::DSRGraph::update_node_attr_signal, this, &SpecificWorker::modify_node_attrs_slot);
-	connect(G.get(), &DSR::DSRGraph::update_edge_attr_signal, this, &SpecificWorker::modify_edge_attrs_slot);
-	connect(G.get(), &DSR::DSRGraph::del_edge_signal, this, &SpecificWorker::del_edge_slot);
-	connect(G.get(), &DSR::DSRGraph::del_node_signal, this, &SpecificWorker::del_node_slot);
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_signal, this, &SpecificWorker::modify_node_slot);
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_signal, this, &SpecificWorker::modify_edge_slot);
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_attr_signal, this, &SpecificWorker::modify_node_attrs_slot);
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_attr_signal, this, &SpecificWorker::modify_edge_attrs_slot);
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::del_edge_signal, this, &SpecificWorker::del_edge_slot);
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::del_node_signal, this, &SpecificWorker::del_node_slot);
 
 	/***
 	Custom Widget
@@ -95,14 +97,39 @@ void SpecificWorker::initialize()
 	// historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window, historic_graph, current_opts, main);
 	// historic_window->show();
 
+	// Historic Debugger
 	historic_debugger_ui.setupUi(&historic_debugger_widget);
 	connect(historic_debugger_ui.local_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::local_changes_management);
 	connect(historic_debugger_ui.global_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::global_changes_management);
 	graph_viewers.at("episodic")->add_custom_widget_to_dock("Historic debugger", &historic_debugger_widget);
 
+	// Historic Manager
+	// historic_manager = std::make_unique<HistoricManager>(historic_graph, 50);
+	// std::string historic_file = "only_keyframes.txt";
+	// if (historic_manager->index_file(historic_file)) {
+	// 	std::cout << __FUNCTION__ << " - Historic file indexed successfully" << std::endl;
+
+	// 	// Scrollbars configuration
+	// 	size_t keyframe_count = historic_manager->get_keyframe_count();
+	// 	historic_debugger_ui.global_changes_scroll_bar->setMaximum(keyframe_count - 1);
+
+	// 	// First keyframe
+	// 	if (keyframe_count > 0) {
+	// 		historic_manager->load_keyframe(0);
+	// 		update_local_scrollbar(0);
+	// 	}
+	// } else { std::cerr << __FUNCTION__ << " - Failed to index historic faile" << std::endl; }
+	
+	// Initial keyframe
 	keyframe_period = std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
 	time_check = std::chrono::system_clock::now(); 
 	generate_keyframe();
+
+	DSR::Node node("object", G->get_agent_id(),{},{}, );
+	node.id(uint64_t(300));
+	node.name("patata");
+	node.type();
+	historic_graph->insert_node(node);
 
     /////////GET PARAMS, OPEND DEVICES....////////
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
@@ -115,23 +142,24 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	// Generate a new keyframe every X seconds
-	static int delete_me = 0;
-	auto time_now = std::chrono::system_clock::now();
-	if (time_now - time_check >= keyframe_period){
-		time_check = std::chrono::system_clock::now();		
+	// static int delete_me = 0;
+	// auto time_now = std::chrono::system_clock::now();
+	// if (time_now - time_check >= keyframe_period){
+	// 	time_check = std::chrono::system_clock::now();		
 		
-		if (delete_me != -1) delete_me++;
-		if (delete_me <= 3 && delete_me != -1) {
-				generate_keyframe();
-		}
-		else if (delete_me != -1) {
-			show_deb = true;
-			delete_me = -1;
-			save_changes_to_file("mission.txt");
-			load_changes("mission.txt");
+	// 	if (delete_me != -1) delete_me++;
+	// 	if (delete_me <= 3 && delete_me != -1) {
+	// 			generate_keyframe();
+	// 	}
+	// 	else if (delete_me != -1) {
+	// 		show_deb = true;
+	// 		delete_me = -1;
+	// 		save_changes_to_file("keyframes_and_changes.txt");
+	// 		// load_changes("mission.txt");
 
-		}
-	}
+	// 	}
+	// }
+
 }
 
 
@@ -176,11 +204,31 @@ void SpecificWorker::global_changes_management(int value){
 	std::cout << "Global scroll bar position: " << value << std::endl;	
 	// if (!decoded_data.empty())
 	
+	// Load keyframe with value as index
+	historic_manager->load_keyframe(value, false);
+
+	// Update scrollbar max value
+	update_local_scrollbar(value);
+
+	// Reset local scrollbar to 0
+	// historic_debugger_ui.local_scroll_bar->setValue(0);
+
+	// Update UI
+	// label ? - update potential time label
+
+}
 
 
-	// if (show_deb){
+void SpecificWorker::update_local_scrollbar(size_t keyframe_idx){
+	size_t local_count = historic_manager->get_local_changes_count(keyframe_idx);
 
-	// }
+	if (local_count > 0) {
+		historic_debugger_ui.local_changes_scroll_bar->setMaximum(local_count - 1);
+		// label? - "local changes 0/X.."
+	} else {
+		historic_debugger_ui.local_changes_scroll_bar->setMaximum(0);
+		// label? - "no local changes.."
+	}
 }
 
 
@@ -572,6 +620,6 @@ void SpecificWorker::generate_keyframe(){
 	dsr_kdata += DSRSpecialChars::K_DIV;
 
 	changes_map[new_timestamp] = dsr_kdata;
-	std::cout << dsr_kdata << std::endl;
-	std::cout << std::endl;
+	// std::cout << dsr_kdata << std::endl;
+	// std::cout << std::endl;
 }
