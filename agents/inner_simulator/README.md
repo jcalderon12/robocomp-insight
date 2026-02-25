@@ -1,105 +1,139 @@
 # inner_simulator
 
 ## Overview
-`inner_simulator` provides a PyBullet-based simulation environment and a small framework to define and run "causes" (simulation events or disturbances). It includes an engine abstraction, Pydantic models for scene configuration, IMU simulation, and a worker that integrates the simulation into the RoboComp stack.
 
-## Configuration parameters
-The component uses a configuration file (example located at `etc/config`). The main runtime parameters are provided through the agent `config` and the `SimulationScene` JSON files (see `src/simulation_scene.py` for fields).
+`inner_simulator` is a RoboComp agent that maintains a PyBullet physics simulation mirroring the real robot. It publishes synthetic IMU data to the DSR graph and, when the robot encounters a problem, launches parallel simulations of candidate *causes* (disturbances such as bumps or wheel failures) to identify which one best explains the observed sensor readings.
+
+The project is organised around three subsystems:
+
+1. **Runtime simulation** — `SpecificWorker` keeps a live PyBullet scene synchronised with DSR and records real IMU data.
+2. **Cause evaluation** — `CausesSimulator` runs headless PyBullet instances (one per candidate cause) and returns simulated IMU traces for comparison.
+3. **Cause generation** — a code-generation pipeline under `src/cause_gen/` that turns a JSON cause definition into a ready-to-use Python `Cause` subclass.
+
+## Configuration
+
+| File | Purpose |
+|---|---|
+| `etc/config` | Agent ID, DSR flags, compute period. |
+| `src/sim_scene.json` | `SimulationScene` parameters (gravity, poses, velocity, repetitions). |
+| `src/causes.json` | List of cause payloads to evaluate when a problem is detected. |
 
 ## Starting the component
-To run locally without modifying the repository config:
 
 ```bash
-cd /path/to/inner_simulator
-cp etc/config config
-# edit `config` as needed
-bin/inner_simulator config
+bin/inner_simulator etc/config
 ```
 
 ## Classes
-This section lists the main classes in the project, with a short description, constructor / parameters and produced outputs. Abstract base classes are documented as contracts that concrete implementations must satisfy. Concrete cause implementations under `src/causes/implementations` are intentionally omitted from this document.
 
-- `ApplyAction` (abstract):
-	- Description: Contract for an action that modifies the simulated world as part of a cause. Implementations are code-generation helpers used when defining causes.
-	- Methods / parameters: `render_action_variables()` and `render_action_call()` — abstract render methods that subclasses must implement (expected to return textual/code fragments used when generating/appling actions).
-	- Output: No runtime side-effect by itself; subclass implementations typically return strings used in cause-generation or perform action-specific calls.
+> Abstract base classes are documented as contracts. Concrete cause implementations under `src/causes/implementations/` are intentionally omitted.
 
-- `InstanceGenerator` (abstract):
-	- Description: Contract for strategies that generate instances (positions, parameters, etc.) used by causes. Used by the cause generator subsystem.
-	- Methods / parameters: `render_generate_instance()` — abstract method to produce an instance representation; concrete subclasses implement generation logic.
-	- Output: Subclass-defined instance representation (commonly serialized or used to instantiate objects in generated cause code).
+### `SpecificWorker` — `src/specificworker.py`
 
-- `Cause` (abstract) — `src/causes/cause.py`:
-	- Description: Base interface for all simulation causes. A cause represents a disturbance or scenario modification applied to the simulation.
-	- Methods / parameters: Implementations must provide:
-		- `apply(self, engine)`: invoked once before a series of simulation steps to prepare the scene.
-		- `apply_compute(self, engine)`: invoked during the simulation compute loop to apply time-dependent behavior.
-		Both methods receive an `engine` instance (an Engine implementation) to interact with the simulator.
-	- Output: Causes typically modify the simulation state via the provided `engine` (e.g., instantiate bodies, disable wheels).
+Main RoboComp agent. Runs a PyBullet scene, reads robot velocities from DSR, drives the simulated robot accordingly, and publishes synthetic IMU readings back to DSR. When a problem is detected (the `follow_me` affordance becomes inactive), it serialises the current scene, loads the cause list from `src/causes.json`, spawns a `CausesSimulator` subprocess per cause, collects their IMU histories, and compares them against the real recording to find a match.
 
-- `CausesSimulator` — `src/causes_simulator.py`:
-	- Description: Orchestrates PyBullet simulation runs for a given cause and scene. Loads causes dynamically, manages simulation loop, collects IMU data, and communicates results back to the parent process.
-	- Constructor parameters: `cause` (JSON string defining cause values), `simulation_scene` (path to a `SimulationScene` JSON), `pipe` (pipe identifier to send results), `real_time` (bool; optional).
-	- Key responsibilities / outputs:
-		- Loads a `SimulationScene` (Pydantic model) and applies simulation parameters.
-		- Initializes PyBullet, robot model, IMU sensor, and engine wrapper (`EnginePybullet`).
-		- Runs simulations (`simulate`, `doSimulations`) collecting IMU traces and storing them in `self.historical`.
-		- Sends recorded history as JSON through the provided pipe via `send_history_to_parent()`.
-		- Dynamically discovers cause subclasses (plugin loading) from `src/causes/implementations` and validates them against the `Cause` base class.
+- **Parameters:** `proxy_map`, `configData` (dict with `Period.Compute`), `startup_check` (bool).
+- **Output:** Synthetic IMU node (`imu_sintetic`) in the DSR graph; console report of matched causes.
 
-- `Engine` (abstract) — `src/engines/engine.py`:
-	- Description: Minimal engine API that cause implementations use to interact with the underlying simulator.
-	- Methods / parameters (abstract):
-		- `instantiate_body(self, body_file, body_position)` — spawn a body in the scene.
-		- `get_simulation_time(self)` — return current simulation time.
-		- `disable_robot_wheel(self, wheel_name)` — disable a named wheel.
-		- `get_simulation_length(self)` — return configured simulation length.
-	- Output: None directly; implementations delegate to the concrete simulator (e.g., `EnginePybullet`).
+### `SimulationScene` — `src/simulation_scene.py`
 
-- `EnginePybullet` — `src/engines/engine_pybullet.py`:
-	- Description: Concrete `Engine` implementation that delegates calls to `CausesSimulator` to operate on a PyBullet-backed scene.
-	- Constructor parameters: `sim_instance` (the `CausesSimulator` instance to operate on).
-	- Methods / outputs: Implements the `Engine` contract by forwarding `instantiate_body`, `get_simulation_time`, `disable_robot_wheel`, and `get_simulation_length` to the simulator instance.
+Pydantic model that holds every parameter needed to configure a simulation run.
 
-- `SimulationScene` (Pydantic model) — `src/simulation_scene.py`:
-	- Description: Typed model describing static simulation parameters used to configure a run.
-	- Fields / parameters:
-		- `gravity: float`
-		- `robot_velocity: float`
-		- `initial_robot_position: list[float]`
-		- `initial_robot_orientation: list[float]`
-		- `final_robot_position: list[float]`
-		- `final_robot_orientation: list[float]`
-		- `problem_position: list[float]`
-		- `problem_orientation: list[float]`
-		- `simulation_length: float`
-		- `num_of_repetitions: int`
-	- Output: Used by `CausesSimulator` to configure gravity, initial pose, and loop length.
+- **Fields:**
+  - `gravity: float` — vertical gravity component (m/s²).
+  - `robot_velocity: float` — forward speed set-point (m/s).
+  - `initial_robot_position: list[float]` — starting `[x, y, z]`.
+  - `initial_robot_orientation: list[float]` — starting quaternion `[x, y, z, w]`.
+  - `final_robot_position: list[float]` — pose when the problem was detected.
+  - `final_robot_orientation: list[float]` — orientation when the problem was detected.
+  - `problem_position: list[float]` — position at the moment of failure.
+  - `problem_orientation: list[float]` — orientation at the moment of failure.
+  - `simulation_length: float` — duration of each run (seconds).
+  - `num_of_repetitions: int` — how many times the scenario is repeated.
+- **Output:** Serialisable JSON consumed by `CausesSimulator`.
 
-- `IMU` — `src/pybullet_imu.py`:
-	- Description: Simple IMU simulator that approximates accelerometer and angular velocity readings from PyBullet state.
-	- Constructor parameters: `body_id` (PyBullet body id of the robot), `dt` (simulation timestep).
-	- Key method: `get_measurement()` — returns `(accelerometer, angular_velocity)` as NumPy arrays. The sensor model includes bias and white noise terms.
+### `IMU` — `src/pybullet_imu.py`
 
-- `GenericWorker` — `generated/genericworker.py`:
-	- Description: Base GUI/agent worker (generated). Initializes UI, a `DSRGraph` instance, and a compute timer used by `SpecificWorker`.
-	- Constructor parameters: `(mprx, configData)` — generated scaffolding expects proxy map and config data.
-	- Provided features: `setPeriod()` and `killYourSelf()` slots, UI wiring and a `Period` timer.
+Simulates an IMU sensor attached to a PyBullet body using the model $\tilde{a} = R_{W}^{IMU}(a + g) + b + w$.
 
-- `SpecificWorker` — `src/specificworker.py`:
-	- Description: Application worker that embeds the simulation in the RoboComp stack. It creates a PyBullet scene for debugging, interacts with DSR signals, publishes IMU data, and uses `CausesSimulator` to run cause-driven experiments.
-	- Constructor parameters: `proxy_map` (proxy map), `configData` (configuration dictionary), `startup_check` (bool).
-	- Key behavior / outputs:
-		- Sets up PyBullet world, loads robot and models, initializes `IMU` and `SimulationScene` defaults.
-		- Provides methods to record IMU traces and write debug `sim_scene.json`.
-		- Uses `CausesSimulator` to execute cause-driven simulation experiments when required.
+- **Parameters:** `body_id` (PyBullet body handle), `dt` (simulation time-step).
+- **Output:** `get_measurement()` → `(accelerometer: np.ndarray[3], gyroscope: np.ndarray[3])`.
 
-## Notes and development pointers
-- The cause discovery mechanism in `src/causes_simulator.py` dynamically imports modules from `src/causes/implementations` and builds a discriminated Pydantic union to validate cause JSON payloads.
-- The cause generation subsystem uses `ApplyAction` and `InstanceGenerator` abstractions along with additional helper modules under `src/cause_gen/` to produce or serialize new causes. The abstract base classes live in `src/cause_gen/apply_action/apply_action.py` and `src/cause_gen/instance_generator/instance_generator.py`.
+### `CausesSimulator` — `src/causes_simulator.py`
 
-## Contact / License
-This project follows the licensing pattern used in RoboComp examples. See source headers for license information.
+Headless simulation runner. Initialises its own PyBullet instance, loads a `SimulationScene`, validates the cause JSON against a dynamically-built discriminated Pydantic union of all `Cause` subclasses found in `src/causes/implementations/`, and executes `num_of_repetitions` simulation runs collecting IMU traces.
 
---
-Documentation generated to describe the main classes and how they interact. For more details or to include per-class code examples, tell me which classes you want expanded.
+- **Parameters:** `cause` (JSON string), `simulation_scene` (path to scene JSON), `pipe` (file-descriptor for IPC), `real_time` (bool, optional).
+- **Output:** JSON array of IMU histories written to the pipe via `send_history_to_parent()`.
+
+### `Cause` *(abstract)* — `src/causes/cause.py`
+
+Base interface for all simulation disturbances. Every cause must implement two hooks:
+
+| Method | Called | Purpose |
+|---|---|---|
+| `apply(self, engine)` | Once before each run | Prepare the scene (e.g., spawn an obstacle). |
+| `apply_compute(self, engine)` | Every simulation step | Apply time-dependent behaviour (e.g., disable a wheel at a given instant). |
+
+Both methods receive an `Engine` instance to interact with the simulator.
+
+### `Engine` *(abstract)* — `src/engines/engine.py`
+
+Simulator-agnostic API that causes use to modify the world.
+
+| Method | Description |
+|---|---|
+| `instantiate_body(body_file, body_position)` | Spawn a URDF body at the given position. |
+| `get_simulation_time()` | Current simulation time (s). |
+| `disable_robot_wheel(wheel_name)` | Disable a wheel by simplified name (`FL`, `FR`, `BL`, `BR`). |
+| `get_simulation_length()` | Total configured run duration (s). |
+
+### `EnginePybullet` — `src/engines/engine_pybullet.py`
+
+Concrete `Engine` implementation that delegates every call to a `CausesSimulator` instance.
+
+- **Parameters:** `sim_instance` (`CausesSimulator`).
+- **Output:** Forwards all operations to the PyBullet-backed simulator.
+
+### `DefinedCause` — `src/cause_gen/defined_cause.py`
+
+Pydantic model and Jinja2-based code generator. Reads a JSON cause definition containing instance generators and actions, and renders a complete Python `Cause` subclass file.
+
+- **Fields:**
+  - `name: str` — cause identifier (used as the Pydantic `Literal` discriminator).
+  - `description: str` — docstring for the generated class.
+  - `instance_generators: list[InstanceGeneratorUnion]` — strategies that produce runtime values.
+  - `apply_actions: list[ApplyActionUnion]` — actions executed in `apply()`.
+  - `apply_compute_actions: list[ApplyActionUnion]` — actions executed in `apply_compute()`.
+- **Output:** `render_cause()` → Python source code string of the generated `Cause` subclass. Can be run as a CLI via `python defined_cause.py -f <json> [-o <output>]`.
+
+### `ApplyAction` *(abstract)* — `src/cause_gen/apply_action/apply_action.py`
+
+Contract for code-generation actions used by `DefinedCause`. Each implementation renders fragments of Python code that will be embedded in the generated cause class.
+
+| Method | Returns |
+|---|---|
+| `render_action_variables()` | List of field/variable declarations (strings). |
+| `render_action_call()` | List of executable statements (strings). |
+
+Example implementations: `ApplyActionInstantiateBody` (spawns a body at a generated position), `ApplyActionStopRobotWheel` (disables a wheel after a time threshold).
+
+### `InstanceGenerator` *(abstract)* — `src/cause_gen/instance_generator/instance_generator.py`
+
+Contract for code-generation strategies that produce runtime values (coordinates, random numbers, etc.) embedded into generated cause classes.
+
+| Method | Returns |
+|---|---|
+| `render_generate_instance()` | A string containing a complete Python method definition. |
+
+Example implementations: `InstanceRandomRangeCoordinates` (random 3-D point within a bounding box), `InstanceSimpleRandom` (single random float), `InstanceNone` (no-op placeholder).
+
+## Architecture notes
+
+- **Cause discovery** — At import time, `causes_simulator.py` scans `src/causes/implementations/`, collects every `Cause` subclass, and builds a Pydantic discriminated union keyed on the `name` literal. This allows cause JSON payloads to be validated and deserialised automatically.
+- **IPC model** — `SpecificWorker` spawns each `CausesSimulator` as a subprocess, passing a write pipe file-descriptor. The child writes its JSON history to the pipe; the parent reads and deserialises it after the child exits.
+- **Cause generation** — Running `python src/cause_gen/defined_cause.py -f definition.json` produces a self-contained `.py` file that can be dropped into `src/causes/implementations/` and will be picked up automatically on the next run.
+
+## License
+
+This project follows the RoboComp licensing model (GPLv3). See individual source file headers for details.
