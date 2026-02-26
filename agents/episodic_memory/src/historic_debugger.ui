@@ -84,20 +84,7 @@
      <item>
       <layout class="QHBoxLayout" name="horizontalLayout_2">
        <item>
-        <spacer name="horizontalSpacer_3">
-         <property name="orientation">
-          <enum>Qt::Horizontal</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>40</width>
-           <height>20</height>
-          </size>
-         </property>
-        </spacer>
-       </item>
-       <item>
-        <widget class="QLabel" name="global_label_2">
+        <widget class="QLabel" name="local_label">
          <property name="autoFillBackground">
           <bool>false</bool>
          </property>
@@ -137,6 +124,19 @@
          </property>
         </spacer>
        </item>
+       <item>
+        <widget class="QLabel" name="local_display_label">
+         <property name="maximumSize">
+          <size>
+           <width>600</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>0 / 0</string>
+         </property>
+        </widget>
+       </item>
       </layout>
      </item>
      <item>
@@ -161,19 +161,6 @@
      </item>
      <item>
       <layout class="QHBoxLayout" name="horizontalLayout_4">
-       <item>
-        <spacer name="horizontalSpacer_4">
-         <property name="orientation">
-          <enum>Qt::Horizontal</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>40</width>
-           <height>20</height>
-          </size>
-         </property>
-        </spacer>
-       </item>
        <item>
         <widget class="QLabel" name="global_label">
          <property name="autoFillBackground">
@@ -214,6 +201,19 @@
           </size>
          </property>
         </spacer>
+       </item>
+       <item>
+        <widget class="QLabel" name="global_display_label">
+         <property name="maximumSize">
+          <size>
+           <width>600</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>0 / 0</string>
+         </property>
+        </widget>
        </item>
       </layout>
      </item>
