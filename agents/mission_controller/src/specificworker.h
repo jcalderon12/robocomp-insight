@@ -33,7 +33,10 @@
 
 #include <genericworker.h>
 #include "ui_mission_controller.h"
-
+#include "MissionModel.h"
+#include "MissionDelegate.h"
+#include "ui_add_mission_dialog.h"
+#include <chrono>
 
 /**
  * \brief Class SpecificWorker implements the core functionality of the component.
@@ -54,6 +57,15 @@ public:
      * \brief Destructor for SpecificWorker.
      */
 	~SpecificWorker();
+
+	/**
+	 * \brief Retrieves a list of available missions.
+	 * \return A vector of strings representing the available missions.
+	 */
+	std::vector<std::string> getAvailableMissions() const
+	{
+		return {"Follow Person", "Navigate to Point"};
+	}
 
 public slots:
 
@@ -97,7 +109,7 @@ public slots:
 	void on_startMission_clicked();
 
 	void modify_node_slot(std::uint64_t, const std::string &type){};
-	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){};
+	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names);
 	void modify_edge_slot(std::uint64_t from, std::uint64_t to,  const std::string &type){};
 	void modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to, const std::string &type, const std::vector<std::string>& att_names){};
 	void del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag){};
@@ -111,7 +123,13 @@ private:
 
 	Ui::mission_controller mission_controller_ui;
 	QWidget mission_controller_widget;
-	std::map<std::string, int> mission_types;
+
+	MissionModel *model;
+    MissionDelegate *delegate;
+
+	int active_mission_row = -1;
+	std::chrono::steady_clock::time_point mission_start_time;
+	int mission_accumulated_time = 0;  // Tiempo acumulado en segundos
 
 signals:
 	//void customSignal();

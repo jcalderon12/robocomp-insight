@@ -1,11 +1,15 @@
 # Sources set
 LIST(APPEND SOURCES
   ../src/specificworker.cpp
+  ../src/MissionModel.cpp
+  ../src/MissionDelegate.cpp
 )
 
 # Headers set
 LIST(APPEND HEADERS
   ../src/specificworker.h
+  ../src/MissionModel.h
+  ../src/MissionDelegate.h
 )
 
 
