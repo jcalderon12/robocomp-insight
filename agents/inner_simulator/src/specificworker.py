@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 #
-#    Copyright (C) 2025 by YOUR NAME HERE
+#    Copyright (C) 2026 by YOUR NAME HERE
 #
 #    This file is part of RoboComp
 #
@@ -190,7 +190,7 @@ class SpecificWorker(GenericWorker):
        # Fake SIM_SCENE JSON file
        self.sim_scene.problem_position, self.sim_scene.problem_orientation = p.getBasePositionAndOrientation(self.robot)
        self.sim_scene.simulation_length = self.actual_time - self.initial_time
-       self.sim_scene.num_of_repetitions = 300
+       self.sim_scene.num_of_repetitions = 50
        self.sim_scene.model_validate(self.sim_scene.__dict__)
        file = open("src/sim_scene.json", "w")
        file.write(self.sim_scene.model_dump_json(indent=4))
@@ -215,6 +215,7 @@ class SpecificWorker(GenericWorker):
 
     @QtCore.Slot()
     def compute(self):
+        print(flush=True)
         self.show_compute_time_step()
         actual_imu_measurement = self.imu.get_measurement()
 
@@ -296,23 +297,32 @@ class SpecificWorker(GenericWorker):
 
                 # Check for any possible matches between causes and real IMU's
                 threads = []
-                possible_causes = []
+                sim_out = {}
+                sim_out["sim_scene"] = self.sim_scene.model_dump()
+                sim_out["registers"] = []
+                # {cause_definition: "asdasdasdas", top_five:[]}, {cause_definition: "asdas", top_five:[]}
                 with ProcessPoolExecutor(max_workers=2) as executor:
                     # Launch proccesses
                     for h in historicals:
                         threads.append(executor.submit(SpecificWorker.find_matching_imu_recordings, self.imu_history, historicals[h]))
                     # Wait for processes and check results
                     i = 0
-                    for thread in threads:
-                        res = thread.result()
-                        if res:
-                            print(f"Match found in simulation {res} for cause {self.causes_data[i]["name"]}!")
-                            # We store [simulation ID, cause type] in possible_causes
-                            possible_causes.append([res, self.causes_data[res]["name"]])
-                        else:
-                            print(f"No match found for cause {self.causes_data[i]["name"]}.")
+                    for h in historicals:
+                        res = threads[i].result()
+                        items = []
+                        print("Top 5 best recordings for cause", self.causes_data[i]["name"], ":")
+                        for rec in res:
+                            print("\tRecording", rec[0], "with score", rec[1])
+                            items.append(historicals[h][rec[0]]) #stores the whole recording (ts, acc and gyro) of the historical with id rec[0]
+                        
+                        row = {"cause_definition": self.causes_data[i], "top_five": items}
+                        sim_out["registers"].append(row)
                         i += 1
-                            
+
+                output = open(f"sim_output.json", "w")
+                output.write(json.dumps(sim_out, indent=4))
+                output.close()
+                
                 self.state = "IDLE"
                 
         return True
@@ -346,7 +356,7 @@ class SpecificWorker(GenericWorker):
         return time_step
 
     @staticmethod
-    def find_matching_imu_recordings(rimu, simu, margin=0.05):
+    def find_matching_imu_recordings(rimu, simu):
         """
         Find if there is any match between the real IMU recordings and the simulated ones.
         If there is a match, it means that the cause being simulated could be the reason behind the problem detected in the real robot.
@@ -355,28 +365,25 @@ class SpecificWorker(GenericWorker):
         :param margin: (Default=0.05) Margin of error to consider a match between real and simulated IMU measurements
         :return: int, the ID of the simulation that matched the real IMU. If no match, return None.
         """
-
+        scores = []
         # for each simu simulation...
         for s in range(len(simu)):
-            is_matching = True
+            print(f"Now sorting {len(simu[s][TIMESTAMP])} simu (id={s}) frames against {len(rimu[TIMESTAMP])} rimu frames.")
             # for each frame of the simulation...
             for i in range(len(simu[s])):
-                # check against each rimu frame...
-                for j in range(len(rimu[TIMESTAMP])):
 
-                    if simu[s][TIMESTAMP][i] == rimu[TIMESTAMP][j]: # If matching timestamps...
-                        # Does it match acc?
-                        if not np.allclose(simu[s][ACCELEROMETER][i], rimu[ACCELEROMETER][j], atol=margin): is_matching = False
-                        # Does it match gyro?
-                        if not np.allclose(simu[s][GYROSCOPE][i], rimu[GYROSCOPE][j], atol=margin): is_matching = False
-                    if not is_matching: break
-                    
-                if not is_matching: break
-            
-            if is_matching: # No mismatch found in any of the frames of this simulation, so we have a match!
-                return s
+                # Find closest timestamp value of simu to rimu's timestamp
+                ts = min(rimu[TIMESTAMP], key=lambda v: abs(v - simu[s][TIMESTAMP][i]))
+                frame_id = rimu[TIMESTAMP].index(ts)
 
-        return None # No match found in any of the simulations
+                diff_acc = np.linalg.norm(np.array(simu[s][ACCELEROMETER][i]) - np.array(rimu[ACCELEROMETER][frame_id]))
+                diff_gyro = np.linalg.norm(np.array(simu[s][GYROSCOPE][i]) - np.array(rimu[GYROSCOPE][frame_id]))
+                total_diff = (diff_acc + diff_gyro) / 2
+                scores.append([s, total_diff])
+
+        print(f"Sorting {len(scores)} entries.")
+        scores.sort(key=lambda x: x[1])
+        return scores[:5]
     
     
 

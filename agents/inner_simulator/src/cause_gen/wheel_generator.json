@@ -4,15 +4,17 @@
     "instance_generators": 
     [
         {
-            "type": "simple_random"
+            "type": "simple_random",
+            "id": "wheel"
         }
     ],
     "apply_actions": [],
     "apply_compute_actions": [
         {
             "type": "stop_robot_wheel",
-            "label": "id",
-            "time_input": "simple_random"
+            "id": "wheel",
+            "time_input_type": "simple_random",
+            "time_input_id": "wheel"
         }
     ]
 }

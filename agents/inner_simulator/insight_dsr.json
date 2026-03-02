@@ -1,0 +1,200 @@
+{
+    "DSRModel": {
+        "symbols": {
+            "100": {
+                "attribute": {
+                    "color": {
+                        "type": 0,
+                        "value": "Khaki"
+                    },
+                    "level": {
+                        "type": 1,
+                        "value": 0
+                    },
+                    "pos_x": {
+                        "type": 2,
+                        "value": 0
+                    },
+                    "pos_y": {
+                        "type": 2,
+                        "value": 0
+                    }
+                },
+                "id": "100",
+                "name": "room",
+                "type": "room",
+                "links": [
+                    {
+                        "dst": "200",
+                        "label": "RT",
+                        "linkAttribute": {
+                            "rt_quaternion": {
+                                "type": 3,
+                                "value": [
+                                    0,
+                                    0,
+                                    0,
+                                    1
+                                ]
+                            },
+                            "rt_translation": {
+                                "type": 3,
+                                "value": [
+                                    0,
+                                    0,
+                                    0
+                                ]
+                            }
+                        },
+                        "src": "100"
+                    }
+                ]
+            },
+            "200": {
+                "attribute": {
+                    "color": {
+                        "type": 0,
+                        "value": "Khaki"
+                    },
+                    "level": {
+                        "type": 1,
+                        "value": 1
+                    },
+                    "pos_x": {
+                        "type": 2,
+                        "value": 200
+                    },
+                    "pos_y": {
+                        "type": 2,
+                        "value": 200
+                    },
+                    "parent": {
+                        "type": 7,
+                        "value": 100
+                    },
+                    "robot_ref_adv_speed": {
+                        "type": 2,
+                        "value": 0
+                    },
+                    "robot_ref_rot_speed": {
+                        "type": 2,
+                        "value": 0
+                    }
+                },
+                "id": "200",
+                "name": "robot",
+                "type": "robot",
+                "links": [
+                    {
+                        "dst": "300",
+                        "label": "RT",
+                        "linkAttribute": {
+                            "rt_quaternion": {
+                                "type": 3,
+                                "value": [
+                                    0,
+                                    0,
+                                    0,
+                                    1
+                                ]
+                            },
+                            "rt_translation": {
+                                "type": 3,
+                                "value": [
+                                    7000,
+                                    0,
+                                    0
+                                ]
+                            }
+                        },
+                        "src": "200"
+                    },
+                    {
+                        "dst": "203",
+                        "label": "RT",
+                        "linkAttribute": {
+                            "rt_quaternion": {
+                                "type": 3,
+                                "value": [
+                                    0,
+                                    0,
+                                    0,
+                                    1
+                                ]
+                            },
+                            "rt_translation": {
+                                "type": 3,
+                                "value": [
+                                    0,
+                                    0,
+                                    0
+                                ]
+                            }
+                        },
+                        "src": "200"
+                    }
+                ]
+            },
+            "203": {
+                "attribute": {
+                    "color": {
+                        "type": 0,
+                        "value": "Khaki"
+                    },
+                    "level": {
+                        "type": 1,
+                        "value": 1
+                    },
+                    "pos_x": {
+                        "type": 2,
+                        "value": 200
+                    },
+                    "pos_y": {
+                        "type": 2,
+                        "value": 0
+                    },
+                    "parent": {
+                        "type": 7,
+                        "value": 200
+                    }
+                },
+                "id": "203",
+                "name": "bottle",
+                "type": "bottle",
+                "links": [
+
+                ]
+            },
+            "300": {
+                "attribute": {
+                    "color": {
+                        "type": 0,
+                        "value": "Khaki"
+                    },
+                    "level": {
+                        "type": 1,
+                        "value": 1
+                    },
+                    "pos_x": {
+                        "type": 2,
+                        "value": 400
+                    },
+                    "pos_y": {
+                        "type": 2,
+                        "value": 0
+                    },
+                    "parent": {
+                        "type": 7,
+                        "value": 200
+                    }
+                },
+                "id": "300",
+                "name": "person",
+                "type": "person",
+                "links": [
+
+                ]
+            }
+        }  
+    }
+}

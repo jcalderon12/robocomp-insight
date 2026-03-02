@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 #
-#    Copyright (C) 2025 by YOUR NAME HERE
+#    Copyright (C) 2026 by YOUR NAME HERE
 #
 #    This file is part of RoboComp
 #
@@ -84,7 +84,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 from src.specificworker import *
 import interfaces
 
-from PySide6 import QtWidgets
 
 #SIGNALS handler
 def sigint_handler(*args):
@@ -92,7 +91,7 @@ def sigint_handler(*args):
 
 
 if __name__ == '__main__':
-    app = QtWidgets.QApplication(sys.argv)
+    app = QtCore.QCoreApplication(sys.argv)
     parser = argparse.ArgumentParser()
     parser.add_argument('configfile', nargs='?', type=str, default='etc/config')
     parser.add_argument('--startup-check', action='store_true')

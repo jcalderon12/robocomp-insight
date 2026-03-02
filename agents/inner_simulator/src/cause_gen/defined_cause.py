@@ -29,7 +29,7 @@ This cause has been generated.
 
 from causes.cause import Cause
 from engines.engine import Engine
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 from typing import Literal
 
 class Cause{{cause_name.capitalize()}}(BaseModel, Cause):
@@ -37,7 +37,7 @@ class Cause{{cause_name.capitalize()}}(BaseModel, Cause):
 
     name:Literal["{{cause_name.lower()}}"]
 
-    {{instance_generator}}
+    {{instance_generators}}
 
     {{ apply_variables | join('\n    ') }} 
     def apply(self, engine:Engine):
@@ -52,6 +52,13 @@ class Cause{{cause_name.capitalize()}}(BaseModel, Cause):
         {{call}}
         {% endfor %}
         pass
+        
+    def get_generated_instances(self):
+        return {{ "{" }}
+        {% for attr in instance_generator_attributes %}
+        "{{attr[0]}}": [{{attr[1]}}],
+        {% endfor %}
+        {{ "}" }}
 '''
     )
 
@@ -69,9 +76,12 @@ class DefinedCause(BaseModel):
 
     def render_instance_generators(self):
         instance_generator_code = []
+        attributes = []
         for generator in self.instance_generators:
             instance_generator_code.append(generator.render_generate_instance())
-        return "\n\n    ".join(instance_generator_code)
+            attributes.append([generator.type, f"self.{generator.id}_{generator.type}()"])
+                
+        return "\n\n    ".join(instance_generator_code), attributes
 
     def render_actions(self):
         prev_vars = []
@@ -90,18 +100,18 @@ class DefinedCause(BaseModel):
         return prev_vars, calls
 
     def render_cause(self):
-        prev_vars, calls = self.render_actions()
-        compute_prev_vars, compute_calls = self.render_compute_actions()
+        instance_generators, instance_generator_attributes = self.render_instance_generators()
+        apply_variables, apply_calls = self.render_actions()
+        compute_variables, compute_calls = self.render_compute_actions()
         self.name = self.name.lower()
         return CauseTemplate.render(cause_name=self.name, 
-                             cause_description=self.description, 
-                             apply_actions=self.render_actions(),
-                             compute_actions=self.render_compute_actions(),
-                             instance_generator=self.render_instance_generators(),
-                             apply_variables=prev_vars, 
-                             compute_variables=compute_prev_vars,
-                             apply_calls=calls,
-                             compute_calls=compute_calls
+                             cause_description=self.description,
+                             instance_generators=instance_generators,
+                             instance_generator_attributes=instance_generator_attributes,
+                             apply_calls=apply_calls,
+                             apply_variables=apply_variables,
+                             compute_calls=compute_calls,
+                             compute_variables=compute_variables,
                              )
     
 def main():

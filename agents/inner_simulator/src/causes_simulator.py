@@ -23,6 +23,7 @@ import os
 TIMESTAMP = "timestamp"
 ACCELEROMETER = "accelerometer"
 GYROSCOPE = "gyroscope"
+GENERATED_INSTANCES = "generated_instances"
 
 # Constants for cause loading logic
 # Ajustamos para que busque desde la carpeta actual del script
@@ -175,6 +176,7 @@ class CausesSimulator:
         self.imu_history[TIMESTAMP] = []
         self.imu_history[ACCELEROMETER] = []
         self.imu_history[GYROSCOPE] = []
+        self.imu_history[GENERATED_INSTANCES] = []
 
     def record_imu(self):
         """" Record the current real IMU measurements and store it at the IMU history dictionary. """       
@@ -182,11 +184,12 @@ class CausesSimulator:
         self.imu_history[TIMESTAMP].append(self.simulationTime)
         self.imu_history[ACCELEROMETER].append(acc.tolist())
         self.imu_history[GYROSCOPE].append(ang.tolist())
+        self.imu_history[GENERATED_INSTANCES].append(self.cause.get_generated_instances())
         
     def save_imu(self):
         """ Save the current iteration IMU history in the historical list. """
         self.historical.append(self.imu_history)
-        
+
     def send_history_to_parent(self):
         """ Send the recorded IMU history to the parent process through the pipe. """
         with os.fdopen(self.pipe, "w") as channel:

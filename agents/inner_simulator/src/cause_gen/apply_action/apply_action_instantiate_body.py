@@ -5,14 +5,15 @@ from .apply_action import ApplyAction
 class ApplyActionInstantiateBody(BaseModel, ApplyAction):
     
     type:Literal["instantiate_body_at_input"]
-    body_name:str
-    body_position_input:str
+    id:str # Unique ID for differentiating multiple instances of this type of apply action
+    body_position_input:str # The instance generator that provides the position input
+    body_position_input_id:str # The id defined in the instance generator
 
     def render_action_variables(self):
-        return [f"{self.body_name}_file:str"]
+        return [f"{self.id}_file:str"]
         
     def render_action_call(self):
-        code = [f"x, y, z = self.{self.body_position_input}()",
+        code = [f"x, y, z = self.{self.body_position_input_id}_{self.body_position_input}()",
                 f"coordinates = [x, y, z]",
-                f"engine.instantiate_body(self.{self.body_name}_file, coordinates)"]
+                f"engine.instantiate_body(self.{self.id}_file, coordinates)"]
         return code

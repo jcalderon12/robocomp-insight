@@ -15,3 +15,10 @@ class Cause(ABC):
         Apply an instance of the cause during the compute step.
         """
         pass
+    
+    @abstractmethod
+    def get_generated_instances(self):
+        """
+        Get the generated instances of the cause.
+        """
+        pass

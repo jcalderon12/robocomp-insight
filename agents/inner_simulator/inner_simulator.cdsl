@@ -7,7 +7,6 @@ Component inner_simulator
         
     };
     language python;
-    gui Qt(QMainWindow);
     options dsr;
 
 };

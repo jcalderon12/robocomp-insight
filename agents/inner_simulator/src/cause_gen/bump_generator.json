@@ -4,14 +4,16 @@
     "instance_generators": 
     [
         {
-            "type": "random_range_coordinates"
+            "type": "random_range_coordinates",
+            "id": "bump"
         }
     ],
     "apply_actions": [
         {
             "type": "instantiate_body_at_input",
-            "body_name": "bump",
-            "body_position_input": "random_range_coordinates"
+            "id": "bump",
+            "body_position_input": "random_range_coordinates",
+            "body_position_input_id": "bump"
         }
     ],
     "apply_compute_actions": []
