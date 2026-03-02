@@ -37,7 +37,7 @@ void MissionModel::setMissionStatus(int row, MissionStatus status) {
     emit dataChanged(index(row), index(row));
 }
 
-void MissionModel::setMissionElapsedTime(int row, int elapsed) {
+void MissionModel::setMissionElapsedTime(int row, float elapsed) {
     missions[row].elapsedTime = elapsed;
     emit dataChanged(index(row), index(row));
 }

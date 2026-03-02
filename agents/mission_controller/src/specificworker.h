@@ -129,7 +129,10 @@ private:
 
 	int active_mission_row = -1;
 	std::chrono::steady_clock::time_point mission_start_time;
-	int mission_accumulated_time = 0;  // Tiempo acumulado en segundos
+	float mission_accumulated_time = 0;
+	QTimer *mission_timer;
+
+	void updateMissionTime();
 
 signals:
 	//void customSignal();

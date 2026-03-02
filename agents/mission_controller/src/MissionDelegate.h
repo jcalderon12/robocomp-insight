@@ -17,11 +17,11 @@ public:
 
 signals:
     void missionToggleClicked(int row);
-    void missionDefaultClicked(int row);
+    void missionCompletedClicked(int row);
 
 private:
     QRect getToggleButtonRect(const QStyleOptionViewItem &option) const;
-    QRect getDefaultButtonRect(const QStyleOptionViewItem &option) const;
+    QRect getCompletedButtonRect(const QStyleOptionViewItem &option) const;
 
     static constexpr int ITEM_HEIGHT = 100;
     static constexpr int BTN_WIDTH   = 80;

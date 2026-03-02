@@ -7,8 +7,8 @@ enum class MissionStatus { IDLE, RUNNING, STOPPED, COMPLETED };
 
 struct Mission {
     QString name;
-    QString type;  // Tipo de misión elegido
-    int elapsedTime = 0;  // Tiempo transcurrido en segundos
+    QString type;  
+    float elapsedTime = 0.0f;  
     MissionStatus status = MissionStatus::IDLE;
 };
 
@@ -24,7 +24,7 @@ public:
     Mission getMission(int row) const;
 
     void setMissionStatus(int row, MissionStatus status);
-    void setMissionElapsedTime(int row, int elapsed);
+    void setMissionElapsedTime(int row, float elapsed);
 
 private:
     std::vector<Mission> missions;
