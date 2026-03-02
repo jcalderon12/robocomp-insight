@@ -105,7 +105,7 @@ void SpecificWorker::compute()
 
     if (queck_affordance_active())
 	{
-		follow_target(0.5f, 0.5f, 1.2f);
+		follow_target(0.4f, 0.5f, 1.2f);
 	}
 	else{
 		stop_robot();

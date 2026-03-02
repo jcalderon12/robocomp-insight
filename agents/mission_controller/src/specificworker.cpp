@@ -105,7 +105,6 @@ void SpecificWorker::initialize()
 
 		if (m.status == MissionStatus::RUNNING)
 		{
-			// Pausa: acumula el tiempo transcurrido
 			auto now = std::chrono::steady_clock::now();
 			auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - mission_start_time).count();
 			mission_accumulated_time += static_cast<int>(elapsed);
@@ -115,7 +114,6 @@ void SpecificWorker::initialize()
 		}
 		else if (m.status != MissionStatus::COMPLETED)
 		{
-			// Reanuda: resetea el cronómetro actual
 			active_mission_row = row;
 			mission_start_time = std::chrono::steady_clock::now();
 			model->setMissionStatus(row, MissionStatus::RUNNING);
@@ -127,7 +125,6 @@ void SpecificWorker::initialize()
 	{
 		int total_time = mission_accumulated_time;
 		
-		// Si la misión está corriendo, suma el tiempo actual también
 		if (model->getMission(row).status == MissionStatus::RUNNING)
 		{
 			auto now = std::chrono::steady_clock::now();
@@ -138,7 +135,6 @@ void SpecificWorker::initialize()
 		model->setMissionElapsedTime(row, total_time);
 		model->setMissionStatus(row, MissionStatus::COMPLETED);
 		
-		// Resetea los tiempos
 		if (active_mission_row == row)
 		{
 			active_mission_row = -1;
@@ -163,7 +159,6 @@ void SpecificWorker::initialize()
 			QString customName = dialog_ui.mission_custom_name->text();
 			QString missionType = dialog_ui.mission_name->currentText();
 			
-			// Si el nombre personalizado está vacío, usa el tipo de misión
 			if (customName.isEmpty())
 			{
 				customName = missionType;
@@ -286,6 +281,13 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
 
     if (active_mission_row >= 0)
     {
+        if (!is_running && model->getMission(active_mission_row).status == MissionStatus::RUNNING)
+        {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - mission_start_time).count();
+            mission_accumulated_time += static_cast<int>(elapsed);
+        }
+        
         model->setMissionStatus(active_mission_row,
             is_running ? MissionStatus::RUNNING : MissionStatus::STOPPED);
 
