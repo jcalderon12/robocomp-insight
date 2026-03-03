@@ -17,6 +17,7 @@
  *    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "specificworker.h"
+#include <QTimer>
 
 SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check) : GenericWorker(configLoader, tprx)
 {
@@ -106,8 +107,8 @@ void SpecificWorker::initialize()
 		if (m.status == MissionStatus::RUNNING)
 		{
 			auto now = std::chrono::steady_clock::now();
-			auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - mission_start_time).count();
-			mission_accumulated_time += static_cast<int>(elapsed);
+			auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
+			mission_accumulated_time += elapsed;
 			
 			model->setMissionStatus(row, MissionStatus::STOPPED);
 			on_stopMission_clicked();
@@ -121,15 +122,15 @@ void SpecificWorker::initialize()
 		}
 	});
 
-	connect(delegate, &MissionDelegate::missionDefaultClicked, this, [this](int row)
+	connect(delegate, &MissionDelegate::missionCompletedClicked, this, [this](int row)
 	{
-		int total_time = mission_accumulated_time;
+		float total_time = mission_accumulated_time;
 		
 		if (model->getMission(row).status == MissionStatus::RUNNING)
 		{
 			auto now = std::chrono::steady_clock::now();
-			auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - mission_start_time).count();
-			total_time += static_cast<int>(elapsed);
+			auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
+			total_time += elapsed;
 		}
 		
 		model->setMissionElapsedTime(row, total_time);
@@ -169,6 +170,11 @@ void SpecificWorker::initialize()
 			on_setMission_clicked();
 		}
 	});
+
+	// Configurar timer para actualizar tiempo en tiempo real
+	mission_timer = new QTimer(this);
+	connect(mission_timer, &QTimer::timeout, this, &SpecificWorker::updateMissionTime);
+	mission_timer->start(10);  // Actualizar cada 100ms
 
     /////////GET PARAMS, OPEND DEVICES....////////
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
@@ -284,8 +290,8 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
         if (!is_running && model->getMission(active_mission_row).status == MissionStatus::RUNNING)
         {
             auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - mission_start_time).count();
-            mission_accumulated_time += static_cast<int>(elapsed);
+            auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
+            mission_accumulated_time += elapsed;
         }
         
         model->setMissionStatus(active_mission_row,
@@ -293,6 +299,23 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
 
         if (!is_running)
             active_mission_row = -1;
+    }
+}
+
+void SpecificWorker::updateMissionTime()
+{
+    if (active_mission_row >= 0)
+    {
+        Mission m = model->getMission(active_mission_row);
+        
+        if (m.status == MissionStatus::RUNNING)
+        {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
+            float totalTime = mission_accumulated_time + elapsed;
+            
+            model->setMissionElapsedTime(active_mission_row, totalTime);
+        }
     }
 }
 

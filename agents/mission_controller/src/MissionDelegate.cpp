@@ -11,7 +11,7 @@ QRect MissionDelegate::getToggleButtonRect(const QStyleOptionViewItem &option) c
                  BTN_WIDTH, BTN_HEIGHT);
 }
 
-QRect MissionDelegate::getDefaultButtonRect(const QStyleOptionViewItem &option) const {
+QRect MissionDelegate::getCompletedButtonRect(const QStyleOptionViewItem &option) const {
     return QRect(option.rect.right() - (BTN_WIDTH + MARGIN),
                  option.rect.top() + (ITEM_HEIGHT - BTN_HEIGHT) / 2,
                  BTN_WIDTH, BTN_HEIGHT);
@@ -56,6 +56,7 @@ void MissionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     QString statusText;
     QColor  statusColor;
     bool isCompleted = false;
+    float elapsedTime = index.data(Qt::UserRole + 3).toFloat();
     switch (status)
     {
         case MissionStatus::IDLE:
@@ -63,15 +64,15 @@ void MissionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
             statusColor = QColor(130, 130, 130);
             break;
         case MissionStatus::RUNNING:
-            statusText  = "State: Running";
+            statusText  = QString("State: Running (%1s)").arg(elapsedTime, 0, 'f', 2);
             statusColor = QColor(50, 160, 50);
             break;
         case MissionStatus::STOPPED:
-            statusText  = "State: Stopped";
+            statusText  = QString("State: Stopped (%1s)").arg(elapsedTime, 0, 'f', 2);
             statusColor = QColor(200, 60, 60);
             break;
         case MissionStatus::COMPLETED:
-            statusText  = QString("State: Completed (%1s)").arg(index.data(Qt::UserRole + 3).toInt());
+            statusText  = QString("State: Completed (%1s)").arg(elapsedTime, 0, 'f', 2);
             statusColor = QColor(70, 130, 180);
             isCompleted = true;
             break;
@@ -96,7 +97,6 @@ void MissionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     }
     QApplication::style()->drawControl(QStyle::CE_PushButton, &toggleBtn, painter);
     
-    // Efecto visual para botón deshabilitado
     if (isCompleted) {
         painter->fillRect(toggleBtn.rect, QColor(200, 200, 200, 150));
         painter->setPen(QColor(150, 150, 150));
@@ -104,7 +104,7 @@ void MissionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     }
 
     QStyleOptionButton defaultBtn;
-    defaultBtn.rect  = getDefaultButtonRect(option);
+    defaultBtn.rect  = getCompletedButtonRect(option);
     defaultBtn.text  = "Complete";
     if (isCompleted || status == MissionStatus::STOPPED) {
         defaultBtn.state = QStyle::State_None;
@@ -131,8 +131,8 @@ bool MissionDelegate::editorEvent(QEvent *event, QAbstractItemModel *,
             emit missionToggleClicked(index.row());
             return true;
         }
-        if (getDefaultButtonRect(option).contains(pos)) {
-            emit missionDefaultClicked(index.row());
+        if (getCompletedButtonRect(option).contains(pos)) {
+            emit missionCompletedClicked(index.row());
             return true;
         }
     }
