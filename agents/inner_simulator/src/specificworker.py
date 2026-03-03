@@ -42,11 +42,15 @@ from concurrent.futures import ProcessPoolExecutor
 # causes.json constants
 JSON_FILE = "src/causes.json"
 
-# Keys of 
+# Keys of IMU history dictionary
 TIMESTAMP = "timestamp"
 ACCELEROMETER = "accelerometer"
 GYROSCOPE = "gyroscope"
-SIMULATED_PREFIX = "s_"
+
+# Keys of IMU historical dictionary (recieved from causes simulator)
+HISTORY = "history"
+GENERATED_INSTANCES = "generated_instances"
+
 
 matplotlib.use("TkAgg")
 
@@ -124,6 +128,9 @@ class SpecificWorker(GenericWorker):
 
         # LOAD ROBOT IN THE SIMULATION
         self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", [-3.7, -0.7, 0.01], flags=flags)
+
+        # LOAD BOTTLE IN THE SIMULATION
+        self.bottle = p.loadURDF("../../etc/URDFs/bottle/bottle.urdf", [-3.65, -0.59, 0.7725], flags=flags)
 
         # LOAD A CYLINDER IN THE SIMULATION
         self.cylinder = p.loadURDF("../../etc/URDFs/cylinder/cylinder.urdf", [1.3, -0.7, 0.0], flags=flags)
@@ -250,7 +257,14 @@ class SpecificWorker(GenericWorker):
                 self.record_imu(self.actual_time - self.initial_time)
                 
                 if self.check_for_problem():
-                    
+                    # Stop moving the robot
+                    for motor_name in self.motors:
+                        p.setJointMotorControl2(bodyUniqueId=self.robot,
+                                                jointIndex=self.joints_name[motor_name],
+                                                controlMode=p.VELOCITY_CONTROL,
+                                                targetVelocity=0,
+                                                force=10)
+                        
                     self.state = "SIMULATE_REASON"
                 
             case "SIMULATE_REASON":
@@ -319,11 +333,17 @@ class SpecificWorker(GenericWorker):
                         sim_out["registers"].append(row)
                         i += 1
 
+                # Write results to JSON file
                 output = open(f"sim_output.json", "w")
                 output.write(json.dumps(sim_out, indent=4))
                 output.close()
                 
-                self.state = "IDLE"
+                self.state = "SIMULATE_BOTTLE"
+                
+            case "SIMULATE_BOTTLE":
+                print("Simulating bottle drop...")
+                
+                
                 
         return True
 
@@ -365,19 +385,55 @@ class SpecificWorker(GenericWorker):
         :param margin: (Default=0.05) Margin of error to consider a match between real and simulated IMU measurements
         :return: int, the ID of the simulation that matched the real IMU. If no match, return None.
         """
+        
+        # RIMU structure:
+        # rimu = {
+        #     "timestamp": [ts1, ts2, ts3, ...],
+        #     "accelerometer": [[acc_x1, acc_y1, acc_z1
+        #                      [acc_x2, acc_y2, acc_z2],
+        #                      [acc_x3, acc_y3, acc_z3],
+        #                      ...],
+        #     "gyroscope": [[gyro_x1, gyro_y1, gyro_z1
+        #                    [gyro_x2, gyro_y2, gyro_z2],
+        #                    [gyro_x3, gyro_y3, gyro_z3],
+        #                    ...]
+        # }
+        #
+        # SIMU structure:
+        # simu = [
+        #     {
+        #         "history": {
+        #             "timestamp": [ts1, ts2, ts3, ...],
+        #             "accelerometer": [[acc_x1, acc_y1, acc_z1
+        #                              [acc_x2, acc_y2, acc_z2],
+        #                              [acc_x3, acc_y3, acc_z3],
+        #                              ...],
+        #             "gyroscope": [[gyro_x1, gyro_y1, gyro_z1
+        #                            [gyro_x2, gyro_y2, gyro_z2],
+        #                            [gyro_x3, gyro_y3, gyro_z3],
+        #                            ...]
+        #         },
+        #
+        #         "generated_instances": {
+        #             "generatorA": { value1, value2, ...},
+        #             "generatorB": { value1, value2, ...},
+        #             ...
+        #         }
+        #
+        
         scores = []
         # for each simu simulation...
         for s in range(len(simu)):
-            print(f"Now sorting {len(simu[s][TIMESTAMP])} simu (id={s}) frames against {len(rimu[TIMESTAMP])} rimu frames.")
+            print(f"Now sorting {len(simu[s][HISTORY][TIMESTAMP])} simu (id={s}) frames against {len(rimu[TIMESTAMP])} rimu frames.")
             # for each frame of the simulation...
-            for i in range(len(simu[s])):
+            for i in range(len(simu[s][HISTORY])):
 
                 # Find closest timestamp value of simu to rimu's timestamp
-                ts = min(rimu[TIMESTAMP], key=lambda v: abs(v - simu[s][TIMESTAMP][i]))
+                ts = min(rimu[TIMESTAMP], key=lambda v: abs(v - simu[s][HISTORY][TIMESTAMP][i]))
                 frame_id = rimu[TIMESTAMP].index(ts)
 
-                diff_acc = np.linalg.norm(np.array(simu[s][ACCELEROMETER][i]) - np.array(rimu[ACCELEROMETER][frame_id]))
-                diff_gyro = np.linalg.norm(np.array(simu[s][GYROSCOPE][i]) - np.array(rimu[GYROSCOPE][frame_id]))
+                diff_acc = np.linalg.norm(np.array(simu[s][HISTORY][ACCELEROMETER][i]) - np.array(rimu[ACCELEROMETER][frame_id]))
+                diff_gyro = np.linalg.norm(np.array(simu[s][HISTORY][GYROSCOPE][i]) - np.array(rimu[GYROSCOPE][frame_id]))
                 total_diff = (diff_acc + diff_gyro) / 2
                 scores.append([s, total_diff])
 

@@ -18,11 +18,15 @@ from pydantic import BaseModel, Field, create_model
 from simulation_scene import SimulationScene
 from engines.engine_pybullet import EnginePybullet
 import os
+import copy
 
 # Keys of the IMU history dictionary
 TIMESTAMP = "timestamp"
 ACCELEROMETER = "accelerometer"
 GYROSCOPE = "gyroscope"
+
+# Keys of the IMU historical dictionary
+HISTORY = "history"
 GENERATED_INSTANCES = "generated_instances"
 
 # Constants for cause loading logic
@@ -120,7 +124,8 @@ class CausesSimulator:
         self.initialize_bodies_list()
 
         # Cause-related parameters
-        self.cause:Cause = CauseWrapper.model_validate_json(cause).cause
+        self.initial_cause:Cause = CauseWrapper.model_validate_json(cause).cause
+        self.current_cause:Cause = copy.deepcopy(self.initial_cause)
         
         # Working parameters
         self.pipe = int(pipe)
@@ -176,7 +181,6 @@ class CausesSimulator:
         self.imu_history[TIMESTAMP] = []
         self.imu_history[ACCELEROMETER] = []
         self.imu_history[GYROSCOPE] = []
-        self.imu_history[GENERATED_INSTANCES] = []
 
     def record_imu(self):
         """" Record the current real IMU measurements and store it at the IMU history dictionary. """       
@@ -184,11 +188,13 @@ class CausesSimulator:
         self.imu_history[TIMESTAMP].append(self.simulationTime)
         self.imu_history[ACCELEROMETER].append(acc.tolist())
         self.imu_history[GYROSCOPE].append(ang.tolist())
-        self.imu_history[GENERATED_INSTANCES].append(self.cause.get_generated_instances())
         
     def save_imu(self):
         """ Save the current iteration IMU history in the historical list. """
-        self.historical.append(self.imu_history)
+        obj = {}
+        obj[HISTORY] = self.imu_history
+        obj[GENERATED_INSTANCES] = self.current_cause.get_generated_instances()
+        self.historical.append(obj)
 
     def send_history_to_parent(self):
         """ Send the recorded IMU history to the parent process through the pipe. """
@@ -226,7 +232,7 @@ class CausesSimulator:
             
             it = time.time()
             self.do_acceleration_robot()
-            self.cause.apply_compute(self.engine_wrapper)
+            self.current_cause.apply_compute(self.engine_wrapper)
             p.stepSimulation()
             self.record_imu()
             stepCount += 1
@@ -242,12 +248,13 @@ class CausesSimulator:
         IMU recordings from each iteration and sending them to the parent process at the end. """
         self.intialState = p.saveState() # Save clean state
         for i in range(self.num_of_repetitions):
-            self.cause.apply(self.engine_wrapper)
+            self.current_cause.apply(self.engine_wrapper)
             self.init_imu_record()
             self.simulate()
             self.save_imu()
             self.clean_bodies()
             self.reset_wheels_movement()
+            self.current_cause = copy.deepcopy(self.initial_cause)
             p.restoreState(stateId=self.intialState) # Restore the clean state
         return
     
@@ -451,7 +458,7 @@ def main():
     print(f"""Simulations done.
     Historical data:
         Number of historicals: {len(simulator.historical)}
-        Combined number of recordings: {sum(len(h[TIMESTAMP]) for h in simulator.historical)}""")
+        Combined number of recordings: {sum(len(h[HISTORY][TIMESTAMP]) for h in simulator.historical)}""")
     
     print("Sending historicals to parent process...")
     simulator.send_history_to_parent()

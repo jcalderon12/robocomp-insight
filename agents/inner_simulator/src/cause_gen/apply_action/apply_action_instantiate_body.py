@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Literal
+from jinja2 import Template
 from .apply_action import ApplyAction
 
 class ApplyActionInstantiateBody(BaseModel, ApplyAction):
@@ -10,10 +11,17 @@ class ApplyActionInstantiateBody(BaseModel, ApplyAction):
     body_position_input_id:str # The id defined in the instance generator
 
     def render_action_variables(self):
-        return [f"{self.id}_file:str"]
+        template = Template("{{ id }}_file:str")
+        return [template.render(id=self.id)]
         
     def render_action_call(self):
-        code = [f"x, y, z = self.{self.body_position_input_id}_{self.body_position_input}()",
-                f"coordinates = [x, y, z]",
-                f"engine.instantiate_body(self.{self.id}_file, coordinates)"]
+        template = Template("""
+x, y, z = self.{{ body_position_input_id }}_{{ body_position_input }}()
+coordinates = [x, y, z]
+engine.instantiate_body(self.{{ id }}_file, coordinates)""")
+        code = template.render(
+            id=self.id,
+            body_position_input_id=self.body_position_input_id,
+            body_position_input=self.body_position_input
+        )
         return code

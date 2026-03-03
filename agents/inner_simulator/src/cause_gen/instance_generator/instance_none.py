@@ -10,9 +10,9 @@ class InstanceNone(BaseModel, InstanceGenerator):
 
     def render_generate_instance(self):
         template = Template('''
-    def {{id}}_instance_none(self):
-        """Do nothing."""
-        pass''')
+def {{id}}_instance_none(self):
+    """Do nothing."""
+    pass''')
         
         return template.render(id=self.id)
         

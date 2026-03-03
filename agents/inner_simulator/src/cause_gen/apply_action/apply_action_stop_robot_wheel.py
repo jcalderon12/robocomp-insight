@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Literal
+from jinja2 import Template
 from .apply_action import ApplyAction
 
 class ApplyActionStopRobotWheel(BaseModel, ApplyAction):
@@ -10,30 +11,30 @@ class ApplyActionStopRobotWheel(BaseModel, ApplyAction):
     time_input_id:str # The id defined in the instance generator
 
     def render_action_variables(self):
-        code = [f"{self.id}_wheel:str"]
-        if self.time_input_type == "instance_none":
-            code.extend([f"{self.id}_stop_time:float"])
-        else:
+        template = Template("""
+{{id}}_wheel:str
+{% if time_input_type == "instance_none" %}
+{{id}}_stop_time:float
+{% else %}
+_{{id}}_stop_time:float | None = PrivateAttr(default=None)  
+{% endif %}""", 
 
-            code.extend([f"from pydantic import PrivateAttr",
-                        f"_{self.id}_stop_time:float | None = PrivateAttr(default=None)"])
-        return code
+id=self.id, time_input_type=self.time_input_type)
+        return template.render()
         
     def render_action_call(self):
-        code = []
-        code.append(f"# [{self.id}] Stop wheel action")
-        if self.time_input_type != "instance_none":
-            code.extend([f"if self._{self.id}_stop_time == None:",
-                         f"    self._{self.id}_stop_time = self.{self.time_input_id}_{self.time_input_type}()",
-                         f"time = engine.get_simulation_time()",
-                         f"if time >= self._{self.id}_stop_time * engine.get_simulation_length():",
-                         f"    engine.disable_robot_wheel(self.{self.id}_wheel)"])
-        else:
-            code.extend([f"time = engine.get_simulation_time()",
-                         f"if time >= self.{self.id}_stop_time:",
-                         f"    engine.disable_robot_wheel(self.{self.id}_wheel)"])
-            
-        code.extend([f"if time == 0:",
-                     f"  self._{self.id}_stop_time = None"])
+        template = Template("""
+# [{{id}}] Stop wheel action
+{% if time_input_type != "instance_none" %}
+self._{{id}}_stop_time = self._{{id}}_stop_time or self.{{time_input_id}}_{{time_input_type}}()
+threshold = self._{{id}}_stop_time * engine.get_simulation_length()
+{% else %}
+threshold = self.{{id}}_stop_time
+{% endif %}
+if engine.get_simulation_time() >= threshold:
+    engine.disable_robot_wheel(self.{{id}}_wheel)""", 
+
+    id=self.id, time_input_type=self.time_input_type, time_input_id=self.time_input_id)
         
+        code = template.render()
         return code
