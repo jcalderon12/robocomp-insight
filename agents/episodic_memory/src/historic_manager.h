@@ -33,8 +33,7 @@ struct EventMetadata {
  */
 class HistoricManager {
 public:
-  HistoricManager(std::shared_ptr<DSR::DSRGraph> graph,
-                  size_t max_cache_size = 50)
+  HistoricManager(std::shared_ptr<DSR::DSRGraph> graph, size_t max_cache_size = 50)
       : G(graph), max_cache_size(max_cache_size), preloading(false),
         current_keyframe_idx(0) {}
 
@@ -113,26 +112,14 @@ public:
    * @brief Change current keyframe and displays the new one
    */
   void load_keyframe(size_t keyframe_idx, bool apply_local_changes = false) {
-    if (keyframe_idx >= keyframe_metadata.size()) {
-      std::cerr << __FUNCTION__
-                << " - [HistoricManager] Invalid keyframe index: "
-                << keyframe_idx << std::endl;
-      return;
-    }
-    std::cout << __FUNCTION__ << " - [HistoricManger] Loading keyframe "
-              << keyframe_idx << std::endl;
+    if (keyframe_idx >= keyframe_metadata.size()) { std::cerr << __FUNCTION__ << " - [HistoricManager] Invalid keyframe index: " << keyframe_idx << std::endl; return; }
+    std::cout << __FUNCTION__ << " - [HistoricManger] Loading keyframe " << keyframe_idx << std::endl;
     // Update current keyframe for pre-loading
     current_keyframe_idx = keyframe_idx;
 
     // Get new event
-    DSREvent *keyframe_event =
-        get_event_by_metadata(keyframe_metadata[keyframe_idx]);
-    if (!keyframe_event) {
-      std::cout << __FUNCTION__
-                << " - [HistoricManager] Failed to decode keyframe "
-                << keyframe_idx << std::endl;
-      return;
-    }
+    DSREvent *keyframe_event = get_event_by_metadata(keyframe_metadata[keyframe_idx]);
+    if (!keyframe_event) { std::cout << __FUNCTION__<< " - [HistoricManager] Failed to decode keyframe " << keyframe_idx << std::endl; return; }
 
     // Display new graph
     reconstruct_graph_from_keyframe(*keyframe_event);
@@ -332,17 +319,11 @@ private:
    * @brief
    */
   void reconstruct_graph_from_keyframe(DSREvent &keyframe) {
-    if (keyframe.modification_type != DSRSpecialChars::K) {
-      std::cerr << __FUNCTION__
-                << " - [HistoricManager] Event is not a keyframe." << std::endl;
-      return;
-    }
-    std::cout << __FUNCTION__
-              << " - [HistoricManager] Reconstructing graph from keyframe with "
-              << keyframe.nodes.size() << " nodes and " << keyframe.edges.size()
-              << " edges." << std::endl;
+    // Keyframe verification
+    if (keyframe.modification_type != DSRSpecialChars::K) { std::cerr << __FUNCTION__ << " - [HistoricManager] Event is not a keyframe." << std::endl; return; }
+    std::cout << __FUNCTION__<< " - [HistoricManager] Reconstructing graph from keyframe with " << keyframe.nodes.size() << " nodes and " << keyframe.edges.size() << " edges." << std::endl;
 
-    // --- Build sets of IDs present in the new keyframe ---
+    // Create sets of Node and Edge IDs of that keyframe
     std::unordered_set<uint64_t> keyframe_node_ids;
     for (const auto &node : keyframe.nodes)
       keyframe_node_ids.insert(node.id());
@@ -351,7 +332,7 @@ private:
     for (const auto &edge : keyframe.edges)
       keyframe_edge_keys.insert({edge.from(), edge.to(), edge.type()});
 
-    // --- Remove edges that are no longer in the keyframe ---
+    // Remove edges that are no longer in the keyframe
     auto current_nodes = G->get_nodes();
     for (const auto &node : current_nodes) {
       auto edges_opt = G->get_edges(node.id());
@@ -362,10 +343,7 @@ private:
           try {
             G->delete_edge(edge.from(), edge.to(), edge.type());
           } catch (const std::exception &e) {
-            std::cerr << __FUNCTION__
-                      << " - [HistoricManager] Error deleting edge "
-                      << edge.from() << "->" << edge.to() << ": " << e.what()
-                      << std::endl;
+            std::cerr << __FUNCTION__<< " - [HistoricManager] Error deleting edge " << edge.from() << "->" << edge.to() << ": " << e.what() << std::endl;
           }
         }
       }
@@ -388,9 +366,7 @@ private:
           G->insert_node_with_id(node);
         }
       } catch (const std::exception &e) {
-        std::cerr << __FUNCTION__
-                  << " - [HistoricManager] Error upserting node " << node.id()
-                  << ": " << e.what() << std::endl;
+        std::cerr << __FUNCTION__ << " - [HistoricManager] Error upserting node " << node.id() << ": " << e.what() << std::endl;
       }
     }
 
@@ -399,16 +375,11 @@ private:
       try {
         G->insert_or_assign_edge(edge);
       } catch (const std::exception &e) {
-        std::cerr << __FUNCTION__
-                  << " - [HistoricManager] Error upserting edge " << edge.from()
-                  << "->" << edge.to() << ": " << e.what() << std::endl;
+        std::cerr << __FUNCTION__<< " - [HistoricManager] Error upserting edge " << edge.from() << "->" << edge.to() << ": " << e.what() << std::endl;
       }
     }
 
-    std::cout << __FUNCTION__
-              << " - [HistoricManager] Graph reconstructed successfully."
-              << std::endl;
-  }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Graph reconstructed successfully." << std::endl; }
 
   /**
    * @brief Apply one modification by its event type
