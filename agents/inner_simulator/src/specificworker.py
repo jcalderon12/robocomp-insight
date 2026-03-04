@@ -46,10 +46,15 @@ JSON_FILE = "src/causes.json"
 TIMESTAMP = "timestamp"
 ACCELEROMETER = "accelerometer"
 GYROSCOPE = "gyroscope"
+BOTTLE_POSITION = "bottle_position"
 
 # Keys of IMU historical dictionary (recieved from causes simulator)
 HISTORY = "history"
 GENERATED_INSTANCES = "generated_instances"
+
+# Positions of the bodies in the scene
+ROBOT_POS = [-3.7, -0.7, 0.01]
+BOTTLE_POS = [-3.65, -0.59, 0.7725]
 
 
 matplotlib.use("TkAgg")
@@ -127,13 +132,10 @@ class SpecificWorker(GenericWorker):
         # self.cylinder_bump_10m = p.loadURDF("./URDFs/bump/cylinder_bump_10m.urdf", [0, -0.8, 0.001], p.getQuaternionFromEuler([0, 0, np.pi/2]), flags=flags)
 
         # LOAD ROBOT IN THE SIMULATION
-        self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", [-3.7, -0.7, 0.01], flags=flags)
+        self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", ROBOT_POS, flags=flags)
 
         # LOAD BOTTLE IN THE SIMULATION
-        self.bottle = p.loadURDF("../../etc/URDFs/bottle/bottle.urdf", [-3.65, -0.59, 0.7725], flags=flags)
-
-        # LOAD A CYLINDER IN THE SIMULATION
-        self.cylinder = p.loadURDF("../../etc/URDFs/cylinder/cylinder.urdf", [1.3, -0.7, 0.0], flags=flags)
+        self.bottle = p.loadURDF("../../etc/URDFs/bottle/bottle.urdf", BOTTLE_POS, flags=flags)
 
         time.sleep(0.5)
 
@@ -197,7 +199,9 @@ class SpecificWorker(GenericWorker):
        # Fake SIM_SCENE JSON file
        self.sim_scene.problem_position, self.sim_scene.problem_orientation = p.getBasePositionAndOrientation(self.robot)
        self.sim_scene.simulation_length = self.actual_time - self.initial_time
-       self.sim_scene.num_of_repetitions = 50
+       self.sim_scene.num_of_repetitions = 300
+       self.sim_scene.bottle_position = BOTTLE_POS
+       self.sim_scene.bottle_orientation = [0,0,0,0]
        self.sim_scene.model_validate(self.sim_scene.__dict__)
        file = open("src/sim_scene.json", "w")
        file.write(self.sim_scene.model_dump_json(indent=4))
@@ -222,7 +226,6 @@ class SpecificWorker(GenericWorker):
 
     @QtCore.Slot()
     def compute(self):
-        print(flush=True)
         self.show_compute_time_step()
         actual_imu_measurement = self.imu.get_measurement()
 
@@ -334,16 +337,48 @@ class SpecificWorker(GenericWorker):
                         i += 1
 
                 # Write results to JSON file
+                
+                # Sim_output structure:
+                # sim_out = {
+                #     "sim_scene": {JSON data from sim_scene.json},
+                #     "registers": [
+                #         {
+                #             "cause_definition": {JSON data from causes.json},
+                #             "top_five": [
+                #                 {
+                #                     "timestamp": [ts1, ts2, ts3, ...],
+                #                     "accelerometer": [[acc_x1, acc_y1, acc_z1
+                #                                      [acc_x2, acc_y2, acc_z2],
+                #                                      [acc_x3, acc_y3, acc_z3],
+                #                                      ...],
+                #                     "gyroscope": [[gyro_x1, gyro_y1, gyro_z1
+                #                                    [gyro_x2, gyro_y2, gyro_z2],
+                #                                    [gyro_x3, gyro_y3, gyro_z3],
+                #                                    ...]
+                #                 },
+                #                 ... (up to 5 recordings)
+                #             ]
+                #         },
+                #         ... (one for each cause)
+                #     ]
+                # }
+                
                 output = open(f"sim_output.json", "w")
                 output.write(json.dumps(sim_out, indent=4))
                 output.close()
                 
-                self.state = "SIMULATE_BOTTLE"
+                print("Simulations finished. Results written to sim_output.json!")
                 
-            case "SIMULATE_BOTTLE":
-                print("Simulating bottle drop...")
+                # Calculate the aproximate bottle position from the best 5 recordings for each cause
+                for register in sim_out["registers"]:
+                    list_of_positions = []
+                    list_of_positions.extend([recording[BOTTLE_POSITION] for recording in register["top_five"]])
+                    # Average position (in the three axis)
+                    avg_position = np.mean(list_of_positions, axis=0)
                 
-                
+                    print(f"Approximate bottle position for {register['cause_definition']['name']}: {avg_position}")
+                    
+                self.state = "IDLE"                
                 
         return True
 
