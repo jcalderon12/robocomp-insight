@@ -28,6 +28,8 @@ GYROSCOPE = "gyroscope"
 # Keys of the IMU historical dictionary
 HISTORY = "history"
 GENERATED_INSTANCES = "generated_instances"
+BOTTLE_POSITION = "bottle_position"
+BOTTLE_ORIENTATION = "bottle_orientation"
 
 # Constants for cause loading logic
 # Ajustamos para que busque desde la carpeta actual del script
@@ -153,6 +155,9 @@ class CausesSimulator:
         # LOAD ROBOT IN THE SIMULATION
         self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", [self.initial_position[0], self.initial_position[1], self.initial_position[2]], flags=self.flags)        
         
+        # LOAD BOTTLE IN THE SIMULATION
+        self.bottle = p.loadURDF("../../etc/URDFs/bottle/bottle.urdf", [self.bottle_position[0], self.bottle_position[1], self.bottle_position[2]], flags=self.flags)
+        
         # ================ IMU SENSOR SETUP  ================
         # ====================================================
 
@@ -194,6 +199,8 @@ class CausesSimulator:
         obj = {}
         obj[HISTORY] = self.imu_history
         obj[GENERATED_INSTANCES] = self.current_cause.get_generated_instances()
+        obj[BOTTLE_POSITION] = p.getBasePositionAndOrientation(self.bottle)[0]
+        obj[BOTTLE_ORIENTATION] = p.getBasePositionAndOrientation(self.bottle)[1]
         self.historical.append(obj)
 
     def send_history_to_parent(self):
@@ -216,6 +223,8 @@ class CausesSimulator:
         self.forwardSpeed = self.simulation_scene.robot_velocity
         self.initial_position = self.simulation_scene.initial_robot_position
         self.initial_orientation = self.simulation_scene.initial_robot_orientation
+        self.bottle_position = self.simulation_scene.bottle_position
+        self.bottle_orientation = self.simulation_scene.bottle_orientation
         self.final_position = self.simulation_scene.final_robot_position
         self.final_orientation = self.simulation_scene.final_robot_orientation
         self.problem_position = self.simulation_scene.problem_position

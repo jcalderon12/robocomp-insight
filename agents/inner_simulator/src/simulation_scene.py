@@ -5,6 +5,8 @@ class SimulationScene(BaseModel):
     robot_velocity:float
     initial_robot_position:list[float]
     initial_robot_orientation:list[float]
+    bottle_position:list[float]
+    bottle_orientation:list[float]
     final_robot_position:list[float]
     final_robot_orientation:list[float]
     problem_position:list[float]
