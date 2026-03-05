@@ -18,11 +18,13 @@
  */
 #include "specificworker.h"
 
-SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx, bool startup_check)
-    : GenericWorker(configLoader, tprx) { 
+SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx,
+                               bool startup_check)
+    : GenericWorker(configLoader, tprx) {
   this->startup_check_flag = startup_check;
-  if (this->startup_check_flag) { this->startup_check(); } 
-  else {
+  if (this->startup_check_flag) {
+    this->startup_check();
+  } else {
 #ifdef HIBERNATION_ENABLED
     hibernationChecker.start(500);
 #endif
@@ -68,18 +70,24 @@ SpecificWorker::~SpecificWorker() {
 }
 
 void SpecificWorker::initialize() {
-  std::cout << "initialize worker" << std::endl;
+  std::cout << "Initialize Worker" << std::endl;
   GenericWorker::initialize();
   G = Graphs.at("work");
   historic_graph = Graphs.at("episodic");
 
   // dsr update signals
-  connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_signal, this, &SpecificWorker::modify_node_slot);
-  connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_signal, this, &SpecificWorker::modify_edge_slot);
-  connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_attr_signal, this, &SpecificWorker::modify_node_attrs_slot);
-  connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_attr_signal, this, &SpecificWorker::modify_edge_attrs_slot);
-  connect(Graphs.at("work").get(), &DSR::DSRGraph::del_edge_signal, this, &SpecificWorker::del_edge_slot);
-  connect(Graphs.at("work").get(), &DSR::DSRGraph::del_node_signal, this, &SpecificWorker::del_node_slot);
+  connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_signal, this,
+          &SpecificWorker::modify_node_slot);
+  connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_signal, this,
+          &SpecificWorker::modify_edge_slot);
+  connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_attr_signal,
+          this, &SpecificWorker::modify_node_attrs_slot);
+  connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_attr_signal,
+          this, &SpecificWorker::modify_edge_attrs_slot);
+  connect(Graphs.at("work").get(), &DSR::DSRGraph::del_edge_signal, this,
+          &SpecificWorker::del_edge_slot);
+  connect(Graphs.at("work").get(), &DSR::DSRGraph::del_node_signal, this,
+          &SpecificWorker::del_node_slot);
 
   /***
   Custom Widget
@@ -95,43 +103,41 @@ void SpecificWorker::initialize() {
   // &custom_widget);
 
   // historic_window = new QMainWindow;
-  // historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window, historic_graph, current_opts, main); 
-  // historic_window->show();
+  // historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window,
+  // historic_graph, current_opts, main); historic_window->show();
 
   // Historic Debugger
   historic_debugger_ui.setupUi(&historic_debugger_widget);
-  connect(historic_debugger_ui.local_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::local_changes_management);
-  connect(historic_debugger_ui.global_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::global_changes_management);
-  graph_viewers.at("episodic")->add_custom_widget_to_dock("Historic debugger", &historic_debugger_widget);
+  connect(historic_debugger_ui.local_changes_scroll_bar,
+          &QScrollBar::valueChanged, this,
+          &SpecificWorker::local_changes_management);
+  connect(historic_debugger_ui.global_changes_scroll_bar,
+          &QScrollBar::valueChanged, this,
+          &SpecificWorker::global_changes_management);
+  graph_viewers.at("episodic")
+      ->add_custom_widget_to_dock("Historic debugger",
+                                  &historic_debugger_widget);
 
-  // Historic Manager
-  auto G_copy = historic_graph->G_copy();
-  historic_graph = std::shared_ptr<DSR::DSRGraph>(std::move(G_copy));
+  // // Historic Manager
+  // auto G_copy = historic_graph->G_copy();
+  // historic_graph = std::shared_ptr<DSR::DSRGraph>(std::move(G_copy));
   historic_manager = std::make_unique<HistoricManager>(historic_graph, 50);
-  
-  historic_window = new QMainWindow;
-  historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window, historic_graph, DSR::DSRViewer::view::graph | DSR::DSRViewer::view::scene, DSR::DSRViewer::view::graph);
-  historic_window->setWindowTitle("Historic graph");
-  historic_window->show();
-  
 
-  std::cout << "Creating dummy node" << std::endl;
-  DSR::Node n1;
-  n1.name("n1");
-  n1.type("camera");
-  n1.id(100);
-  historic_graph->insert_node(n1);
-  historic_graph->print();
-  // historic_graph->delete_node(100);
-  // historic_graph->insert_node(n1);
+  // historic_window = new QMainWindow;
+  // historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window,
+  // historic_graph, DSR::DSRViewer::view::graph | DSR::DSRViewer::view::scene,
+  // DSR::DSRViewer::view::graph); historic_window->setWindowTitle("Historic
+  // graph"); historic_window->show();
 
   std::string historic_file = "keyframes_and_changes.txt";
   if (historic_manager->index_file(historic_file)) {
-    std::cout << __FUNCTION__ << " - Historic file indexed successfully" << std::endl;
+    std::cout << __FUNCTION__ << " - Historic file indexed successfully"
+              << std::endl;
 
     // Scrollbars configuration
     size_t keyframe_count = historic_manager->get_keyframe_count();
-    historic_debugger_ui.global_changes_scroll_bar->setMaximum(keyframe_count - 1);
+    historic_debugger_ui.global_changes_scroll_bar->setMaximum(keyframe_count -
+                                                               1);
 
     // First keyframe
     if (keyframe_count > 0) {
@@ -140,15 +146,15 @@ void SpecificWorker::initialize() {
 
       // Initialize time_input to t=0 (first keyframe is the time reference)
       historic_debugger_ui.time_input->setText("0.000");
-      // global_display_label initialized by update_local_scrollbar
-      // local_display_label initialized by update_local_scrollbar
     }
   } else {
-    std::cerr << __FUNCTION__ << " - Failed to index historic file" << std::endl;
+    std::cerr << __FUNCTION__ << " - Failed to index historic file"
+              << std::endl;
   }
 
   // Initial keyframe
-  keyframe_period = std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
+  keyframe_period =
+      std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
   time_check = std::chrono::system_clock::now();
   generate_keyframe();
 
@@ -200,40 +206,47 @@ int SpecificWorker::startup_check() {
 }
 
 void SpecificWorker::local_changes_management(int value) {
-  std::cout << "Local scroll bar position: " << value << std::endl;
 
   // Get the current global keyframe index from the scrollbar
   int keyframe_idx = historic_debugger_ui.global_changes_scroll_bar->value();
-  size_t local_count = historic_manager->get_local_changes_count(static_cast<size_t>(keyframe_idx));
+  size_t local_count = historic_manager->get_local_changes_count(
+      static_cast<size_t>(keyframe_idx));
 
   // Reload the base keyframe (without local changes)
   historic_manager->load_keyframe(static_cast<size_t>(keyframe_idx), false);
 
   // Apply local changes up to `value`
   if (value > 0)
-    historic_manager->apply_local_changes_up_to(static_cast<size_t>(keyframe_idx), static_cast<size_t>(value - 1));
+    historic_manager->apply_local_changes_up_to(
+        static_cast<size_t>(keyframe_idx), static_cast<size_t>(value - 1));
 
   // --- Update local_display_label: "X / Y - TYPE" ---
   // value=0 means "keyframe base, no local change active"
   if (value > 0 && local_count > 0) {
-    auto [ts, type] = historic_manager->get_local_change_info(static_cast<size_t>(keyframe_idx), static_cast<size_t>(value - 1));
-    historic_debugger_ui.local_display_label->setText(QString("%1 / %2 - %3").arg(value).arg(local_count).arg(QString::fromStdString(type)));
+    auto [ts, type] = historic_manager->get_local_change_info(
+        static_cast<size_t>(keyframe_idx), static_cast<size_t>(value - 1));
+    historic_debugger_ui.local_display_label->setText(
+        QString("%1 / %2 - %3")
+            .arg(value)
+            .arg(local_count)
+            .arg(QString::fromStdString(type)));
     // Update time_input with time in seconds relative to the first keyframe
     uint64_t t0 = historic_manager->get_keyframe_timestamp(0);
     double seconds = (ts > t0) ? static_cast<double>(ts - t0) / 1e9 : 0.0;
     historic_debugger_ui.time_input->setText(QString::number(seconds, 'f', 3));
   } else {
-    historic_debugger_ui.local_display_label->setText(QString("0 / %1").arg(local_count));
+    historic_debugger_ui.local_display_label->setText(
+        QString("0 / %1").arg(local_count));
     // Show keyframe timestamp when at base (no local change)
     uint64_t t0 = historic_manager->get_keyframe_timestamp(0);
-    uint64_t ts = historic_manager->get_keyframe_timestamp(static_cast<size_t>(keyframe_idx));
+    uint64_t ts = historic_manager->get_keyframe_timestamp(
+        static_cast<size_t>(keyframe_idx));
     double seconds = (ts > t0) ? static_cast<double>(ts - t0) / 1e9 : 0.0;
     historic_debugger_ui.time_input->setText(QString::number(seconds, 'f', 3));
   }
 }
 
 void SpecificWorker::global_changes_management(int value) {
-  std::cout << "Global scroll bar position: " << value << std::endl;
 
   // Load keyframe with value as index (no local changes applied yet)
   historic_manager->load_keyframe(static_cast<size_t>(value), false);
@@ -248,11 +261,13 @@ void SpecificWorker::global_changes_management(int value) {
 
   // --- Update global_display_label: "X / Y" (1-indexed for readability) ---
   size_t total = historic_manager->get_keyframe_count();
-  historic_debugger_ui.global_display_label->setText(QString("%1 / %2").arg(value + 1).arg(total));
+  historic_debugger_ui.global_display_label->setText(
+      QString("%1 / %2").arg(value + 1).arg(total));
 
   // Update time_input with keyframe time in seconds relative to first keyframe
   uint64_t t0 = historic_manager->get_keyframe_timestamp(0);
-  uint64_t ts = historic_manager->get_keyframe_timestamp(static_cast<size_t>(value));
+  uint64_t ts =
+      historic_manager->get_keyframe_timestamp(static_cast<size_t>(value));
   double seconds = (ts > t0) ? static_cast<double>(ts - t0) / 1e9 : 0.0;
   historic_debugger_ui.time_input->setText(QString::number(seconds, 'f', 3));
 }
@@ -262,22 +277,33 @@ void SpecificWorker::update_local_scrollbar(size_t keyframe_idx) {
   size_t total_kf = historic_manager->get_keyframe_count();
 
   // local slider range: 0 = base keyframe, 1..N = each local change
-  historic_debugger_ui.local_changes_scroll_bar->setMaximum(static_cast<int>(local_count));
+  historic_debugger_ui.local_changes_scroll_bar->setMaximum(
+      static_cast<int>(local_count));
 
   // Reset local label to base state
-  historic_debugger_ui.local_display_label->setText(QString("0 / %1").arg(local_count));
+  historic_debugger_ui.local_display_label->setText(
+      QString("0 / %1").arg(local_count));
 
   // Reset global label in case update_local_scrollbar is called directly
-  historic_debugger_ui.global_display_label->setText(QString("%1 / %2").arg(keyframe_idx + 1).arg(total_kf));
+  historic_debugger_ui.global_display_label->setText(
+      QString("%1 / %2").arg(keyframe_idx + 1).arg(total_kf));
 }
 
 void SpecificWorker::save_changes_to_file(const std::string &filename) {
   // Check if change map is empty
-  if (changes_map.empty()) { std::cout << __FUNCTION__ << " - Empty change map. Nothing to save." << std::endl; return; }
+  if (changes_map.empty()) {
+    std::cout << __FUNCTION__ << " - Empty change map. Nothing to save."
+              << std::endl;
+    return;
+  }
 
   // Open file in write mode - app: append (add at the end without overwrite)
   std::ofstream out_file(filename, std::ios::app);
-  if (!out_file.is_open()) { std::cerr << __FUNCTION__ << " - Error: File " << filename << " couldn't be open for writting." << std::endl; return; }
+  if (!out_file.is_open()) {
+    std::cerr << __FUNCTION__ << " - Error: File " << filename
+              << " couldn't be open for writting." << std::endl;
+    return;
+  }
 
   // Write data
   for (const auto &[timestamp, dsr_data] : changes_map)
@@ -285,7 +311,8 @@ void SpecificWorker::save_changes_to_file(const std::string &filename) {
 
   // Close file
   out_file.close();
-  std::cout << __FUNCTION__ << " - File " << filename << " created with " << changes_map.size() << " changes." << std::endl;
+  std::cout << __FUNCTION__ << " - File " << filename << " created with "
+            << changes_map.size() << " changes." << std::endl;
 
   // Clear changes map
   changes_map.clear();
@@ -294,7 +321,11 @@ void SpecificWorker::save_changes_to_file(const std::string &filename) {
 void SpecificWorker::load_changes(const std::string filename) {
   // Open file in read mode
   std::ifstream in_file(filename);
-  if (!in_file.is_open()) { std::cerr << __FUNCTION__ << " - Error: File " << filename << " couldn't be open for reading." << std::endl; return; }
+  if (!in_file.is_open()) {
+    std::cerr << __FUNCTION__ << " - Error: File " << filename
+              << " couldn't be open for reading." << std::endl;
+    return;
+  }
 
   std::string line;
   int line_count = 0;
@@ -309,42 +340,62 @@ void SpecificWorker::load_changes(const std::string filename) {
     try {
       if (auto data_ptr = DSRDecoder::decode(line); data_ptr)
         decoded_data[data_ptr->timestamp] = *data_ptr;
-    } catch (const std::exception &e) { 
-      std::cerr << __FUNCTION__ << " - Error decoding line " << line_count << ": " << e.what() << "\nData: " << line << std::endl; }
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - Error decoding line " << line_count
+                << ": " << e.what() << "\nData: " << line << std::endl;
+    }
   }
 
   // Close file
   in_file.close();
-  std::cout << __FUNCTION__ << " - File " << filename << " readed and decoded. Changes loaded: " << decoded_data.size() << std::endl;
+  std::cout << __FUNCTION__ << " - File " << filename
+            << " readed and decoded. Changes loaded: " << decoded_data.size()
+            << std::endl;
 }
 
 void SpecificWorker::display_debugger_graph() {
   // Check if display data is empty
-  if (decoded_data.empty()) { std::cout << __FUNCTION__ << " - Empty decoded data. Nothing to display." << std::endl; return; }
+  if (decoded_data.empty()) {
+    std::cout << __FUNCTION__ << " - Empty decoded data. Nothing to display."
+              << std::endl;
+    return;
+  }
 }
 
-void SpecificWorker::modify_node_slot(std::uint64_t id, const std::string &type) {
+void SpecificWorker::modify_node_slot(std::uint64_t id,
+                                      const std::string &type) {
   const auto time_now = std::chrono::system_clock::now();
-  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           time_now.time_since_epoch())
+                           .count();
 
   if (!string_check_flag) {
     std::cout << "Modify node slot - id: " << id << " type: " << type << " ";
     std::cout << "new_timestamp: " << new_timestamp << std::endl;
   } else {
-    auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::MN, id, type, {});
-    if (!dsr_data_optional.has_value()) { std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl; return; }
+    auto dsr_data_optional =
+        assemble_string(new_timestamp, DSRSpecialChars::MN, id, type, {});
+    if (!dsr_data_optional.has_value()) {
+      std::cerr << __FUNCTION__ << " - dsr_data_optional has no value"
+                << std::endl;
+      return;
+    }
     auto dsr_data = dsr_data_optional.value();
     changes_map[new_timestamp] = dsr_data;
     std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
   }
 }
 
-void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string> &att_names) {
+void SpecificWorker::modify_node_attrs_slot(
+    std::uint64_t id, const std::vector<std::string> &att_names) {
   const auto time_now = std::chrono::system_clock::now();
-  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           time_now.time_since_epoch())
+                           .count();
 
   if (!string_check_flag) {
-    std::cout << "Modify node attrs slot - id: " << id << " att_names_size: " << att_names.size() << " att_names: ";
+    std::cout << "Modify node attrs slot - id: " << id
+              << " att_names_size: " << att_names.size() << " att_names: ";
     for (const auto &att : att_names) {
       std::cout << att << " ";
       auto node_optional = G->get_node(id);
@@ -361,16 +412,23 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
   } else {
     auto dsr_data_optional = assemble_string(
         new_timestamp, DSRSpecialChars::MNA, id, "", att_names); // no type/tag
-    if (!dsr_data_optional.has_value()) { std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl; return; }
+    if (!dsr_data_optional.has_value()) {
+      std::cerr << __FUNCTION__ << " - dsr_data_optional has no value"
+                << std::endl;
+      return;
+    }
     auto dsr_data = dsr_data_optional.value();
     changes_map[new_timestamp] = dsr_data;
     std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
   }
 }
 
-void SpecificWorker::modify_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &type) {
+void SpecificWorker::modify_edge_slot(std::uint64_t from, std::uint64_t to,
+                                      const std::string &type) {
   const auto time_now = std::chrono::system_clock::now();
-  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           time_now.time_since_epoch())
+                           .count();
 
   if (!string_check_flag) {
     auto edges_optional = G->get_edges(from);
@@ -401,35 +459,54 @@ void SpecificWorker::modify_edge_slot(std::uint64_t from, std::uint64_t to, cons
   }
 }
 
-void SpecificWorker::modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to, const std::string &type, const std::vector<std::string> &att_names) {
+void SpecificWorker::modify_edge_attrs_slot(
+    std::uint64_t from, std::uint64_t to, const std::string &type,
+    const std::vector<std::string> &att_names) {
   const auto time_now = std::chrono::system_clock::now();
-  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           time_now.time_since_epoch())
+                           .count();
 
   if (!string_check_flag) {
-    std::cout << "Modify edge attrs slot - from_id: " << from << " to_id: " << to << " type: " << type;
+    std::cout << "Modify edge attrs slot - from_id: " << from
+              << " to_id: " << to << " type: " << type;
     std::cout << "\n att_names_size: " << att_names.size() << " att_names: ";
     for (const auto &att : att_names)
       std::cout << att << " ";
     std::cout << std::endl;
   } else {
     auto dsr_data_optional =
-        assemble_string(new_timestamp, DSRSpecialChars::MEA, std::make_tuple(from, to), type, att_names);
-    if (!dsr_data_optional.has_value()) { std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl; return; }
+        assemble_string(new_timestamp, DSRSpecialChars::MEA,
+                        std::make_tuple(from, to), type, att_names);
+    if (!dsr_data_optional.has_value()) {
+      std::cerr << __FUNCTION__ << " - dsr_data_optional has no value"
+                << std::endl;
+      return;
+    }
     auto dsr_data = dsr_data_optional.value();
     changes_map[new_timestamp] = dsr_data;
     std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
   }
 }
 
-void SpecificWorker::del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag) {
+void SpecificWorker::del_edge_slot(std::uint64_t from, std::uint64_t to,
+                                   const std::string &edge_tag) {
   const auto time_now = std::chrono::system_clock::now();
-  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           time_now.time_since_epoch())
+                           .count();
 
   if (!string_check_flag)
     std::cout << "Delete edge slot" << std::endl;
   else {
-    auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::DE, std::make_tuple(from, to), edge_tag, {});
-    if (!dsr_data_optional.has_value()) { std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl; return; }
+    auto dsr_data_optional =
+        assemble_string(new_timestamp, DSRSpecialChars::DE,
+                        std::make_tuple(from, to), edge_tag, {});
+    if (!dsr_data_optional.has_value()) {
+      std::cerr << __FUNCTION__ << " - dsr_data_optional has no value"
+                << std::endl;
+      return;
+    }
     auto dsr_data = dsr_data_optional.value();
     changes_map[new_timestamp] = dsr_data;
     std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
@@ -438,13 +515,20 @@ void SpecificWorker::del_edge_slot(std::uint64_t from, std::uint64_t to, const s
 
 void SpecificWorker::del_node_slot(std::uint64_t from) {
   const auto time_now = std::chrono::system_clock::now();
-  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           time_now.time_since_epoch())
+                           .count();
 
   if (!string_check_flag)
     std::cout << "Delete node slot" << std::endl;
   else {
-    auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::DN, from, "", {});
-    if (!dsr_data_optional.has_value()) { std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl; return; }
+    auto dsr_data_optional =
+        assemble_string(new_timestamp, DSRSpecialChars::DN, from, "", {});
+    if (!dsr_data_optional.has_value()) {
+      std::cerr << __FUNCTION__ << " - dsr_data_optional has no value"
+                << std::endl;
+      return;
+    }
     auto dsr_data = dsr_data_optional.value();
     changes_map[new_timestamp] = dsr_data;
     std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
@@ -477,8 +561,11 @@ SpecificWorker::attribute_value_and_type_to_string(const auto &att) {
       att.value());
 }
 
-std::optional<std::string> SpecificWorker::assemble_string(const auto &timestamp, const std::string &slot, 
-  const std::variant<std::uint64_t, std::tuple<uint64_t, uint64_t>> &variant_id, const std::string &type, const std::vector<std::string> &att_names) {
+std::optional<std::string> SpecificWorker::assemble_string(
+    const auto &timestamp, const std::string &slot,
+    const std::variant<std::uint64_t, std::tuple<uint64_t, uint64_t>>
+        &variant_id,
+    const std::string &type, const std::vector<std::string> &att_names) {
   std::optional<DSR::Node> node_optional;
   std::optional<DSR::Edge> edge_optional;
   DSR::Node node;
@@ -508,7 +595,8 @@ std::optional<std::string> SpecificWorker::assemble_string(const auto &timestamp
   }
   // Edge ID
   else if (std::holds_alternative<std::tuple<uint64_t, uint64_t>>(variant_id)) {
-    auto [from_id, to_id] = std::get<std::tuple<uint64_t, uint64_t>>(variant_id);
+    auto [from_id, to_id] =
+        std::get<std::tuple<uint64_t, uint64_t>>(variant_id);
     if (slot != DSRSpecialChars::DE)
       edge_optional = G->get_edge(from_id, to_id, type);
     if (edge_optional.has_value())
@@ -567,7 +655,8 @@ std::optional<std::string> SpecificWorker::assemble_string(const auto &timestamp
       }
 
       if (att_optional.has_value()) {
-        auto [att_value, att_type] = attribute_value_and_type_to_string(att_optional.value());
+        auto [att_value, att_type] =
+            attribute_value_and_type_to_string(att_optional.value());
         if (!att_value.empty()) {
           dsr_data += att_name;
           dsr_data += DSRSpecialChars::ATT_NAME;
@@ -589,7 +678,9 @@ void SpecificWorker::generate_keyframe() {
   std::string dsr_kdata = "";
 
   // timestamp + K
-  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_check.time_since_epoch()).count();
+  auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           time_check.time_since_epoch())
+                           .count();
   dsr_kdata += std::to_string(new_timestamp);
   dsr_kdata += DSRSpecialChars::SLOT;
   dsr_kdata += DSRSpecialChars::K;

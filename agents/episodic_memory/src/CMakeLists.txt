@@ -1,6 +1,7 @@
 # Sources set
 LIST(APPEND SOURCES
   ../src/specificworker.cpp
+  ../src/dsr_episodic_api.cpp
 )
 
 # Headers set

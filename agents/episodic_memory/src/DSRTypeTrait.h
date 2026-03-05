@@ -1,6 +1,11 @@
 #ifndef DSRTYPETRAIT_H
 #define DSRTYPETRAIT_H
 
+#include <array>
+#include <string>
+#include <variant>
+#include <vector>
+
 // Type codification for encoder
 template<typename T> struct DSRTypeTrait;
 template<> struct DSRTypeTrait<std::string>             { static constexpr const char* code = "s"; };
@@ -20,7 +25,7 @@ template<> struct DSRTypeTrait<std::array<float, 6>>    { static constexpr const
 
 // Attributes types
 namespace DSRAttributeTypes {
-    using AttributeType = std::variant<
+using AttributeType = std::variant<
         std::string, 
         int32_t, 
         float,
@@ -40,12 +45,12 @@ namespace DSRAttributeTypes {
 
 // Special characters for encoder string delimitation
 namespace DSRSpecialChars {
-	constexpr char SLOT = '#';
-	constexpr char ATT_NAME = '$';
-	constexpr char ATT_TYPE = ':';
-	constexpr char ATT_VAL = '%';
-	constexpr char K_DIV = '@';
-	
+    constexpr char SLOT = '#';
+    constexpr char ATT_NAME = '$';
+    constexpr char ATT_TYPE = ':';
+    constexpr char ATT_VAL = '%';
+    constexpr char K_DIV = '@';
+
 	constexpr const char* K = "K";
 	constexpr const char* MN = "MN";
 	constexpr const char* MNA = "MNA";

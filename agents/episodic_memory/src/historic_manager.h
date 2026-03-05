@@ -35,7 +35,17 @@ class HistoricManager {
 public:
   HistoricManager(std::shared_ptr<DSR::DSRGraph> graph, size_t max_cache_size = 50)
       : G(graph), max_cache_size(max_cache_size), preloading(false),
-        current_keyframe_idx(0) {}
+        current_keyframe_idx(0) {
+          // auto node_opt = G->get_node("robot");
+          // if (node_opt.has_value()) {
+          //   auto node = node_opt.value();
+          //   G->add_or_modify_attrib_local<pos_x_att>(node, float(180.0));
+          //   G->update_node(node);
+          //   G->delete_node(node.id());
+          //   G->clear_deleted();
+          //   G->insert_node(node);
+          // }
+        }
 
   ~HistoricManager() {
     preloading = false;
@@ -86,10 +96,8 @@ public:
       event_idx++;
     }
 
-    std::cout << __FUNCTION__ << " - [HistoricManager] Indexed "
-              << keyframe_metadata.size() << " keyframes with "
-              << all_events_metadata.size() << " total events in " << filepath
-              << std::endl;
+    std::cout << __FUNCTION__ << " - [HistoricManager] Indexed " << keyframe_metadata.size() << " keyframes with "
+              << all_events_metadata.size() << " total events in " << filepath << std::endl;
 
     return true;
   }
@@ -102,8 +110,7 @@ public:
   /**
    * @brief Get number of local changes inside a keyframe
    */
-  size_t get_local_changes_count(size_t keyframe_idx,
-                                 bool apply_local_changes = false) {
+  size_t get_local_changes_count(size_t keyframe_idx, bool apply_local_changes = false) {
     auto it = local_changes_metadata.find(keyframe_idx);
     return (it != local_changes_metadata.end()) ? it->second.size() : 0;
   }
@@ -113,7 +120,7 @@ public:
    */
   void load_keyframe(size_t keyframe_idx, bool apply_local_changes = false) {
     if (keyframe_idx >= keyframe_metadata.size()) { std::cerr << __FUNCTION__ << " - [HistoricManager] Invalid keyframe index: " << keyframe_idx << std::endl; return; }
-    std::cout << __FUNCTION__ << " - [HistoricManger] Loading keyframe " << keyframe_idx << std::endl;
+    // std::cout << __FUNCTION__ << " - [HistoricManger] Loading keyframe " << keyframe_idx << std::endl;
     // Update current keyframe for pre-loading
     current_keyframe_idx = keyframe_idx;
 
@@ -139,10 +146,7 @@ public:
     auto it = local_changes_metadata.find(keyframe_idx);
     if (it == local_changes_metadata.end() ||
         local_change_idx >= it->second.size()) {
-      std::cerr << __FUNCTION__
-                << " - [HistoricManger] Invalid local change index."
-                << std::endl;
-      return;
+      std::cerr << __FUNCTION__<< " - [HistoricManger] Invalid local change index." << std::endl; return;
     }
 
     DSREvent *change = get_event_by_metadata(it->second[local_change_idx]);
@@ -151,9 +155,7 @@ public:
 
     apply_modification_to_graph(*change);
 
-    std::cout << __FUNCTION__ << " - [HistoricManager] Applied local change "
-              << local_change_idx << " (" << change->modification_type << ")"
-              << std::endl;
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applied local change " << local_change_idx << " (" << change->modification_type << ")" << std::endl;
   }
 
   /**
@@ -161,20 +163,21 @@ public:
    */
   void apply_local_changes_up_to(size_t keyframe_idx, size_t up_to_change_idx) {
     auto it = local_changes_metadata.find(keyframe_idx);
-    if (it == local_changes_metadata.end())
-      return;
+    if (it == local_changes_metadata.end()) return;
 
     size_t limit = std::min(up_to_change_idx + 1, it->second.size());
 
     for (size_t i = 0; i < limit; ++i) {
       DSREvent *change = get_event_by_metadata(it->second[i]);
-      if (change) {
+      if (change) 
+      {
+        G->clear_deleted();
         apply_modification_to_graph(*change);
+        std::cout << "    - Local change applied: " << change->modification_type << std::endl;
       }
     }
 
-    std::cout << __FUNCTION__ << " - [HistoricManager] Applied " << limit
-              << " local changes" << std::endl;
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applied " << limit << " local changes" << std::endl;
   }
 
   /**
@@ -222,6 +225,10 @@ private:
   std::shared_ptr<DSR::DSRGraph> G;
   std::string filepath;
 
+  // ID cache
+  std::unordered_map<uint64_t, uint64_t> id_mapping; // original ID -> current ID (after deletions and re-insertions)
+  std::unordered_map<uint64_t, uint64_t> reverse_id_mapping; // current ID -> original ID 
+
   // Metadata
   std::vector<EventMetadata> keyframe_metadata;
   std::map<size_t, std::vector<EventMetadata>> local_changes_metadata;
@@ -237,6 +244,53 @@ private:
   std::thread preload_thread;
   std::atomic<bool> preloading;
   size_t current_keyframe_idx;
+
+  /**
+   * @brief Register an ID mapping
+   */
+  void register_id_mapping(uint64_t original_id, uint64_t current_id) {
+    id_mapping[original_id] = current_id;
+    reverse_id_mapping[current_id] = original_id;
+  }
+
+  /**
+   * @brief Delete an ID mapping (e.g. when a node/edge is deleted and its ID can be reused)
+   */
+  void unregister_id_mapping(uint64_t original_id) {
+    auto it = id_mapping.find(original_id);
+    if (it != id_mapping.end()) {
+      reverse_id_mapping.erase(it->second);
+      id_mapping.erase(it);
+    }
+  }
+
+  /**
+   * @brief Get original ID from current ID
+   */
+  std::optional<uint64_t> get_original_id(uint64_t current_id) {
+    auto it = reverse_id_mapping.find(current_id);
+    if (it != reverse_id_mapping.end())
+      return it->second;
+    return std::nullopt;
+  }
+
+  /**
+   * @brief Get current ID from original ID
+   */
+  std::optional<uint64_t> get_current_id(uint64_t original_id) {
+    auto it = id_mapping.find(original_id);
+    if (it != id_mapping.end())
+      return it->second;
+    return std::nullopt;
+  }
+
+  /**
+   * @brief Delete every ID mapping
+   */
+  void clear_id_mappings() {
+    id_mapping.clear();
+    reverse_id_mapping.clear();
+  }
 
   /**
    * @brief Header parser
@@ -281,13 +335,9 @@ private:
 
     // Not in cache, decode from file
     std::string line = read_line_at(meta.file_position);
+    if (line.empty()) { std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to read line at position " << meta.file_position << std::endl; return nullptr; }
     auto decoded = DSRDecoder::decode(line);
-    if (!decoded) {
-      std::cerr << __FUNCTION__
-                << " - [HistoricManager] Failed to decoded event at timestamp "
-                << meta.timestamp << std::endl;
-      return nullptr;
-    }
+    if (!decoded) { std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to decoded event at timestamp " << meta.timestamp << std::endl; return nullptr; }
 
     // Add to cache
     DSREvent *ptr = decoded.get();
@@ -321,65 +371,79 @@ private:
   void reconstruct_graph_from_keyframe(DSREvent &keyframe) {
     // Keyframe verification
     if (keyframe.modification_type != DSRSpecialChars::K) { std::cerr << __FUNCTION__ << " - [HistoricManager] Event is not a keyframe." << std::endl; return; }
-    std::cout << __FUNCTION__<< " - [HistoricManager] Reconstructing graph from keyframe with " << keyframe.nodes.size() << " nodes and " << keyframe.edges.size() << " edges." << std::endl;
-
-    // Create sets of Node and Edge IDs of that keyframe
-    std::unordered_set<uint64_t> keyframe_node_ids;
-    for (const auto &node : keyframe.nodes)
-      keyframe_node_ids.insert(node.id());
-
-    std::set<std::tuple<uint64_t, uint64_t, std::string>> keyframe_edge_keys;
-    for (const auto &edge : keyframe.edges)
-      keyframe_edge_keys.insert({edge.from(), edge.to(), edge.type()});
-
-    // Remove edges that are no longer in the keyframe
+    // std::cout << __FUNCTION__<< " - [HistoricManager] Reconstructing graph from keyframe with " << keyframe.nodes.size() << " nodes and " << keyframe.edges.size() << " edges." << std::endl;
+      
+    // Clear current graph (nodes will cascade delete edges, so we only need to delete nodes)
     auto current_nodes = G->get_nodes();
     for (const auto &node : current_nodes) {
-      auto edges_opt = G->get_edges(node.id());
-      if (!edges_opt.has_value())
+      try {
+        G->delete_node(node.id());
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__<< " - [HistoricManager] Error deleting node " << node.id() << ": " << e.what() << std::endl;
+      }
+    }
+
+    clear_id_mappings();
+
+    // Insert nodes from the keyframe
+    for (auto node : keyframe.nodes) {
+      uint64_t original_id = node.id();
+
+      DSR::Node new_node;
+      new_node.type(node.type());
+      new_node.name(node.name());
+
+      // Copy attributes
+      for (const auto &[name, attr] : node.attrs())
+        if (name != DSRAttributeNames::ID)
+          new_node.attrs()[name] = attr;
+
+      try {
+        auto real_id_opt = G->insert_node(new_node);
+        if (real_id_opt.has_value()) {
+          uint64_t real_id = real_id_opt.value();
+          register_id_mapping(original_id, real_id);
+        } else { std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to insert node " << new_node.name() << std::endl; }
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__<< " - [HistoricManager] Error inserting node " << new_node.id() << ": " << e.what() << std::endl;
+      }
+    }
+
+    // Insert edges from the keyframe
+    for (auto edge : keyframe.edges) {
+      uint64_t original_from_id = edge.from();
+      uint64_t original_to_id = edge.to();
+
+      auto real_from_id_opt = get_current_id(original_from_id);
+      auto real_to_id_opt = get_current_id(original_to_id);
+
+      if (!real_from_id_opt.has_value() || !real_to_id_opt.has_value()) {
+        std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to insert edge from " << original_from_id << " to " << original_to_id << ": Node ID mapping not found." << std::endl;
         continue;
-      for (const auto &[key, edge] : edges_opt.value()) {
-        if (!keyframe_edge_keys.count({edge.from(), edge.to(), edge.type()})) {
-          try {
-            G->delete_edge(edge.from(), edge.to(), edge.type());
-          } catch (const std::exception &e) {
-            std::cerr << __FUNCTION__<< " - [HistoricManager] Error deleting edge " << edge.from() << "->" << edge.to() << ": " << e.what() << std::endl;
-          }
-        }
       }
-    }
 
-    // --- Upsert nodes from the keyframe ---
-    for (auto &node : keyframe.nodes) {
+      uint64_t real_from_id = real_from_id_opt.value();
+      uint64_t real_to_id = real_to_id_opt.value();
+
+      DSR::Edge new_edge;
+      new_edge.from(real_from_id);
+      new_edge.to(real_to_id);
+      new_edge.type(edge.type());
+
+      // Copy attributes
+      for (const auto &[name, attr] : edge.attrs())
+        if (name != DSRAttributeNames::IDF && name != DSRAttributeNames::IDT)
+          new_edge.attrs()[name] = attr;
+
       try {
-        auto existing = G->get_node(node.id());
-        if (existing.has_value()) {
-          // Node already exists: update name/type/attrs in place
-          auto n = existing.value();
-          n.name(node.name());
-          n.type(node.type());
-          n.attrs() = node.attrs();
-          G->update_node(n);
-        } else {
-          // Node does not exist (was never in this graph instance): insert with
-          // ID
-          G->insert_node_with_id(node);
-        }
+        G->insert_or_assign_edge(new_edge);
       } catch (const std::exception &e) {
-        std::cerr << __FUNCTION__ << " - [HistoricManager] Error upserting node " << node.id() << ": " << e.what() << std::endl;
+        std::cerr << __FUNCTION__<< " - [HistoricManager] Error inserting edge " << new_edge.from() << "->" << new_edge.to() << ": " << e.what() << std::endl;
       }
     }
 
-    // --- Upsert edges from the keyframe ---
-    for (auto &edge : keyframe.edges) {
-      try {
-        G->insert_or_assign_edge(edge);
-      } catch (const std::exception &e) {
-        std::cerr << __FUNCTION__<< " - [HistoricManager] Error upserting edge " << edge.from() << "->" << edge.to() << ": " << e.what() << std::endl;
-      }
-    }
-
-    std::cout << __FUNCTION__ << " - [HistoricManager] Graph reconstructed successfully." << std::endl; }
+    // std::cout << __FUNCTION__ << " - [HistoricManager] Graph reconstructed successfully." << std::endl; 
+  }
 
   /**
    * @brief Apply one modification by its event type
@@ -407,121 +471,137 @@ private:
    * @brief Apply MN - Modify Node
    */
   void apply_modify_node(const DSREvent &mod) {
-    if (!mod.node_id.has_value() || !mod.type.has_value() ||
-        !mod.node_name.has_value()) {
-      std::cerr << __FUNCTION__
-                << " - [HistoricManager] MN: Missing required fields"
-                << std::endl;
-      return;
-    }
+    if (!mod.node_id.has_value() || !mod.type.has_value() || !mod.node_name.has_value()) { std::cerr << __FUNCTION__<< " - [HistoricManager] MN: Missing required fields" << std::endl; return; }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying MN" << std::endl;
 
-    // Check if node already exists
-    auto node_optional = G->get_node(*mod.node_name);
-    if (!node_optional.has_value()) {
+    uint64_t original_id = *mod.node_id;
+    auto current_id_opt = get_current_id(original_id);
+    
+    // Check if node exists and ID is mapped
+    if (!current_id_opt.has_value()) {
+      // Node doesn't exist, create it with the original ID
       DSR::Node node;
-      node.id(*mod.node_id);
+      node.id(original_id);
       node.type(*mod.type);
       node.name(*mod.node_name);
-      G->insert_node_with_id(node);
-    } else {
-      auto node = node_optional.value();
-      if (!(node.id() == *mod.node_id && node.name() == *mod.node_name &&
-            node.type() == *mod.type)) {
-        node.id(*mod.node_id);
-        node.type(*mod.type);
-        node.name(*mod.node_name);
+
+      for (const auto &[name, attr] : mod.attributes)
+        if (name != DSRAttributeNames::ID && name != DSRAttributeNames::TYPE && name != DSRAttributeNames::NODE_NAME)
+          node.attrs()[name] = attr;
+
+      try {
+        auto real_id_opt = G->insert_node(node);
+        if (real_id_opt.has_value()) {
+          uint64_t real_id = real_id_opt.value();
+          register_id_mapping(original_id, real_id);
+        } else { std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to insert node " << node.name() << std::endl; }
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__ << " - [HistoricManager] Error inserting node " << node.id() << ": " << e.what() << std::endl;
       }
+      return;
     }
   }
 
   /**
-   * @brief Apply MNE - Modify Node Attributes
+   * @brief Apply MNA - Modify Node Attributes
    */
   void apply_modify_node_attrs(const DSREvent &mod) {
-    if (!mod.node_id.has_value()) {
-      std::cerr << __FUNCTION__
-                << " - [HistoricManager] MNA: Missing required fields"
-                << std::endl;
-      return;
-    }
+    if (!mod.node_id.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Missing required fields" << std::endl; return; }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying MNA" << std::endl;
 
-    // Check if node exists
-    auto node_optional = G->get_node(*mod.node_id);
-    if (!node_optional.has_value()) {
-      std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Node "
-                << *mod.node_id << " not found" << std::endl;
-      return;
-    }
+    uint64_t original_id = *mod.node_id;
+    auto current_id_opt = get_current_id(original_id);
+    if (!current_id_opt.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Node ID mapping not found for node " << original_id << std::endl; return; }
 
-    auto node = node_optional.value();
+    uint64_t current_id = current_id_opt.value();
+
+    // Get node by current ID
+    auto node_optional = G->get_node(current_id);
+    if (!node_optional.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Node " << current_id << " not found" << std::endl; return; }
+
+    DSR::Node node = node_optional.value();
     for (const auto &[name, attr] : mod.attributes)
-      if (name != DSRAttributeNames::ID)
-        node.attrs()[name] =
-            attr; // G->add_or_modify_attrib_local(node, name, attr);
-    G->update_node(node);
+      if (name != DSRAttributeNames::ID && name != DSRAttributeNames::TYPE && name != DSRAttributeNames::NODE_NAME)
+          node.attrs()[name] = attr;
+
+    try {
+      G->update_node(node);
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - [HistoricManager] Error updating node " << node.id() << ": " << e.what() << std::endl;
+    }
   }
 
   /**
    * @brief Apply ME - Modify Edge
    */
   void apply_modify_edge(const DSREvent &mod) {
-    if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() ||
-        !mod.type.has_value()) {
-      std::cerr << __FUNCTION__
-                << " - [HistoricManager] ME: Missing required fields"
-                << std::endl;
-      return;
-    }
+    if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() || !mod.type.has_value()) {
+      std::cerr << __FUNCTION__<< " - [HistoricManager] ME: Missing required fields" << std::endl; return; }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying ME" << std::endl;
 
-    // Check if edge already exists
-    auto edge_optional =
-        G->get_edge(*mod.edge_from_id, *mod.edge_to_id, *mod.type);
-    if (!edge_optional.has_value()) {
+    uint64_t original_from_id = *mod.edge_from_id;
+    uint64_t original_to_id = *mod.edge_to_id;
+
+    auto real_from_id_opt = get_current_id(original_from_id);
+    auto real_to_id_opt = get_current_id(original_to_id);
+    if (!real_from_id_opt.has_value() || !real_to_id_opt.has_value()) {
+      std::cerr << __FUNCTION__<< " - [HistoricManager] ME: Node ID mapping not found for edge from " << original_from_id << " to " << original_to_id << std::endl; return; }
+
+    uint64_t real_from_id = real_from_id_opt.value();
+    uint64_t real_to_id = real_to_id_opt.value();
+
+    auto edge_opt = G->get_edge(real_from_id, real_to_id, *mod.type);
+    if (!edge_opt.has_value()) {
+      // Edge doesn't exist, create it with the original IDs
       DSR::Edge edge;
-      edge.from(*mod.edge_from_id);
-      edge.to(*mod.edge_to_id);
+      edge.from(real_from_id);
+      edge.to(real_to_id);
       edge.type(*mod.type);
-      G->insert_or_assign_edge(edge);
-    } else {
-      auto edge = edge_optional.value();
-      if (!(edge.from() == *mod.edge_from_id && edge.to() == *mod.edge_to_id &&
-            edge.type() == *mod.type)) {
-        edge.from(*mod.edge_from_id);
-        edge.to(*mod.edge_to_id);
-        edge.type(*mod.type);
+
+      for (const auto &[name, attr] : mod.attributes)
+        if (name != DSRAttributeNames::IDF && name != DSRAttributeNames::IDT && name != DSRAttributeNames::TYPE)
+          edge.attrs()[name] = attr;
+
+      try {
+        G->insert_or_assign_edge(edge);
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__ << " - [HistoricManager] Error inserting edge: " << e.what() << std::endl;
       }
-    }
+    } 
+    else { std::cout << " Edge already exists (ignoring duplicate ME)" << std::endl; }
   }
 
   /**
    * @brief Apply MEA - Modify Edge Attributes
    */
   void apply_modify_edge_attrs(const DSREvent &mod) {
-    if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() ||
-        !mod.type.has_value()) {
-      std::cerr << __FUNCTION__
-                << " - [HistoricManager] MEA: Missing required fields"
-                << std::endl;
-      return;
-    }
+    if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() || !mod.type.has_value()) { std::cerr << __FUNCTION__<< " - [HistoricManager] MEA: Missing required fields" << std::endl; return; }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying MEA" << std::endl;
 
-    // Check if edge exists
-    auto edge_optional =
-        G->get_edge(*mod.edge_from_id, *mod.edge_to_id, *mod.type);
-    if (!edge_optional.has_value()) {
-      std::cerr << __FUNCTION__ << " - [HistoricManager] MEA: Edge not found"
-                << std::endl;
-      return;
-    }
+    uint64_t original_from_id = *mod.edge_from_id;
+    uint64_t original_to_id = *mod.edge_to_id;
 
-    auto edge = edge_optional.value();
+    auto real_from_id_opt = get_current_id(original_from_id);
+    auto real_to_id_opt = get_current_id(original_to_id);
+    if (!real_from_id_opt.has_value() || !real_to_id_opt.has_value())    { std::cerr << __FUNCTION__<< " - [HistoricManager] MEA: Node ID mapping not found for edge from " << original_from_id << " to " << original_to_id << std::endl; return; }
+
+    uint64_t real_from_id = real_from_id_opt.value();
+    uint64_t real_to_id = real_to_id_opt.value();
+
+    auto edge_opt = G->get_edge(real_from_id, real_to_id, *mod.type);
+    if (!edge_opt.has_value()) { std::cerr << __FUNCTION__<< " - [HistoricManager] MEA: Edge not found from " << real_from_id << " to " << real_to_id << std::endl; return; }
+
+    DSR::Edge edge = edge_opt.value();
+
     for (const auto &[name, attr] : mod.attributes)
-      if (name != DSRAttributeNames::IDF && name != DSRAttributeNames::IDT &&
-          name != DSRAttributeNames::TYPE)
+      if (name != DSRAttributeNames::IDF && name != DSRAttributeNames::IDT && name != DSRAttributeNames::TYPE)
         edge.attrs()[name] = attr;
-    // G->add_or_modify_attrib_local<">(edge, name, attr);
 
-    G->insert_or_assign_edge(edge);
+    try {
+      G->insert_or_assign_edge(edge);
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - [HistoricManager] Error updating edge: " << e.what() << std::endl;
+    }
   }
 
   /**
@@ -531,7 +611,20 @@ private:
     // Check if node exists
     if (!mod.node_id.has_value())
       return;
-    G->delete_node(*mod.node_id);
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying DN" << std::endl;
+
+    uint64_t original_id = *mod.node_id;
+    auto current_id_opt = get_current_id(original_id);
+    if (!current_id_opt.has_value()) { std::cerr << __FUNCTION__<< " - [HistoricManager] DN: Node ID mapping not found for node " << original_id << std::endl; return; }
+
+    uint64_t current_id = current_id_opt.value();
+
+    try {
+      G->delete_node(current_id);
+      unregister_id_mapping(original_id);
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - [HistoricManager] Error deleting node " << current_id << ": " << e.what() << std::endl;
+    }
   }
 
   /**
@@ -542,7 +635,23 @@ private:
     if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() ||
         !mod.type.has_value())
       return;
-    G->delete_edge(*mod.edge_from_id, *mod.edge_to_id, *mod.type);
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying DE" << std::endl;
+
+    uint64_t original_from_id = *mod.edge_from_id;
+    uint64_t original_to_id = *mod.edge_to_id;
+
+    auto real_from_id_opt = get_current_id(original_from_id);
+    auto real_to_id_opt = get_current_id(original_to_id);
+    if (!real_from_id_opt.has_value() || !real_to_id_opt.has_value())    { std::cerr << __FUNCTION__<< " - [HistoricManager] DE: Node ID mapping not found for edge from " << original_from_id << " to " << original_to_id << std::endl; return; }
+
+    uint64_t real_from_id = real_from_id_opt.value();
+    uint64_t real_to_id = real_to_id_opt.value();
+
+    try {
+      G->delete_edge(real_from_id, real_to_id, *mod.type);
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - [HistoricManager] Error deleting edge from " << real_from_id << " to " << real_to_id << ": " << e.what() << std::endl;
+    }
   }
 
   /**
@@ -571,12 +680,10 @@ private:
       try {
         G->delete_node(node.id());
       } catch (const std::exception &e) {
-        std::cerr << __FUNCTION__ << " - [HistoricManager] Error deleting node "
-                  << node.id() << ": " << e.what() << std::endl;
+        std::cerr << __FUNCTION__ << " - [HistoricManager] Error deleting node " << node.id() << ": " << e.what() << std::endl;
       }
     }
-    std::cout << __FUNCTION__ << " - [HistoricManager] Graph cleared"
-              << std::endl;
+    std::cout << __FUNCTION__ << " - [HistoricManager] Graph cleared" << std::endl;
   }
 
   /**
@@ -601,8 +708,7 @@ private:
       }
 
       preloading = false;
-      std::cout << __FUNCTION__ << " - [HistoricManger] Preload completed."
-                << std::endl;
+      // std::cout << __FUNCTION__ << " - [HistoricManger] Preload completed." << std::endl;
     });
   }
 };
