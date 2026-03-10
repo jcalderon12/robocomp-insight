@@ -105,6 +105,7 @@ public slots:
 	// UI SLOTS
 	void local_changes_management(int value);
 	void global_changes_management(int value);
+	void on_time_search();
 
 
 private:
