@@ -116,7 +116,7 @@ void SpecificWorker::initialize() {
 	// DSR::DSRViewer::view::graph); historic_window->setWindowTitle("Historic
 	// graph"); historic_window->show();
 
-	std::string historic_file = "keyframes_and_changes.txt";
+	std::string historic_file = "keyframes_and_changes_2.txt";
 	if (historic_manager->index_file(historic_file)) {
 		std::cout << __FUNCTION__ << " - Historic file indexed successfully" << std::endl;
 

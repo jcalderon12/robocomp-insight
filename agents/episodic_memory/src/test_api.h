@@ -5,6 +5,9 @@
 #include <iostream>
 #include <iomanip>
 #include <cassert>
+#include <chrono>
+#include <vector>
+#include <numeric>
 
 class APITestSuite {
 public:
@@ -50,6 +53,9 @@ public:
 
         // Test 11: Event index at timestamp
         test_event_index_at_timestamp(api);
+
+        // Test 12: Performance Benchmarks
+        test_performance_benchmarks(api);
 
         std::cout << "\n" << std::string(80, '=') << "\n";
         std::cout << "  ALL TESTS PASSED ✓\n";
@@ -446,6 +452,121 @@ private:
         }
 
         std::cout << "  └─ Index retrieval ✓ PASS\n";
+        std::cout << "\n";
+    }
+
+    // ======================================================================
+    // TEST 12: Performance Benchmarks
+    // ======================================================================
+    static void test_performance_benchmarks(DSR::EpisodicMemoryAPI &api) {
+        std::cout << "[TEST 12] Performance Benchmarks\n";
+        std::cout << "  Measuring read and query performance...\n";
+        std::cout << "\n";
+
+        size_t kf_count = api.get_keyframe_count();
+        std::vector<uint64_t> timestamps = api.get_keyframe_timestamps();
+        
+        // ---- BENCHMARK 1: get_keyframe_count ----
+        std::cout << "  Benchmark 1: get_keyframe_count() [1000 iterations]\n";
+        auto start = std::chrono::high_resolution_clock::now();
+        for (int i = 0; i < 1000; i++) {
+            api.get_keyframe_count();
+        }
+        auto end = std::chrono::high_resolution_clock::now();
+        auto ms = std::chrono::duration<double, std::milli>(end - start).count();
+        auto µs_per_call = (ms * 1000.0) / 1000;
+        std::cout << "    ├─ Total: " << std::fixed << std::setprecision(3) << ms << " ms\n";
+        std::cout << "    └─ Per call: " << std::fixed << std::setprecision(3) << µs_per_call << " µs\n";
+
+        // ---- BENCHMARK 2: get_keyframe ----
+        std::cout << "\n  Benchmark 2: get_keyframe(idx) [500 iterations, random indices]\n";
+        start = std::chrono::high_resolution_clock::now();
+        for (int i = 0; i < 500; i++) {
+            size_t idx = i % kf_count;
+            api.get_keyframe(idx);
+        }
+        end = std::chrono::high_resolution_clock::now();
+        ms = std::chrono::duration<double, std::milli>(end - start).count();
+        µs_per_call = (ms * 1000.0) / 500;
+        std::cout << "    ├─ Total: " << std::fixed << std::setprecision(3) << ms << " ms\n";
+        std::cout << "    └─ Per call: " << std::fixed << std::setprecision(3) << µs_per_call << " µs\n";
+
+        // ---- BENCHMARK 3: get_keyframe_index_at_time ----
+        std::cout << "\n  Benchmark 3: get_keyframe_index_at_time(ts) [500 iterations]\n";
+        start = std::chrono::high_resolution_clock::now();
+        for (size_t i = 0; i < 500; i++) {
+            uint64_t ts = timestamps[i % timestamps.size()];
+            api.get_keyframe_index_at_time(ts);
+        }
+        end = std::chrono::high_resolution_clock::now();
+        ms = std::chrono::duration<double, std::milli>(end - start).count();
+        µs_per_call = (ms * 1000.0) / 500;
+        std::cout << "    ├─ Total: " << std::fixed << std::setprecision(3) << ms << " ms\n";
+        std::cout << "    └─ Per call: " << std::fixed << std::setprecision(3) << µs_per_call << " µs (O(log k) binary search)\n";
+
+        // ---- BENCHMARK 4: get_local_changes ----
+        std::cout << "\n  Benchmark 4: get_local_changes(idx) [500 iterations]\n";
+        start = std::chrono::high_resolution_clock::now();
+        for (size_t i = 0; i < 500; i++) {
+            size_t idx = i % kf_count;
+            api.get_local_changes(idx);
+        }
+        end = std::chrono::high_resolution_clock::now();
+        ms = std::chrono::duration<double, std::milli>(end - start).count();
+        µs_per_call = (ms * 1000.0) / 500;
+        std::cout << "    ├─ Total: " << std::fixed << std::setprecision(3) << ms << " ms\n";
+        std::cout << "    └─ Per call: " << std::fixed << std::setprecision(3) << µs_per_call << " µs\n";
+
+        // ---- BENCHMARK 5: get_events_between ----
+        std::cout << "\n  Benchmark 5: get_events_between(t0, t1) [200 iterations]\n";
+        if (timestamps.size() > 1) {
+            uint64_t t_min = timestamps[0];
+            uint64_t t_max = timestamps[timestamps.size() - 1];
+            start = std::chrono::high_resolution_clock::now();
+            for (int i = 0; i < 200; i++) {
+                api.get_events_between(t_min, t_max);
+            }
+            end = std::chrono::high_resolution_clock::now();
+            ms = std::chrono::duration<double, std::milli>(end - start).count();
+            µs_per_call = (ms * 1000.0) / 200;
+            std::cout << "    ├─ Total: " << std::fixed << std::setprecision(3) << ms << " ms\n";
+            std::cout << "    └─ Per call: " << std::fixed << std::setprecision(3) << µs_per_call << " µs\n";
+        } else {
+            std::cout << "    └─ Skipped (not enough timestamps)\n";
+        }
+
+        // ---- BENCHMARK 6: get_node_history ----
+        std::cout << "\n  Benchmark 6: get_node_history(node_id) [300 iterations]\n";
+        start = std::chrono::high_resolution_clock::now();
+        for (int i = 0; i < 300; i++) {
+            // Use various node IDs (assuming IDs from 100-300)
+            api.get_node_history(100 + (i % 20));
+        }
+        end = std::chrono::high_resolution_clock::now();
+        ms = std::chrono::duration<double, std::milli>(end - start).count();
+        µs_per_call = (ms * 1000.0) / 300;
+        std::cout << "    ├─ Total: " << std::fixed << std::setprecision(3) << ms << " ms\n";
+        std::cout << "    └─ Per call: " << std::fixed << std::setprecision(3) << µs_per_call << " µs\n";
+
+        // ---- BENCHMARK 7: get_events_by_type ----
+        std::cout << "\n  Benchmark 7: get_events_by_type(type) [500 iterations]\n";
+        std::vector<char> types = {'K', 'M', 'C'};
+        start = std::chrono::high_resolution_clock::now();
+        for (size_t i = 0; i < 500; i++) {
+            std::string type_str(1, types[i % types.size()]);
+            api.get_events_by_type(type_str);
+        }
+        end = std::chrono::high_resolution_clock::now();
+        ms = std::chrono::duration<double, std::milli>(end - start).count();
+        µs_per_call = (ms * 1000.0) / 500;
+        std::cout << "    ├─ Total: " << std::fixed << std::setprecision(3) << ms << " ms\n";
+        std::cout << "    └─ Per call: " << std::fixed << std::setprecision(3) << µs_per_call << " µs\n";
+
+        // ---- SUMMARY ----
+        std::cout << "\n  Performance Summary:\n";
+        std::cout << "    ├─ Status: ✓ All benchmarks completed\n";
+        std::cout << "    ├─ Keyframes: " << kf_count << "\n";
+        std::cout << "    └─ Note: Times vary by hardware and dataset size\n";
         std::cout << "\n";
     }
 };

@@ -16,6 +16,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "test_api.h"
+
 /**
  * @brief Event meta data from a keyframe or modification
  */
@@ -219,6 +221,101 @@ public:
     event_cache.clear();
     cache_order.clear();
     std::cout << "[HistoricManager] Cache cleared" << std::endl;
+  }
+
+  /**
+   * @brief Find the keyframe at or before a given timestamp
+   * @param target_timestamp The target timestamp in nanoseconds
+   * @return Optional containing the keyframe index, or nullopt if not found
+   *
+   * Returns the index of the last keyframe whose timestamp is <= target_timestamp.
+   * This is useful for finding the state of the graph at a specific point in time.
+   *
+   * Example: keyframes at t=[0ns, 5e9ns, 10e9ns, 15e9ns]
+   *          searching for 7e9ns returns index 1 (keyframe at 5e9ns)
+   */
+  std::optional<size_t> find_keyframe_at_or_before(uint64_t target_timestamp) const {
+    if (keyframe_metadata.empty())
+      return std::nullopt;
+
+    // Handle case where target is before first keyframe
+    if (target_timestamp < keyframe_metadata[0].timestamp)
+      return std::nullopt;
+
+    // Handle case where target is after last keyframe
+    if (target_timestamp >= keyframe_metadata.back().timestamp)
+      return keyframe_metadata.size() - 1;
+
+    // Binary search for the largest timestamp <= target
+    size_t left = 0, right = keyframe_metadata.size() - 1;
+    size_t result = 0;
+
+    while (left <= right) {
+      size_t mid = left + (right - left) / 2;
+
+      if (keyframe_metadata[mid].timestamp <= target_timestamp) {
+        result = mid;
+        left = mid + 1;
+      } else {
+        if (mid == 0)
+          return std::nullopt;
+        right = mid - 1;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * @brief Find the local change closest to a given timestamp within a keyframe
+   * @param keyframe_idx The index of the keyframe
+   * @param target_timestamp The target timestamp in nanoseconds
+   * @return Optional containing the local change index, or nullopt if none found
+   *
+   * Returns the index of the local change whose timestamp is closest to target_timestamp
+   * within the specified keyframe. This enables fine-grained navigation within a keyframe.
+   *
+   * Example: changes at t=[1740000005500000000, 1740000005600000000, 1740000005700000000]
+   *          searching for 1740000005650000000 returns index 1 (closest)
+   */
+  std::optional<size_t> find_local_change_closest(size_t keyframe_idx, uint64_t target_timestamp) const {
+    auto it = local_changes_metadata.find(keyframe_idx);
+    if (it == local_changes_metadata.end() || it->second.empty())
+      return std::nullopt;
+
+    const auto &changes = it->second;
+
+    // Handle edge cases
+    if (target_timestamp < changes[0].timestamp)
+      return std::nullopt;
+    if (target_timestamp >= changes.back().timestamp)
+      return changes.size() - 1;
+
+    // Find closest using binary search
+    size_t left = 0, right = changes.size() - 1;
+    size_t closest_idx = 0;
+    uint64_t min_diff = std::numeric_limits<uint64_t>::max();
+
+    while (left <= right) {
+      size_t mid = left + (right - left) / 2;
+      uint64_t diff = (target_timestamp >= changes[mid].timestamp)
+                          ? (target_timestamp - changes[mid].timestamp)
+                          : (changes[mid].timestamp - target_timestamp);
+
+      if (diff < min_diff) {
+        min_diff = diff;
+        closest_idx = mid;
+      }
+
+      if (changes[mid].timestamp < target_timestamp)
+        left = mid + 1;
+      else if (changes[mid].timestamp > target_timestamp)
+        right = (mid == 0) ? mid : mid - 1;
+      else
+        return mid; // Exact match
+    }
+
+    return closest_idx;
   }
 
 private:
