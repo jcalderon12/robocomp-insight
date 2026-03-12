@@ -1,0 +1,442 @@
+import sys
+import time
+
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+from rich.console import Console
+from genericworker import *
+import interfaces as ifaces
+import pybullet as p
+from agent_training.yolo_dataset import YoloDataset
+from agent_training.yolo_trainer import YoloTrainer
+import cv2
+
+sys.path.append('/opt/robocomp/lib')
+console = Console(highlight=False)
+
+from pydsr import *
+import numpy as np
+
+CONCEPT_NAME = "bump"
+
+class SpecificWorker(GenericWorker):
+    def __init__(self, proxy_map, configData, startup_check=False):
+        super(SpecificWorker, self).__init__(proxy_map, configData)
+        self.Period = configData["Period"]["Compute"]
+        
+        # ================ PYBULLET SIMULATION SETUP  ================
+        # ============================================================
+
+        self.physicsClient = p.connect(p.GUI)
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+        
+        # p.setRealTimeSimulation(1) # Enable real-time simulation
+        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15,
+                                     cameraTargetPosition=[-1.3, -0.5, 0.2])
+        
+        self.dt = 1./62. # Simulation time step (60 Hz)
+        p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
+        
+        p.setGravity(0, 0, -9.81)
+
+        # ================= PYBULLET MODELS LOADING  ================
+        # ===========================================================
+        
+        self.concept_position = [1, 0, 0.01]
+        self.initial_robot_position = [0, 0, -0.07]
+
+        flags = p.URDF_USE_INERTIA_FROM_FILE
+
+        # LOAD PLANE IN THE SIMULATION
+        self.plane = p.loadURDF("../../../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0]) 
+
+        # LOAD CONCEPT IN THE SIMULATION
+        self.concept = p.loadURDF("../../../../etc/URDFs/bump/bump_100x5cm.urdf", self.concept_position)
+        # Paint the concept red to make it easily detectable in the images
+        p.changeVisualShape(self.concept, -1, rgbaColor=[1, 0, 0, 1])  # Red color
+        
+        # LOAD ROBOT IN THE SIMULATION
+        self.robot = p.loadURDF("../../../../etc/URDFs/shadow/shadow.urdf", self.concept_position, flags=flags)
+
+        # Make ricoh_theta_z1 invisible to avoid it appearing in the camera images and interfering with the concept detection
+        cam_link_id = self.get_link_info(self.robot).get("ricoh_theta_z1")
+        if cam_link_id is not None:
+            p.setCollisionFilterGroupMask(self.robot, cam_link_id, 0, 0)  # Disable collisions
+            p.changeVisualShape(self.robot, cam_link_id, rgbaColor=[0, 0, 0, 0])  # Make invisible
+        else:
+            console.print("Camera link 'ricoh_theta_z1' not found in robot model. This should NOT happen. Exiting...", style="bold red")
+            exit()
+
+        # TImage getROI(int cx, int cy, int sx, int sy, int roiwidth, int roiheight);
+        print("Waiting for camera image from robot...")
+        self.robot_img = self.camera360rgb_proxy.getROI(-1, -1, -1, -1, -1, -1) # A bump in the way
+        print(type(self.robot_img.image))
+        # np from buffer (self.robot_img.image)
+        robot_img_array = np.frombuffer(self.robot_img.image, dtype=np.uint8)
+        # Display img array with cv2
+        robot_img_array = robot_img_array.reshape((self.robot_img.height, self.robot_img.width, 3)) # RGBA
+        cv2.imshow("Robot Camera Image", robot_img_array)
+        cv2.waitKey(1)  # Needed to display the image window
+        print("Camera image received from robot. Shape:")
+        print(self.robot_img.width, self.robot_img.height)
+
+
+        time.sleep(0.5)
+
+
+        # ================ ROBOT PARAMETERS  ===============
+        # ==================================================
+
+        self.wheels_radius = 0.1
+        self.distance_between_wheels = 0.44
+        self.distance_from_center_to_wheels = self.distance_between_wheels / 2
+
+        self.motors = ["frame_back_right2motor_back_right", "frame_back_left2motor_back_left", "frame_front_right2motor_front_right", "frame_front_left2motor_front_left"]
+        self.joints_name = self.get_joints_info(self.robot)
+        self.links_name = self.get_link_info(self.robot)
+
+        self.init_pos, self.init_orn = p.getBasePositionAndOrientation(self.robot)
+        self.forward_vel, self.angular_vel = 0, 0
+
+        self.print_time = self.actual_time = self.initial_time = time.time()
+
+
+        # ================ SIMULATION PARAM  ===============
+        # ==================================================
+        
+        # Dataset initialization variables
+        self.unsorted_image_list = []
+        self.dataset_size = 16
+        self.dataset = YoloDataset("concept_dataset", "concept")
+
+        # Path parameters
+        self.radius = 1.6
+        angles = np.linspace(0, 2*np.pi, self.dataset_size, endpoint=False)
+        self.robot_nav_path = [[self.concept_position[0] + self.radius*np.cos(angle), 
+                            self.concept_position[1] + self.radius*np.sin(angle), 
+                            0.01] for angle in angles]
+        self.current_path_point = 0
+
+        # Camera parameters (cubemap → equirectangular)
+        self.cam_near = 0.01
+        self.cam_far = 100
+        self.cube_face_size = self.robot_img.height          # each cubemap face is square
+        self.equirect_w = self.robot_img.width               # output equirectangular width
+        self.equirect_h = self.robot_img.height              # output equirectangular height
+        self.cube_proj = p.computeProjectionMatrixFOV(90, 1.0, self.cam_near, self.cam_far)
+        self.cam_ricoh_offset = np.array([-0.16759, 0.0, 1.28231]) # ricoh_theta_z1 position relative to base_link
+        self._build_equirect_remap()  # precompute lookup tables once
+        
+        # Status variables
+        self.has_concept_been_found = False
+    
+        if startup_check:
+            self.startup_check()
+        else:
+            self.timer.timeout.connect(self.compute)
+            self.timer.start(self.Period)
+        
+
+        self.stage = "IDLE"
+
+    def __del__(self):
+        """Destructor"""
+
+
+    @QtCore.Slot()
+    def compute(self):
+        self.show_compute_time_step()
+        self.publish_status_to_dsr()
+        
+        match self.stage:
+            case "IDLE":
+                # If model already exists go directly to testing
+                # Otherwise go to training
+                self.stage = "TRAINING" 
+                pass
+            
+            case "TRAINING":
+                # Teleport robot to the next point in the path
+                target_pos = self.robot_nav_path[self.current_path_point]
+                p.resetBasePositionAndOrientation(self.robot, target_pos, self.init_orn)
+                self.current_path_point = (self.current_path_point + 1) % self.dataset_size
+
+                # Place the virtual eye at the ricoh_theta_z1 link origin.
+                pos, ori = p.getBasePositionAndOrientation(self.robot)
+                cam_pos = [
+                    pos[0] + self.cam_ricoh_offset[0],
+                    pos[1] + self.cam_ricoh_offset[1],
+                    pos[2] + self.cam_ricoh_offset[2],
+                ]
+
+                # Forward direction matches the robot's own orientation (X-axis of the local frame)
+                rot_matrix = p.getMatrixFromQuaternion(ori)
+                forward = [rot_matrix[0], rot_matrix[3]]  # 2-D forward (x, y)
+
+                # Render 360° panoramic strip
+                panorama = self.render_360_image(cam_pos, forward)
+                self.unsorted_image_list.append(panorama)
+
+                # If we have enough images, create dataset and train model.
+                if len(self.unsorted_image_list) >= self.dataset_size:
+                    # We add 80% for training and 20% for validation
+                    for i, img in enumerate(self.unsorted_image_list):
+                        # Analyze the image with CV2 to detect a red bump (placeholder).
+                        # Then, we use CV2 to generate a bounding box around the detected bump and create the corresponding label in YOLO format.
+                        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)  # Convert RGBA to BGR (OpenCV native format)
+                        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+                        lower_red = np.array([0, 70, 50])
+                        upper_red = np.array([10, 255, 255])
+                        mask = cv2.inRange(hsv, lower_red, upper_red)
+                        debug_img = img.copy()
+                        cv2.imwrite(f"debug-img/debug_image_{i}.png", debug_img)  # Save debug image with bounding box
+                        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                        if contours:
+                            # Assume the largest contour is the bump
+                            largest_contour = max(contours, key=cv2.contourArea)
+                            x, y, w, h = cv2.boundingRect(largest_contour)
+                            # Convert to YOLO format (class_id, x_center, y_center, width, height) normalized by image dimensions
+                            img_h, img_w = img.shape[:2]
+                            x_center = (x + w / 2) / img_w
+                            y_center = (y + h / 2) / img_h
+                            width = w / img_w
+                            height = h / img_h
+                            label = f"0 {x_center} {y_center} {width} {height}"  # Class 0 for bump
+
+                            # DEBUG: Draw bounding box on the image and display it
+                            cv2.rectangle(debug_img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                        else:
+                            # If no bump detected, create a label with zero size at the center (or skip)
+                            label = "0 0.5 0.5 0 0"  # No object
+
+                        if i < int(0.8 * self.dataset_size):
+                            self.dataset.add_image(img, label, True)
+                            print(f"Added image {i} to TRAINING set with label: {label}")
+                        else:
+                            self.dataset.add_image(img, label, False)
+                            print(f"Added image {i} to VALIDATION set with label: {label}")
+
+                    # Build dataset YAML
+                    self.dataset.create_yaml()
+
+                    # Train model
+                    trainer = YoloTrainer(dataset_path=self.dataset.get_data_yaml_path(), model_name="yolov8n.pt", output_dir=f"yolo_concept_model")
+                    trainer.init_training()
+                    print(trainer.get_trained_model_path())
+                    self.stage = "TESTING"
+            
+            case "TESTING":
+                
+                pass
+        
+        return True
+
+    def startup_check(self):
+        QTimer.singleShot(200, QApplication.instance().quit)
+
+
+
+
+    # ====================  HELPERS  =====================
+    # ====================================================
+
+
+    def publish_status_to_dsr(self):
+        """ Publishes the status of the concept to DSR."""
+        # check if we have found the concept in this compute step. if so, publish the possible_concept object node to DSR. If not, destroy it (if it exists)
+        if not self.has_concept_been_found:
+            # check if we have to destroy the node in DSR
+            if self.g.get_node(f"object_{CONCEPT_NAME}") is not None:
+                # destroy node (edge is implicitly destroyed)
+                console.print(f"Destroying object node {CONCEPT_NAME}", style="bold red")
+                self.g.delete_node(f"object_{CONCEPT_NAME}")
+        else:
+            # check if we have to create the node in DSR
+            if self.g.get_node(f"object_{CONCEPT_NAME}") is None:
+                # create node
+                console.print(f"Creating object node {CONCEPT_NAME}", style="bold green")
+                object_node = Node(agent_id=self.agent_id, name=f"object_{CONCEPT_NAME}", type="object")
+                self.g.insert_node(object_node)                
+                # create edge
+                robot_node = self.g.get_node("robot")
+                if robot_node is None:
+                    console.print("Robot node not found in DSR graph. This should NOT happen. Exiting...", style="bold red")
+                    exit()
+                edge = Edge(object_node.id, robot_node.id, "thinks", self.agent_id)
+                self.g.insert_or_assign_edge(edge)
+                
+
+    def show_compute_time_step(self):
+        """
+        Get the time step between compute calls
+        :return: time
+        """
+        time_step = time.time() - self.actual_time
+        self.actual_time = time.time()
+        if time.time() - self.print_time > 5:
+            self.print_time = time.time()
+            console.print(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
+            
+        return time_step
+    
+    
+    def _build_equirect_remap(self):
+        """
+        Precomputes the cubemap → equirectangular remap tables.
+        For each pixel (u, v) in the output equirectangular image, we compute
+        the spherical direction, find the corresponding cubemap face, and store
+        the source coordinates to be used later with cv2.remap.
+        """
+        W, H = self.equirect_w, self.equirect_h
+        F = self.cube_face_size
+
+        # Cubemap face axes in a local frame where +X=forward, +Y=left, +Z=up.
+        # Each tuple: (forward_axis, right_axis, up_axis) matching the
+        # OpenGL view produced by PyBullet's computeViewMatrix for that face.
+        #                       forward          right (s)        up (u)
+        self._cube_faces = [
+            (( 1,  0,  0), ( 0, -1,  0), ( 0,  0,  1)),  # 0  Front  +X
+            ((-1,  0,  0), ( 0,  1,  0), ( 0,  0,  1)),  # 1  Back   −X
+            (( 0,  1,  0), ( 1,  0,  0), ( 0,  0,  1)),  # 2  Left   +Y
+            (( 0, -1,  0), (-1,  0,  0), ( 0,  0,  1)),  # 3  Right  −Y
+            (( 0,  0,  1), ( 0, -1,  0), (-1,  0,  0)),  # 4  Top    +Z
+            (( 0,  0, -1), ( 0, -1,  0), ( 1,  0,  0)),  # 5  Bottom −Z
+        ]
+
+        u_px = np.arange(W, dtype=np.float64)
+        v_px = np.arange(H, dtype=np.float64)
+        u_grid, v_grid = np.meshgrid(u_px, v_px)
+
+        # Spherical coordinates for each output pixel
+        theta = 2.0 * np.pi * u_grid / W              # longitude  [0, 2π)
+        phi   = np.pi * (0.5 - v_grid / H)            # latitude   [π/2 … −π/2]
+
+        # 3-D direction in local frame
+        dx = np.cos(phi) * np.cos(theta)   # forward
+        dy = np.cos(phi) * np.sin(theta)   # left
+        dz = np.sin(phi)                   # up
+
+        # Determine dominant axis → cubemap face
+        abs_d = np.stack([np.abs(dx), np.abs(dy), np.abs(dz)], axis=-1)
+        axis = np.argmax(abs_d, axis=-1)                # 0=X, 1=Y, 2=Z
+        dominant_val = np.choose(axis, [dx, dy, dz])
+        face_idx = axis * 2 + (dominant_val < 0).astype(int)
+
+        d = np.stack([dx, dy, dz], axis=-1)             # (H, W, 3)
+
+        # Build remap arrays.  All six faces are laid out side-by-side in a
+        # single atlas of shape (F, 6·F, 4) so cv2.remap can handle them in
+        # one call.
+        map_x = np.zeros((H, W), dtype=np.float32)
+        map_y = np.zeros((H, W), dtype=np.float32)
+
+        for fi in range(6):
+            mask = face_idx == fi
+            if not np.any(mask):
+                continue
+            fwd = np.array(self._cube_faces[fi][0], dtype=np.float64)
+            s_v = np.array(self._cube_faces[fi][1], dtype=np.float64)
+            u_v = np.array(self._cube_faces[fi][2], dtype=np.float64)
+
+            d_m = d[mask]                                # (N, 3)
+            dot_f = d_m @ fwd                            # projection on face normal
+            nx = (d_m @ s_v) / dot_f                     # normalised screen-x  [−1, 1]
+            ny = (d_m @ u_v) / dot_f                     # normalised screen-y  [−1, 1]
+
+            px = (nx + 1.0) / 2.0 * (F - 1)             # pixel-x in face
+            py = (1.0 - ny) / 2.0 * (F - 1)             # pixel-y in face
+
+            map_x[mask] = (fi * F + px).astype(np.float32)
+            map_y[mask] = py.astype(np.float32)
+
+        self._remap_x = map_x
+        self._remap_y = map_y
+
+    def render_360_image(self, cam_pos: list, forward: list) -> np.ndarray:
+        """
+        Renders a 360° equirectangular image using a 6-face cubemap.
+
+        :param cam_pos: [x, y, z] world position of the camera
+        :param forward: [fx, fy] normalized 2-D forward direction vector
+        :return: numpy array (equirect_h, equirect_w, 4) RGBA
+        """
+        fx, fy = forward
+        F = self.cube_face_size
+
+        # World-space target positions and up vectors for six cubemap faces.
+        # Local frame: +X = (fx,fy,0), +Y = (−fy,fx,0), +Z = (0,0,1)
+        face_params = [
+            ([cam_pos[0] + fx,  cam_pos[1] + fy,  cam_pos[2]],     [0, 0, 1]),        # Front
+            ([cam_pos[0] - fx,  cam_pos[1] - fy,  cam_pos[2]],     [0, 0, 1]),        # Back
+            ([cam_pos[0] - fy,  cam_pos[1] + fx,  cam_pos[2]],     [0, 0, 1]),        # Left
+            ([cam_pos[0] + fy,  cam_pos[1] - fx,  cam_pos[2]],     [0, 0, 1]),        # Right
+            ([cam_pos[0],       cam_pos[1],       cam_pos[2] + 1],  [-fx, -fy, 0]),   # Top
+            ([cam_pos[0],       cam_pos[1],       cam_pos[2] - 1],  [fx, fy, 0]),     # Bottom
+        ]
+
+        # Render the 6 faces and pack them into a horizontal atlas
+        atlas = np.empty((F, 6 * F, 4), dtype=np.uint8)
+        for i, (target, up) in enumerate(face_params):
+            vm = p.computeViewMatrix(cam_pos, target, up)
+            _, _, rgb, _, _ = p.getCameraImage(
+                width=F, height=F,
+                viewMatrix=vm,
+                projectionMatrix=self.cube_proj,
+                renderer=p.ER_BULLET_HARDWARE_OPENGL,
+            )
+            atlas[:, i * F:(i + 1) * F, :] = np.array(rgb, dtype=np.uint8).reshape(F, F, 4)
+
+        # Remap the cubemap atlas into the equirectangular panorama
+        equirect = cv2.remap(atlas, self._remap_x, self._remap_y,
+                             cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
+        return equirect
+    
+
+    # ====================  ROBOT HELPERS  =====================
+    # ==========================================================
+
+    def get_joints_info(self, robot_id):
+        """
+        Get joint names and IDs from a robot model
+
+        @param robot_id: ID of the robot model in the simulation
+        @return: Dictionary with joint names as keys and joint IDs as values
+        """
+        joint_name_to_id = {}
+        # Get number of joints in the model
+        num_joints = p.getNumJoints(robot_id)
+        # print("Num joints:", num_joints)
+
+        # Populate the dictionary with joint names and IDs
+        for i in range(num_joints):
+            joint_info = p.getJointInfo(robot_id, i)
+            joint_name = joint_info[1].decode("utf-8")
+            joint_name_to_id[joint_name] = i
+            jid = joint_info[0]
+            jtype = joint_info[2]
+            if jtype == p.JOINT_REVOLUTE:
+                p.setJointMotorControl2(bodyUniqueId=robot_id,
+                                        jointIndex=jid,
+                                        controlMode=p.VELOCITY_CONTROL,
+                                        targetVelocity=0,
+                                        force=0)
+        return joint_name_to_id
+
+    def get_link_info(self, robot_id):
+        """
+        Get link names and IDs from a robot model
+
+        @param robot_id: ID of the robot model in the simulation
+        @return: Dictionary with link names as keys and link IDs as values
+        """
+        link_name_to_id = {}
+        # Get number of joints in the model
+        num_links = p.getNumJoints(robot_id)
+        # print("Num links:", num_links)
+
+        # Populate the dictionary with link names and IDs
+        for i in range(num_links):
+            link_info = p.getJointInfo(robot_id, i)
+            link_name = link_info[12].decode("utf-8")
+            link_name_to_id[link_name] = i
+        return link_name_to_id
