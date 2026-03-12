@@ -18,6 +18,25 @@ Complete API reference documentation for the Episodic Memory API. This document 
 
 ---
 
+## 📑 Table of Contents
+
+- [Quick Reference](#quick-reference-all-20-methods) - All 20+ methods at a glance
+- [Data Structures](#data-structures) - DSRData and Python bindings
+- [Constructor & Status](#constructor--status) - Initialization (3 methods)
+- [Keyframe Queries](#keyframe-queries) - Snapshot access (6 methods)
+- [Time-Range Queries](#time-range-queries) - Range queries (4 methods)
+- [Local Change Queries](#local-change-queries) - Changes between keyframes (3 methods)
+- [Node-Centric Queries](#node-centric-queries) - Node history (3 methods)
+- [Edge-Centric Queries](#edge-centric-queries) - Edge tracking (1 method)
+- [Type-Based Filtering](#type-based-filtering) - Filter by type (1 method)
+- [Internal Details](#internal-details) - Caching and indexing
+- [Error Handling](#error-handling) - C++ and Python patterns
+- [Timestamps Explained](#timestamps-explained) - Nanosecond timestamps
+- [Usage Example](#usage-example) - Full C++ and Python programs
+- [Compilation](#compilation) - Build instructions
+
+---
+
 ## Quick Reference: All 20+ Methods
 
 ### Status
@@ -62,6 +81,10 @@ mkdir build && cd build
 cmake ..
 make -j8
 ```
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -114,62 +137,73 @@ if kf:  # Check if result exists
 
 ---
 
+[Back to top ↑](#episodic-memory-api---complete-reference)
+
+---
+
 ## Constructor & Status
 
 ### `EpisodicMemoryAPI(const std::string &filepath)`
 
-**Purpose**: Indexes a history file immediately upon construction.
+**Purpose**: Index a history file immediately upon construction.  
+**Params**: `filepath` - Path to history file  
+**Behavior**: Reads file, builds indices, creates noun name lookup  
+**Error**: If fails, `is_ready()` returns `false`
 
-**Parameters**:
-- `filepath` - Path to history file (e.g., `"keyframes_and_changes.txt"`)
-
-**Behavior**:
-- Reads entire file once
-- Builds internal indices (O(n) scanning)
-- Pre-computes keyframe positions
-- Creates node-name lookup index
-- Logs indexing statistics to stdout
-
-**Error Handling**:
-- If file doesn't exist: `is_ready()` returns `false`
-- If file is corrupted/unreadable: `is_ready()` returns `false`
-- Always check `is_ready()` before querying (see below)
-
-**Example**:
+**Examples**:
 ```cpp
-DSR::EpisodicMemoryAPI api("episode_001.txt");
-if (api.is_ready()) {
-    // Ready to query
-}
+// C++
+DSR::EpisodicMemoryAPI api("episode.txt");
+if (!api.is_ready()) {
+    std::cerr << "Failed to load" << std::endl;}
+```
+```python
+# Python
+import episodic_memory_api as api
+memory = api.EpisodicMemoryAPI("episode.txt")
+if not memory.is_ready():
+    print("Failed to load")
 ```
 
 ---
 
 ### `bool is_ready() const`
 
-**Purpose**: Check if file was indexed successfully.
+**Purpose**: Check if file was indexed successfully.  
+**Returns**: `true` if ready, `false` if failed
 
-**Returns**: `true` if ready, `false` if indexing failed
-
-**Example**:
+**Examples**:
 ```cpp
-if (!api.is_ready()) {
-    std::cerr << "Failed to index: " << api.get_filepath() << std::endl;
-}
+// C++
+if (!api.is_ready()) std::cerr << "Error" << std::endl;
 ```
+```python
+# Python
+if not memory.is_ready():
+    print("Error")
+```
+
 
 ---
 
 ### `const std::string& get_filepath() const`
 
-**Purpose**: Get the path of currently indexed file.
-
+**Purpose**: Get path of currently indexed file.  
 **Returns**: Reference to file path string
 
-**Example**:
+**Examples**:
 ```cpp
-std::cout << "Using file: " << api.get_filepath() << std::endl;
+// C++
+std::cout << "File: " << api.get_filepath() << std::endl;
 ```
+```python
+# Python
+print(f"File: {memory.get_filepath()}")
+```
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -177,155 +211,160 @@ std::cout << "Using file: " << api.get_filepath() << std::endl;
 
 ### `size_t get_keyframe_count() const`
 
-**Purpose**: Get total number of keyframes.
-
-**Returns**: Number of keyframes (always ≥ 1 if ready)
-
+**Purpose**: Get total number of keyframes.  
+**Returns**: `size_t` - Number of keyframes  
 **Complexity**: O(1)
 
-**Example**:
+**Examples**:
 ```cpp
-size_t count = api.get_keyframe_count();  // Returns 5
+// C++
+auto count = api.get_keyframe_count();
+std::cout << "Total: " << count << std::endl;
+```
+```python
+# Python
+count = memory.get_keyframe_count()
+print(f"Total: {count}")
 ```
 
 ---
 
 ### `std::vector<uint64_t> get_keyframe_timestamps() const`
 
-**Purpose**: Get all keyframe timestamps.
-
-**Returns**: Vector of nanosecond timestamps in chronological order
-
+**Purpose**: Get all keyframe timestamps.  
+**Returns**: Vector of uint64_t timestamps in nanoseconds, chronologically ordered  
 **Complexity**: O(k) where k = keyframe count
 
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto timestamps = api.get_keyframe_timestamps();
-// [1000000000, 2000000000, 3000000000, ...]
+for (auto ts : timestamps) std::cout << ts << std::endl;
+```
+```python
+# Python
+timestamps = memory.get_keyframe_timestamps()
+for ts in timestamps:
+    print(ts)
 ```
 
 ---
 
 ### `std::optional<uint64_t> get_keyframe_timestamp(size_t keyframe_idx) const`
 
-**Purpose**: Get timestamp of specific keyframe.
-
-**Parameters**:
-- `keyframe_idx` - Index (0-based)
-
-**Returns**: Timestamp in nanoseconds, or `nullopt` if out of range
-
+**Purpose**: Get timestamp of specific keyframe.  
+**Params**: `keyframe_idx` - Index (0-based)  
+**Returns**: Timestamp in nanoseconds, or `null/None` if out of range  
 **Complexity**: O(1)
 
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto ts = api.get_keyframe_timestamp(0);
-if (ts) {
-    std::cout << "First keyframe at: " << ts.value() << " ns" << std::endl;
-}
+if (ts) std::cout << "At: " << ts.value() << " ns" << std::endl;
+```
+```python
+# Python
+ts = memory.get_keyframe_timestamp(0)
+if ts is not None:
+    print(f"At: {ts} ns")
 ```
 
 ---
 
 ### `std::optional<DSRData> get_keyframe(size_t keyframe_idx)`
 
-**Purpose**: Get full keyframe (K event) with all nodes and edges.
+**Purpose**: Get full keyframe with all nodes and edges.  
+**Params**: `keyframe_idx` - Index (0-based)  
+**Returns**: Complete graph state, or `null/None` if invalid  
+**Complexity**: O(1) + decode. Cached (LRU, 100 max)
 
-**Parameters**:
-- `keyframe_idx` - Index (0-based)
-
-**Returns**: `DSRData` with nodes/edges populated, or `nullopt` if index invalid
-
-**Complexity**: O(1) lookup + O(d) decode (d = decoded size)
-
-**Cache**: Decoded event cached (LRU, 100 entries max)
-
-**Modification Type**: Always `K`
-
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto kf = api.get_keyframe(0);
 if (kf) {
     std::cout << "Nodes: " << kf->nodes.size() << std::endl;
-    std::cout << "Edges: " << kf->edges.size() << std::endl;
 }
+```
+```python
+# Python
+kf = memory.get_keyframe(0)
+if kf:
+    print(f"Nodes: {len(kf.nodes_list)}")
 ```
 
 ---
 
 ### `std::optional<DSRData> get_keyframe_at_time(uint64_t timestamp)`
 
-**Purpose**: Get keyframe closest to and ≤ given timestamp.
+**Purpose**: Get keyframe at or before given timestamp.  
+**Params**: `timestamp` - Nanosecond timestamp  
+**Returns**: Keyframe at/before time, or `null/None` if all after  
+**Complexity**: O(log k) binary search
 
-**Parameters**:
-- `timestamp` - Nanosecond timestamp
-
-**Returns**: Keyframe at or before timestamp, or `nullopt` if all after timestamp
-
-**Complexity**: O(log k + d) where k = keyframe count
-
-**Algorithm**: Binary search on keyframe timestamps
-
-**Example**:
+**Examples**:
 ```cpp
-uint64_t search_time = 1500000000;  // 1.5 seconds from start
-auto kf = api.get_keyframe_at_time(search_time);
-// Returns keyframe at 1000000000 (last before 1.5s)
+// C++
+auto kf = api.get_keyframe_at_time(1500000000);
+if (kf) std::cout << "Found keyframe" << std::endl;
+```
+```python
+# Python
+kf = memory.get_keyframe_at_time(1500000000)
+if kf:
+    print("Found keyframe")
 ```
 
 ---
 
 ### `std::optional<size_t> get_keyframe_index_at_time(uint64_t timestamp)`
 
-**Purpose**: Get the index of the keyframe closest to and ≤ given timestamp.
+**Purpose**: Get keyframe index at or before timestamp.  
+**Params**: `timestamp` - Nanosecond timestamp  
+**Returns**: Index (0-based) of keyframe, or `null/None` if not found  
+**Complexity**: O(log k) binary search
 
-**Parameters**:
-- `timestamp` - Nanosecond timestamp
-
-**Returns**: Index (0-based) of keyframe at or before timestamp, or `nullopt` if no keyframes exist
-
-**Complexity**: O(log k) where k = keyframe count
-
-**Algorithm**: Binary search on keyframe timestamps
-
-**Use Case**: When you need to work with keyframe indices after searching by time
-
-**Example**:
+**Examples**:
 ```cpp
-uint64_t search_time = 1500000000;
-auto kf_idx = api.get_keyframe_index_at_time(search_time);
-if (kf_idx) {
-    // Now use index to access related data
-    auto changes = api.get_local_changes(kf_idx.value());
-    size_t count = api.get_local_changes_count(kf_idx.value());
+// C++
+auto idx = api.get_keyframe_index_at_time(1500000000);
+if (idx) {
+    auto changes = api.get_local_changes(idx.value());
 }
+```
+```python
+# Python
+idx = memory.get_keyframe_index_at_time(1500000000)
+if idx is not None:
+    changes = memory.get_local_changes(idx)
 ```
 
 ---
 
 ### `std::optional<size_t> get_event_index_at_timestamp(uint64_t timestamp)`
 
-**Purpose**: Get the index of the event at exactly the given timestamp.
+**Purpose**: Get index of exact event at timestamp.  
+**Params**: `timestamp` - Exact nanosecond timestamp  
+**Returns**: Event index in timline, or `null/None` if no match  
+**Complexity**: O(log n) binary search
 
-**Parameters**:
-- `timestamp` - Exact nanosecond timestamp
-
-**Returns**: Index (0-based) in the event list, or `nullopt` if no exact match
-
-**Complexity**: O(log n)
-
-**Algorithm**: Binary search with exact match
-
-**Use Case**: When you need the position of an event in the timeline for further processing
-
-**Example**:
+**Examples**:
 ```cpp
-auto event_idx = api.get_event_index_at_timestamp(1234567890000);
-if (event_idx) {
-    std::cout << "Event is at position: " << event_idx.value() << std::endl;
-    auto event = api.get_event_at_timestamp(1234567890000);
-}
+// C++
+auto idx = api.get_event_index_at_timestamp(1234567890000);
+if (idx) std::cout << "Position: " << idx.value() << std::endl;
 ```
+```python
+# Python
+idx = memory.get_event_index_at_timestamp(1234567890000)
+if idx is not None:
+    print(f"Position: {idx}")
+```
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -333,69 +372,70 @@ if (event_idx) {
 
 ### `std::vector<DSRData> get_events_between(uint64_t t_start, uint64_t t_end)`
 
-**Purpose**: All events (keyframes + changes) in time range.
+**Purpose**: All events (keyframes + changes) in time range.  
+**Params**: `t_start`, `t_end` - Inclusive timestamps in nanoseconds  
+**Returns**: Vector of events chronologically ordered  
+**Complexity**: O(log n + m) where m = result size
 
-**Parameters**:
-- `t_start` - Inclusive start timestamp
-- `t_end` - Inclusive end timestamp
-
-**Returns**: Vector of events, chronologically ordered
-
-**Complexity**: O(log n + m) where n = total events, m = result size
-
-**Algorithm**: Binary search to find range, linear scan within range
-
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto events = api.get_events_between(t0, t1);
 std::cout << "Found " << events.size() << " events" << std::endl;
-// Includes both K and local change events
+```
+```python
+# Python
+events = memory.get_events_between(t0, t1)
+print(f"Found {len(events)} events")
 ```
 
 ---
 
 ### `std::vector<DSRData> get_changes_between(uint64_t t_start, uint64_t t_end)`
 
-**Purpose**: Local changes only (no keyframes) in time range.
-
-**Parameters**:
-- `t_start` - Inclusive start timestamp
-- `t_end` - Inclusive end timestamp
-
-**Returns**: Vector of local change events (MN, MNA, ME, MEA, DN, DE)
-
+**Purpose**: Changes only (no keyframes) in time range.  
+**Params**: `t_start`, `t_end` - Inclusive timestamps  
+**Returns**: Vector of change events (MN, MNA, ME, MEA, DN, DE)  
 **Complexity**: O(log n + m)
 
-**Algorithm**: Binary search + filter by modification type ≠ K
-
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto changes = api.get_changes_between(t0, t1);
-// Excludes keyframe (K) events, only changes
+for (auto &ch : changes) std::cout << ch.modification_type << std::endl;
+```
+```python
+# Python
+changes = memory.get_changes_between(t0, t1)
+for ch in changes:
+    print(ch.modification_type)
 ```
 
 ---
 
 ### `std::optional<DSRData> get_event_at_timestamp(uint64_t timestamp)`
 
-**Purpose**: Find exact event at given timestamp.
+**Purpose**: Find exact event at given timestamp.  
+**Params**: `timestamp` - Exact nanosecond timestamp  
+**Returns**: Event at exact time, or `null/None` if no match  
+**Complexity**: O(log n) binary search
 
-**Parameters**:
-- `timestamp` - Exact nanosecond timestamp
-
-**Returns**: Event at exact timestamp, or `nullopt` if no match
-
-**Complexity**: O(log n)
-
-**Algorithm**: Binary search with exact match
-
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto event = api.get_event_at_timestamp(1234567890000);
-if (event) {
-    std::cout << "Event type: " << event->modification_type << std::endl;
-}
+if (event) std::cout << "Type: " << event->modification_type << std::endl;
 ```
+```python
+# Python
+event = memory.get_event_at_timestamp(1234567890000)
+if event is not None:
+    print(f"Type: {event.modification_type}")
+```
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -403,63 +443,70 @@ if (event) {
 
 ### `size_t get_local_changes_count(size_t keyframe_idx) const`
 
-**Purpose**: Count local changes after a keyframe.
-
-**Parameters**:
-- `keyframe_idx` - Keyframe index
-
-**Returns**: Number of local changes before next keyframe
-
+**Purpose**: Count local changes after a keyframe.  
+**Params**: `keyframe_idx` - Keyframe index  
+**Returns**: Count of local changes before next keyframe  
 **Complexity**: O(1)
 
-**Example**:
+**Examples**:
 ```cpp
-size_t changes = api.get_local_changes_count(0);
-std::cout << "Keyframe 0 has " << changes << " local changes" << std::endl;
+// C++
+auto count = api.get_local_changes_count(0);
+std::cout << "Changes: " << count << std::endl;
+```
+```python
+# Python
+count = memory.get_local_changes_count(0)
+print(f"Changes: {count}")
 ```
 
 ---
 
 ### `std::vector<DSRData> get_local_changes(size_t keyframe_idx)`
 
-**Purpose**: Get all local changes for a keyframe.
-
-**Parameters**:
-- `keyframe_idx` - Keyframe index
-
-**Returns**: All local changes in order, from right after keyframe until next keyframe
-
+**Purpose**: Get all local changes after a keyframe.  
+**Params**: `keyframe_idx` - Keyframe index  
+**Returns**: All changes until next keyframe, in order  
 **Complexity**: O(m) where m = number of changes
 
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto changes = api.get_local_changes(0);
-for (const auto &change : changes) {
-    std::cout << "Change type: " << change.modification_type << std::endl;
-}
+for (auto &ch : changes) std::cout << ch.modification_type << std::endl;
+```
+```python
+# Python
+changes = memory.get_local_changes(0)
+for ch in changes:
+    print(ch.modification_type)
 ```
 
 ---
 
 ### `std::optional<DSRData> get_local_change(size_t keyframe_idx, size_t change_idx)`
 
-**Purpose**: Get single local change within keyframe.
+**Purpose**: Get single change within keyframe's changes.  
+**Params**: `keyframe_idx`, `change_idx` - Both zero-based indices  
+**Returns**: Single change event, or `null/None` if out of range  
+**Complexity**: O(1) + decode
 
-**Parameters**:
-- `keyframe_idx` - Which keyframe
-- `change_idx` - Index within that keyframe's changes (0-based)
-
-**Returns**: Single change event, or `nullopt` if out of range
-
-**Complexity**: O(1) lookup + O(d) decode
-
-**Example**:
+**Examples**:
 ```cpp
-auto change = api.get_local_change(0, 0);  // First change of first keyframe
-if (change) {
-    std::cout << "Type: " << change->modification_type << std::endl;
-}
+// C++
+auto change = api.get_local_change(0, 0);
+if (change) std::cout << "Type: " << change->modification_type << std::endl;
 ```
+```python
+# Python
+change = memory.get_local_change(0, 0)
+if change is not None:
+    print(f"Type: {change.modification_type}")
+```
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -467,73 +514,70 @@ if (change) {
 
 ### `std::vector<DSRData> get_node_history(uint64_t node_id)`
 
-**Purpose**: All events referencing a specific node.
+**Purpose**: All events referencing a specific node.  
+**Params**: `node_id` - Node ID (from file, not live DSR)  
+**Returns**: Events modifying/deleting this node (MN, MNA, DN)  
+**Complexity**: O(n) linear scan
 
-**Parameters**:
-- `node_id` - Node ID
-
-**Returns**: Events that modify/delete this node (MN, MNA, DN types only)
-
-**Complexity**: O(n) linear scan (cannot optimize further)
-
-**Note**: IDs are original IDs from file, not live DSR IDs
-
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto history = api.get_node_history(42);
-for (const auto &event : history) {
-    std::cout << "Node 42 changed at: " << event.timestamp << std::endl;
-}
+for (auto &event : history)
+    std::cout << "Changed at: " << event.timestamp << std::endl;
+```
+```python
+# Python
+history = memory.get_node_history(42)
+for event in history:
+    print(f"Changed at: {event.timestamp}")
 ```
 
 ---
 
 ### `std::vector<DSRData> get_node_history_by_name(const std::string &node_name)`
 
-**Purpose**: All events for node with given name.
+**Purpose**: All events for nodes with given name.  
+**Params**: `node_name` - Name string (e.g., "robot")  
+**Returns**: All events for all nodes ever named this  
+**Complexity**: O(1) index lookup + O(m) collection
 
-**Parameters**:
-- `node_name` - Name string (e.g., "robot")
-
-**Returns**: All events for any node ever named this string
-
-**Complexity**: O(1) index lookup + O(m) result collection
-
-**Index**: Pre-built during file indexing for instant lookup
-
-**How it works**:
-1. Look up name in `node_name_index_` (O(1))
-2. Get all IDs that had this name
-3. Collect events for all those IDs
-
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto events = api.get_node_history_by_name("robot");
-// Instant lookup vs old method that scanned entire file twice
+std::cout << "Found " << events.size() << " events" << std::endl;
+```
+```python
+# Python
+events = memory.get_node_history_by_name("robot")
+print(f"Found {len(events)} events")
 ```
 
 ---
 
 ### `std::vector<DSRData> get_node_changes_between(uint64_t node_id, uint64_t t_start, uint64_t t_end)`
 
-**Purpose**: Changes to specific node within time range.
-
-**Parameters**:
-- `node_id` - Node ID
-- `t_start` - Start timestamp
-- `t_end` - End timestamp
-
-**Returns**: Events modifying this node in time range
-
+**Purpose**: Changes to specific node in time range.  
+**Params**: `node_id`, `t_start`, `t_end` - Node ID and timestamps  
+**Returns**: Events modifying this node in range  
 **Complexity**: O(log n + m)
 
-**Algorithm**: Binary search time range, filter by node_id
-
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto changes = api.get_node_changes_between(42, t0, t1);
-// All ways node 42 changed between t0 and t1
+std::cout << "Found " << changes.size() << " changes" << std::endl;
 ```
+```python
+# Python
+changes = memory.get_node_changes_between(42, t0, t1)
+print(f"Found {len(changes)} changes")
+```
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -541,24 +585,26 @@ auto changes = api.get_node_changes_between(42, t0, t1);
 
 ### `std::vector<DSRData> get_edge_history(uint64_t from_id, uint64_t to_id, const std::string &edge_type)`
 
-**Purpose**: All events for specific edge.
-
-**Parameters**:
-- `from_id` - Source node ID
-- `to_id` - Target node ID
-- `edge_type` - Edge type (e.g., "parent", "connects")
-
-**Returns**: Events modifying/deleting this exact edge
-
+**Purpose**: All events for specific edge.  
+**Params**: `from_id`, `to_id`, `edge_type` - Source, target, type  
+**Returns**: Events modifying/deleting this exact edge  
 **Complexity**: O(n) linear scan
 
-**Modification types**: ME, MEA, DE
-
-**Example**:
+**Examples**:
 ```cpp
-auto edge_events = api.get_edge_history(1, 2, "parent");
-// All modifications to edge 1→2 of type "parent"
+// C++
+auto events = api.get_edge_history(1, 2, "parent");
+std::cout << "Found " << events.size() << " events" << std::endl;
 ```
+```python
+# Python
+events = memory.get_edge_history(1, 2, "parent")
+print(f"Found {len(events)} events")
+```
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -566,20 +612,28 @@ auto edge_events = api.get_edge_history(1, 2, "parent");
 
 ### `std::vector<DSRData> get_events_by_type(const std::string &mod_type)`
 
-**Purpose**: All events of specific modification type.
-
-**Parameters**:
-- `mod_type` - One of: `"K"`, `"MN"`, `"MNA"`, `"ME"`, `"MEA"`, `"DN"`, `"DE"`
-
-**Returns**: All events matching that type
-
+**Purpose**: All events of specific modification type.  
+**Params**: `mod_type` - One of: `"K"`, `"MN"`, `"MNA"`, `"ME"`, `"MEA"`, `"DN"`, `"DE"`  
+**Returns**: All events matching that type  
 **Complexity**: O(n) linear scan
 
-**Example**:
+**Examples**:
 ```cpp
+// C++
 auto keyframes = api.get_events_by_type("K");
-auto deletes = api.get_events_by_type("DN");  // All node deletions
+auto deletes = api.get_events_by_type("DN");
+std::cout << "Deletions: " << deletes.size() << std::endl;
 ```
+```python
+# Python
+keyframes = memory.get_events_by_type("K")
+deletes = memory.get_events_by_type("DN")
+print(f"Deletions: {len(deletes)}")
+```
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -614,6 +668,10 @@ Example:
 ```
 
 **Note**: The separator is `#` not `|`. Each line ends with `#@`.
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -682,6 +740,10 @@ datetime.fromtimestamp(ts_seconds)  # Convert to readable date
 ```
 
 **Origin**: Timestamps typically start from the beginning of the recording session (not Unix epoch).
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
@@ -775,6 +837,10 @@ if event_idx is not None:
 
 ---
 
+[Back to top ↑](#episodic-memory-api---complete-reference)
+
+---
+
 ## Compilation
 
 Include header and link implementation:
@@ -786,3 +852,5 @@ target_sources(my_target PRIVATE dsr_episodic_api.cpp)
 ```
 
 ---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
