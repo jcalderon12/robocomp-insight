@@ -10,9 +10,10 @@ Complete API reference documentation for the Episodic Memory API. This document 
 
 ## 🎯 Quick Navigation
 
+- **I'm using C++** → See [C++ Compilation](#-c-compilation) to build, then [Constructor & Status](#constructor--status) to start
+- **I'm using Python** → See [Python Installation & Setup](#-python-installation--setup) first, then [Python quick API reference](#python-quick-api-reference)
 - **Just give me examples** → Jump to [Usage Example](#usage-example)
-- **I need quick method list** → See [Quick Reference](#quick-reference-all-20-methods) below
-- **I'm using Python** → See [Python Usage Notes](#python-specific-notes)
+- **I need quick method list** → See [C++ quick API reference](#c-quick-api-reference)
 - **I need to handle errors** → Jump to [Error Handling](#error-handling)
 - **Understanding timestamps** → See [Timestamps Explained](#timestamps-explained)
 
@@ -20,7 +21,8 @@ Complete API reference documentation for the Episodic Memory API. This document 
 
 ## 📑 Table of Contents
 
-- [Quick Reference](#quick-reference-all-20-methods) - All 20+ methods at a glance
+- [C++ quick API reference](#c-quick-api-reference) - All 20+ methods at a glance
+- [Python quick API reference](#python-quick-api-reference) - Available methods in Python
 - [Data Structures](#data-structures) - DSRData and Python bindings
 - [Constructor & Status](#constructor--status) - Initialization (3 methods)
 - [Keyframe Queries](#keyframe-queries) - Snapshot access (6 methods)
@@ -30,14 +32,116 @@ Complete API reference documentation for the Episodic Memory API. This document 
 - [Edge-Centric Queries](#edge-centric-queries) - Edge tracking (1 method)
 - [Type-Based Filtering](#type-based-filtering) - Filter by type (1 method)
 - [Internal Details](#internal-details) - Caching and indexing
+- [Usage Example](#usage-example) - Full C++ and Python programs
 - [Error Handling](#error-handling) - C++ and Python patterns
 - [Timestamps Explained](#timestamps-explained) - Nanosecond timestamps
-- [Usage Example](#usage-example) - Full C++ and Python programs
-- [Compilation](#compilation) - Build instructions
 
 ---
 
-## Quick Reference: All 20+ Methods
+## ⚙️ C++ Compilation
+
+### Build Instructions
+
+```bash
+cd agents/episodic_memory
+mkdir build && cd build
+cmake ..
+make -j8
+```
+
+### Include in Your Project
+
+```cpp
+#include "dsr_episodic_api.h"
+
+// In CMakeLists.txt
+target_sources(my_target PRIVATE dsr_episodic_api.cpp)
+```
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
+
+---
+
+## 🐍 Python Installation & Setup
+
+### Option 1: Using Pre-compiled Module (Recommended for Users)
+
+If you already have the compiled module `episodic_memory_api.so`, just add it to your Python path:
+
+**Step 1: Get the compiled module**
+```bash
+# The module is located at:
+# agents/episodic_memory/python/build/episodic_memory_api.so
+cp agents/episodic_memory/python/build/episodic_memory_api.so /path/to/your/python/site-packages/
+# OR add to PYTHONPATH:
+export PYTHONPATH="${PYTHONPATH}:/home/robolab/robocomp/components/robocomp-insight/agents/episodic_memory/python/build"
+```
+
+**Step 2: Import and use**
+```python
+import episodic_memory_api as api
+
+# Initialize with your history file
+memory = api.EpisodicMemoryAPI("path/to/history.txt")
+
+if memory.is_ready():
+    print(f"Loaded: {memory.get_filepath()}")
+    print(f"Keyframes: {memory.get_keyframe_count()}")
+```
+
+### Option 2: Compile from Source
+
+If you need to rebuild the Python module from source:
+
+**Prerequisites:**
+```bash
+# Required packages (RoboComp environment)
+sudo apt-get install libpybind11-dev python3-dev
+# Also requires: Qt6, Eigen3, RoboComp cortex libraries
+```
+
+**Build the module:**
+```bash
+cd agents/episodic_memory/python
+mkdir build && cd build
+cmake ..
+make -j8
+
+# Optional: Install system-wide
+sudo make install
+```
+
+**Or add to PYTHONPATH:**
+```bash
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+```
+
+### What You Need (For Python Users)
+
+**Absolute Minimum:**
+- ✅ `episodic_memory_api.so` - Compiled PyBind11 module
+- ✅ A history file (`.txt` with recorded events)
+
+**To compile from source (developers):**
+- ✅ `src/dsr_episodic_api.h` + `src/dsr_episodic_api.cpp`
+- ✅ `python/CMakeLists.txt`
+- ✅ `python/python_binding.cpp`
+- ✅ RoboComp environment properly configured
+
+**You do NOT need:**
+- ❌ C++ compiler (if using pre-compiled)
+- ❌ CMake/build tools (if using pre-compiled)
+- ❌ RoboComp development headers (if using pre-compiled)
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
+
+---
+
+## C++ quick API reference
 
 ### Status
 - `is_ready()` - Check if ready
@@ -68,23 +172,71 @@ Complete API reference documentation for the Episodic Memory API. This document 
 
 ### Edge Queries
 - `get_edge_history(from, to, type)` - Edge history
-
+quick API reference
 ### Filtering
 - `get_events_by_type(type)` - Filter by type
 
 ---
 
-### Building
-```bash
-cd agents/episodic_memory
-mkdir build && cd build
-cmake ..
-make -j8
-```
+[Back to top ↑](#episodic-memory-api---complete-reference)
 
 ---
 
-[Back to top ↑](#episodic-memory-api---complete-reference)
+## Python quick API reference
+
+### Python module Details
+
+The `episodic_memory_api` module provides full access to all 20+ query methods through PyBind11 bindings. Each method is automatically converted from C++ types:
+
+- **`std::optional<T>`** → **`T | None`** - Returns the value or `None` if not found
+- **`std::vector<T>`** → **`list[T]`** - Standard Python lists
+- **`DSRData.nodes`** → **`DSRData.nodes_list`** - Converted to Python-friendly property names
+- **`DSRData.edges`** → **`DSRData.edges_list`** - Same conversion
+
+### Python methods
+
+All 20+ methods are available exactly as documented, but with Python naming conventions:
+
+```python
+memory = api.EpisodicMemoryAPI("history.txt")
+
+# Status methods
+memory.is_ready()                      # Returns bool
+memory.get_filepath()                  # Returns str
+
+# Keyframe queries
+memory.get_keyframe_count()            # Returns int
+memory.get_keyframe_timestamps()       # Returns list[int]
+memory.get_keyframe(0)                 # Returns DSRData | None
+memory.get_keyframe_at_time(ts)        # Returns DSRData | None
+
+# Time-range queries
+memory.get_events_between(t0, t1)      # Returns list[DSRData]
+memory.get_changes_between(t0, t1)     # Returns list[DSRData]
+memory.get_event_at_timestamp(ts)      # Returns DSRData | None
+
+# Node queries
+memory.get_node_history(node_id)       # Returns list[DSRData]
+memory.get_node_history_by_name("robot") # Returns list[DSRData]
+memory.get_node_changes_between(id, t0, t1) # Returns list[DSRData]
+
+# Edge queries
+memory.get_edge_history(from_id, to_id, "type") # Returns list[DSRData]
+
+# Type filtering
+memory.get_events_by_type("K")         # Returns list[DSRData]
+```
+
+### Python Example Files
+
+See `agents/episodic_memory/python/example_usage.py` for complete working examples including:
+- Initialization and status checking
+- Keyframe queries and navigation
+- Time-based searches (most common)
+- Local change queries
+- Node and edge history
+- Type-based filtering
+- Performance benchmarking
 
 ---
 
@@ -182,7 +334,6 @@ if (!api.is_ready()) std::cerr << "Error" << std::endl;
 if not memory.is_ready():
     print("Error")
 ```
-
 
 ---
 
@@ -675,78 +826,6 @@ Example:
 
 ---
 
-## Error Handling
-
-### C++ Style
-
-All methods use `std::optional<>`:
-- **Present**: Valid result available
-- **Absent** (`nullopt`): Invalid parameter or no match
-
-**Check result with either**:
-```cpp
-if (result.has_value()) {
-    auto value = result.value();  // Get the value
-}
-
-// OR (shorthand)
-if (result) {
-    auto value = *result;  // Dereference directly
-}
-```
-
-**Common nullopt cases**:
-- Out of range index
-- No events in time range
-- No exact timestamp match
-
-### Python Style
-
-In Python, `std::optional<T>` is converted:
-- **Present**: Actual value (int, list, dict, etc.)
-- **Absent**: `None`
-
-```python
-# C++ std::optional<DSRData> becomes Python None or DSRData
-result = api.get_keyframe(999)
-if result is not None:        # Python way to check
-    print(f"Found: {result}")
-else:
-    print("Index out of range")
-
-# Works with any method returning optional
-idx = api.get_keyframe_index_at_time(search_time)
-if idx is not None:
-    print(f"Found at index: {idx}")
-```
-
----
-
-## Timestamps Explained
-
-**Format**: All timestamps are in **nanoseconds**
-
-**Conversion examples**:
-```python
-# Python
-ts_nanoseconds = 1772107272287046051
-ts_seconds = ts_nanoseconds / 1e9           # → 1772107272.287
-ts_milliseconds = ts_nanoseconds / 1e6      # → 1772107272287.046
-ts_microseconds = ts_nanoseconds / 1e3      # → 1772107272287046.051
-
-# Example
-from datetime import datetime
-datetime.fromtimestamp(ts_seconds)  # Convert to readable date
-```
-
-**Origin**: Timestamps typically start from the beginning of the recording session (not Unix epoch).
-
----
-
-[Back to top ↑](#episodic-memory-api---complete-reference)
-
----
-
 ## Usage Example
 
 ### C++ Version
@@ -841,16 +920,78 @@ if event_idx is not None:
 
 ---
 
-## Compilation
+## Error Handling
 
-Include header and link implementation:
+### C++ Style
+
+All methods use `std::optional<>`:
+- **Present**: Valid result available
+- **Absent** (`nullopt`): Invalid parameter or no match
+
+**Check result with either**:
 ```cpp
-#include "dsr_episodic_api.h"
+if (result.has_value()) {
+    auto value = result.value();  // Get the value
+}
 
-// In CMakeLists.txt
-target_sources(my_target PRIVATE dsr_episodic_api.cpp)
+// OR (shorthand)
+if (result) {
+    auto value = *result;  // Dereference directly
+}
+```
+
+**Common nullopt cases**:
+- Out of range index
+- No events in time range
+- No exact timestamp match
+
+### Python Style
+
+In Python, `std::optional<T>` is converted:
+- **Present**: Actual value (int, list, dict, etc.)
+- **Absent**: `None`
+
+```python
+# C++ std::optional<DSRData> becomes Python None or DSRData
+result = api.get_keyframe(999)
+if result is not None:        # Python way to check
+    print(f"Found: {result}")
+else:
+    print("Index out of range")
+
+# Works with any method returning optional
+idx = api.get_keyframe_index_at_time(search_time)
+if idx is not None:
+    print(f"Found at index: {idx}")
 ```
 
 ---
 
 [Back to top ↑](#episodic-memory-api---complete-reference)
+
+---
+
+## Timestamps Explained
+
+**Format**: All timestamps are in **nanoseconds**
+
+**Conversion examples**:
+```python
+# Python
+ts_nanoseconds = 1772107272287046051
+ts_seconds = ts_nanoseconds / 1e9           # → 1772107272.287
+ts_milliseconds = ts_nanoseconds / 1e6      # → 1772107272287.046
+ts_microseconds = ts_nanoseconds / 1e3      # → 1772107272287046.051
+
+# Example
+from datetime import datetime
+datetime.fromtimestamp(ts_seconds)  # Convert to readable date
+```
+
+**Origin**: Timestamps typically start from the beginning of the recording session (not Unix epoch).
+
+---
+
+[Back to top ↑](#episodic-memory-api---complete-reference)
+
+---
