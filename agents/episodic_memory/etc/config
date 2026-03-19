@@ -21,7 +21,7 @@ Agent.work.graph = true
 Agent.work.2d = true
 Agent.work.3d = true
 
-Agent.episodic.configFile = "episodic_dsr.json"
+Agent.episodic.configFile = "root_dsr.json"
 Agent.episodic.domain = 1
 Agent.episodic.tree = true
 Agent.episodic.graph = true

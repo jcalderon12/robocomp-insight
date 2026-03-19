@@ -112,6 +112,14 @@ void MissionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
         defaultBtn.state = QStyle::State_Enabled;
     }
     QApplication::style()->drawControl(QStyle::CE_PushButton, &defaultBtn, painter);
+    
+    // Visual feedback for disabled Complete button
+    if (isCompleted || status == MissionStatus::STOPPED) {
+        painter->fillRect(defaultBtn.rect, QColor(200, 200, 200, 150));
+        painter->setPen(QColor(150, 150, 150));
+        painter->setFont(painter->font());
+        painter->drawText(defaultBtn.rect, Qt::AlignCenter, defaultBtn.text);
+    }
 
     painter->restore();
 }
@@ -120,19 +128,26 @@ QSize MissionDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex 
     return QSize(0, ITEM_HEIGHT);
 }
 
-bool MissionDelegate::editorEvent(QEvent *event, QAbstractItemModel *,
+bool MissionDelegate::editorEvent(QEvent *event, QAbstractItemModel *model,
                                    const QStyleOptionViewItem &option,
                                    const QModelIndex &index) {
     if (event->type() == QEvent::MouseButtonRelease) {
         auto *mouseEvent = static_cast<QMouseEvent *>(event);
         QPoint pos = mouseEvent->pos();
+        
+        // Get mission status to check if operations are allowed
+        auto status = static_cast<MissionStatus>(index.data(Qt::UserRole + 2).toInt());
+        bool isCompleted = (status == MissionStatus::COMPLETED);
 
         if (getToggleButtonRect(option).contains(pos)) {
             emit missionToggleClicked(index.row());
             return true;
         }
         if (getCompletedButtonRect(option).contains(pos)) {
-            emit missionCompletedClicked(index.row());
+            // Only emit signal if mission is not already completed
+            if (!isCompleted && status != MissionStatus::STOPPED) {
+                emit missionCompletedClicked(index.row());
+            }
             return true;
         }
     }

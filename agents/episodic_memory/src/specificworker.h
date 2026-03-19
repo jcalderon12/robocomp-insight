@@ -33,17 +33,15 @@
 
 #include <genericworker.h>
 #include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
 #include "ui_historic_debugger.h"
 #include "historic_manager.h"
 #include "DSRDecoder.h"
 #include "DSRTypeTrait.h"
 
-
 #include "test_decoder.h"
-
-
-
-
 
 /**
  * \brief Class SpecificWorker implements the core functionality of the component.
@@ -127,11 +125,50 @@ private:
 	QWidget historic_debugger_widget;
 	int historic_value;
 
+	// Episodic mission window and viewer
+	QMainWindow *mission_window;
+	std::shared_ptr<DSR::DSRGraph> mission_graph;
+	// std::unique_ptr<DSR::DSRViewer> mission_viewer;
+
+	// Episodic mission widget
+	QWidget mission_widget;
+
 	std::map<uint64_t, std::string> changes_map;
 	std::map<uint64_t, DSREvent> decoded_data;
 	std::chrono::time_point<std::chrono::system_clock> time_check;
 	std::chrono::milliseconds keyframe_period;
-	bool show_deb;	
+	bool show_deb;
+
+	// ===== EPISODIC MEMORY STATE MACHINE =====
+	enum class EpisodicState { IDLE, WAITING_MISSION, RECORDING };
+
+	EpisodicState current_state = EpisodicState::IDLE;
+	uint64_t current_mission_id = 0;
+	std::string current_mission_name = "";
+	bool mission_recording = false;
+	std::chrono::time_point<std::chrono::system_clock> mission_start_time;
+
+	// State machine methods
+	void enter_IDLE();
+	void loop_IDLE();
+	void exit_IDLE();
+
+	void enter_WAITING_MISSION();
+	void loop_WAITING_MISSION();
+	void exit_WAITING_MISSION();
+
+	void enter_RECORDING();
+	void loop_RECORDING();
+	void exit_RECORDING();
+
+	void request_state_transition(EpisodicState new_state);
+	void evaluate_state_transitions();
+
+	// Mission monitoring helpers
+	std::optional<uint64_t> find_mission_with_target_edge();
+	std::string get_mission_status(uint64_t mission_id);
+	std::optional<std::string> get_mission_name(uint64_t mission_id);
+	bool is_mission_active();
 
 	void generate_keyframe();
 	std::optional<std::string> assemble_string(const auto &timestamp, const std::string &slot, 

@@ -47,7 +47,41 @@ SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx, 
     statemachine.addState(states["CustomState"].get());
     ***/
 
-    statemachine.setChildMode(QState::ExclusiveStates);
+	// ===== EPISODIC MEMORY STATE MACHINE =====
+	int state_period = 100; // milliseconds
+
+	// IDLE state
+	states["IDLE"] = std::make_unique<GRAFCETStep>(
+		"IDLE", 
+		state_period,
+		std::bind(&SpecificWorker::loop_IDLE, this),
+		std::bind(&SpecificWorker::enter_IDLE, this),
+		std::bind(&SpecificWorker::exit_IDLE, this)
+	);
+	statemachine.addState(states["IDLE"].get());
+
+	// WAITING_MISSION state
+	states["WAITING_MISSION"] = std::make_unique<GRAFCETStep>(
+		"WAITING_MISSION",
+		state_period,
+		std::bind(&SpecificWorker::loop_WAITING_MISSION, this),
+		std::bind(&SpecificWorker::enter_WAITING_MISSION, this),
+		std::bind(&SpecificWorker::exit_WAITING_MISSION, this)
+	);
+	statemachine.addState(states["WAITING_MISSION"].get());
+
+	// RECORDING state
+	states["RECORDING"] = std::make_unique<GRAFCETStep>(
+		"RECORDING",
+		state_period,
+		std::bind(&SpecificWorker::loop_RECORDING, this),
+		std::bind(&SpecificWorker::enter_RECORDING, this),
+		std::bind(&SpecificWorker::exit_RECORDING, this)
+	);
+	statemachine.addState(states["RECORDING"].get());
+
+	// Set initial state
+	statemachine.setInitialState(states["IDLE"].get());
     statemachine.start();
 
     auto error = statemachine.errorString();
@@ -56,8 +90,7 @@ SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx, 
       throw error;
     }
 
-    // historic_graph = std::make_shared<DSR::DSRGraph>("historic_view", 4000,
-    // "", false, -1);
+    // historic_graph = std::make_shared<DSR::DSRGraph>("historic_view", 4000, "", false, -1);
   }
 }
 
@@ -68,18 +101,34 @@ SpecificWorker::~SpecificWorker() {
 }
 
 void SpecificWorker::initialize() {
-	std::cout << "Initialize Worker" << std::endl;
+	std::cout << "initialize worker" << std::endl;
 	GenericWorker::initialize();
 	G = Graphs.at("work");
-	historic_graph = Graphs.at("episodic");
+	mission_graph = Graphs.at("episodic");
+
+	// ===== EPISODIC MEMORY STATE MACHINE INITIALIZATION =====
+	current_state = EpisodicState::IDLE;
+	current_mission_id = 0;
+	current_mission_name = "";
+	mission_recording = false;
+	keyframe_period = std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
+	time_check = std::chrono::system_clock::now();
 
 	// dsr update signals
+	std::cout << "Connecting DSR signals from work graph..." << std::endl;
 	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_signal, this, &SpecificWorker::modify_node_slot);
+	std::cout << "Connected: update_node_signal" << std::endl;
 	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_signal, this, &SpecificWorker::modify_edge_slot);
+	std::cout << "Connected: update_edge_signal" << std::endl;
 	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_attr_signal, this, &SpecificWorker::modify_node_attrs_slot);
+	std::cout << "Connected: update_node_attr_signal" << std::endl;
 	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_attr_signal, this, &SpecificWorker::modify_edge_attrs_slot);
+	std::cout << "Connected: update_edge_attr_signal" << std::endl;
 	connect(Graphs.at("work").get(), &DSR::DSRGraph::del_edge_signal, this, &SpecificWorker::del_edge_slot);
+	std::cout << "Connected: del_edge_signal" << std::endl;
 	connect(Graphs.at("work").get(), &DSR::DSRGraph::del_node_signal, this, &SpecificWorker::del_node_slot);
+	std::cout << "Connected: del_node_signal" << std::endl;
+	std::cout << "All DSR signals connected successfully" << std::endl;
 
 	/***
 	 Custom Widget
@@ -94,57 +143,55 @@ void SpecificWorker::initialize() {
 	// graph_viewers.at("")->add_custom_widget_to_dock("CustomWidget",
 	// &custom_widget);
 
-	// historic_window = new QMainWindow;
-	// historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window,
-	// historic_graph, current_opts, main); historic_window->show();
+	////////////////////////////////////////////////////////////////////////////////////////
 
-	// Historic Debugger
-	historic_debugger_ui.setupUi(&historic_debugger_widget);
-	connect(historic_debugger_ui.local_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::local_changes_management);
-	connect(historic_debugger_ui.global_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::global_changes_management);
-	connect(historic_debugger_ui.time_input, &QLineEdit::returnPressed, this, &SpecificWorker::on_time_search);
-	graph_viewers.at("episodic")->add_custom_widget_to_dock("Historic debugger", &historic_debugger_widget);
+	// Historic Debugger -> descomentar esto
+	// historic_debugger_ui.setupUi(&historic_debugger_widget);
+	// connect(historic_debugger_ui.local_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::local_changes_management);
+	// connect(historic_debugger_ui.global_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::global_changes_management);
+	// connect(historic_debugger_ui.time_input, &QLineEdit::returnPressed, this, &SpecificWorker::on_time_search);
+	// graph_viewers.at("episodic")->add_custom_widget_to_dock("Historic debugger", &historic_debugger_widget);
 
-	// // Historic Manager
-	// auto G_copy = historic_graph->G_copy();
-	// historic_graph = std::shared_ptr<DSR::DSRGraph>(std::move(G_copy));
-	historic_manager = std::make_unique<HistoricManager>(historic_graph, 50);
+	// // Historic Manager -> descomentar esto
+	// historic_manager = std::make_unique<HistoricManager>(historic_graph, 50);
 
 	// historic_window = new QMainWindow;
 	// historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window,
 	// historic_graph, DSR::DSRViewer::view::graph | DSR::DSRViewer::view::scene,
-	// DSR::DSRViewer::view::graph); historic_window->setWindowTitle("Historic
-	// graph"); historic_window->show();
+	// DSR::DSRViewer::view::graph); historic_window->setWindowTitle("Historic graph"); historic_window->show();
 
-	std::string historic_file = "keyframes_and_changes_2.txt";
-	if (historic_manager->index_file(historic_file)) {
-		std::cout << __FUNCTION__ << " - Historic file indexed successfully" << std::endl;
+	////////////////////////////////////////////////////////////////////////////////////////
 
-		// Scrollbars configuration
-		size_t keyframe_count = historic_manager->get_keyframe_count();
-		historic_debugger_ui.global_changes_scroll_bar->setMaximum(keyframe_count - 1);
+	// -> Initial keyframe
+	// std::string historic_file = "keyframes_and_changes_2.txt";
+	// if (historic_manager->index_file(historic_file)) {
+	// 	std::cout << __FUNCTION__ << " - Historic file indexed successfully" << std::endl;
 
-		// First keyframe
-		if (keyframe_count > 0) {
-		historic_manager->load_keyframe(0);
-		update_local_scrollbar(0);
+	// 	// Scrollbars configuration
+	// 	size_t keyframe_count = historic_manager->get_keyframe_count();
+	// 	historic_debugger_ui.global_changes_scroll_bar->setMaximum(keyframe_count - 1);
 
-		// Initialize time_input to t=0 (first keyframe is the time reference)
-		historic_debugger_ui.time_input->setText("0.000");
-		}
+	// 	// First keyframe
+	// 	if (keyframe_count > 0) {
+	// 	historic_manager->load_keyframe(0);
+	// 	update_local_scrollbar(0);
 
-		// RUN API TESTS
-		std::cout << "\n\n";
-		APITestSuite::run_all_tests(historic_file);
-		std::cout << "\n\n";
-	} else {
-		std::cerr << __FUNCTION__ << " - Failed to index historic file" << std::endl;
-	}
+	// 	// Initialize time_input to t=0 (first keyframe is the time reference)
+	// 	historic_debugger_ui.time_input->setText("0.000");
+	// 	}
+
+	// -> API tests
+	// std::cout << "\n\n";
+	// APITestSuite::run_all_tests(historic_file);
+	// std::cout << "\n\n";
+	// } else {
+	// 	std::cerr << __FUNCTION__ << " - Failed to index historic file" << std::endl;
+	// }
 
 	// Initial keyframe
-	keyframe_period = std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
-	time_check = std::chrono::system_clock::now();
-	generate_keyframe();
+	// keyframe_period = std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
+	// time_check = std::chrono::system_clock::now();
+	// generate_keyframe();
 
 	/////////GET PARAMS, OPEND DEVICES....////////
 	// int period = configLoader.get<int>("Period.Compute") //NOTE: If you want
@@ -402,25 +449,28 @@ void SpecificWorker::display_debugger_graph() {
 }
 
 void SpecificWorker::modify_node_slot(std::uint64_t id, const std::string &type) {
+	if (current_state != EpisodicState::RECORDING) {
+		std::cout << "modify_node_slot: Not in RECORDING state, ignoring. Current state: " << static_cast<int>(current_state) << std::endl;
+		return;
+	}
+
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+	std::cout << "modify_node_slot - id: " << id << " type: " << type << " timestamp: " << new_timestamp << std::endl;
 
-	if (!string_check_flag) {
-		std::cout << "Modify node slot - id: " << id << " type: " << type << " new_timestamp: " << new_timestamp << std::endl;
-	} else {
-		auto dsr_data_optional =
-			assemble_string(new_timestamp, DSRSpecialChars::MN, id, type, {});
-		if (!dsr_data_optional.has_value()) {
-		std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl;
+	auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::MN, id, type, {});
+	if (!dsr_data_optional.has_value()) {
+		std::cerr << "modify_node_slot - Failed to assemble string" << std::endl;
 		return;
-		}
-		auto dsr_data = dsr_data_optional.value();
-		changes_map[new_timestamp] = dsr_data;
-		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
 	}
+	auto dsr_data = dsr_data_optional.value();
+	changes_map[new_timestamp] = dsr_data;
+	std::cout << "modify_node_slot - Recorded: " << dsr_data << " (total changes: " << changes_map.size() << ")" << std::endl;
 }
 
 void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string> &att_names) {
+	if (current_state != EpisodicState::RECORDING) return;
+
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 
@@ -453,36 +503,28 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
 }
 
 void SpecificWorker::modify_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &type) {
+	if (current_state != EpisodicState::RECORDING) {
+		std::cout << "modify_edge_slot: Not in RECORDING state, ignoring. Current state: " << static_cast<int>(current_state) << std::endl;
+		return;
+	}
+
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+	std::cout << "modify_edge_slot - from_id: " << from << " to_id: " << to << " type: " << type << " timestamp: " << new_timestamp << std::endl;
 
-	if (!string_check_flag) {
-		auto edges_optional = G->get_edges(from);
-		if (edges_optional.has_value()) {
-		auto edge_map = edges_optional.value();
-		for (const auto &e : edge_map) {
-			auto key = e.first;
-			std::cout << key.second << std::endl;
-		}
-
-		// auto keys = edges_optional.value().keys();
-		// std::cout << keys.size() << std::endl;
-		}
-		std::cout << "Modify edge slot - from_id: " << from << " to_id: " << to << " type: " << type << std::endl;
-	} else {
-		auto dsr_data_optional =
-			assemble_string(new_timestamp, DSRSpecialChars::ME, std::make_tuple(from, to), type, {});
-		if (!dsr_data_optional.has_value()) {
-		std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl;
+	auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::ME, std::make_tuple(from, to), type, {});
+	if (!dsr_data_optional.has_value()) {
+		std::cerr << "modify_edge_slot - Failed to assemble string" << std::endl;
 		return;
-		}
-		auto dsr_data = dsr_data_optional.value();
-		changes_map[new_timestamp] = dsr_data;
-		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
 	}
+	auto dsr_data = dsr_data_optional.value();
+	changes_map[new_timestamp] = dsr_data;
+	std::cout << "modify_edge_slot - Recorded: " << dsr_data << " (total changes: " << changes_map.size() << ")" << std::endl;
 }
 
 void SpecificWorker::modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to, const std::string &type, const std::vector<std::string> &att_names) {
+	if (current_state != EpisodicState::RECORDING) return;
+
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 
@@ -504,6 +546,8 @@ void SpecificWorker::modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to
 }
 
 void SpecificWorker::del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag) {
+	if (current_state != EpisodicState::RECORDING) return;
+
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 
@@ -522,6 +566,8 @@ void SpecificWorker::del_edge_slot(std::uint64_t from, std::uint64_t to, const s
 }
 
 void SpecificWorker::del_node_slot(std::uint64_t from) {
+	if (current_state != EpisodicState::RECORDING) return;
+
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 
@@ -794,4 +840,206 @@ void SpecificWorker::generate_keyframe() {
 	changes_map[new_timestamp] = dsr_kdata;
 	// std::cout << dsr_kdata << std::endl;
 	// std::cout << std::endl;
+}
+
+// ===== STATE MACHINE METHODS =====
+
+void SpecificWorker::enter_IDLE() {
+	std::cout << "📍 Entering IDLE state" << std::endl;
+	current_state = EpisodicState::IDLE;
+	current_mission_id = 0;
+	current_mission_name = "";
+	mission_recording = false;
+}
+
+void SpecificWorker::loop_IDLE() {
+	evaluate_state_transitions();
+}
+
+void SpecificWorker::exit_IDLE() {
+	// Nothing to do on exit
+}
+
+void SpecificWorker::enter_WAITING_MISSION() {
+	std::cout << "⏳ Entering WAITING_MISSION state (mission: " << current_mission_name << ")" << std::endl;
+	current_state = EpisodicState::WAITING_MISSION;
+	mission_recording = false;
+}
+
+void SpecificWorker::loop_WAITING_MISSION() {
+	evaluate_state_transitions();
+}
+
+void SpecificWorker::exit_WAITING_MISSION() {
+	// Nothing to do on exit
+}
+
+void SpecificWorker::enter_RECORDING() {
+	std::cout << "🔴 Entering RECORDING state (mission: " << current_mission_name << ")" << std::endl;
+	current_state = EpisodicState::RECORDING;
+	mission_recording = true;
+	mission_start_time = std::chrono::system_clock::now();
+	changes_map.clear();
+	decoded_data.clear();
+	time_check = mission_start_time;
+	
+	// Generate initial keyframe
+	generate_keyframe();
+	std::cout << "Initial keyframe generated" << std::endl;
+}
+
+void SpecificWorker::loop_RECORDING() {
+	// Generate periodic keyframes
+	auto time_now = std::chrono::system_clock::now();
+	if (time_now - time_check >= keyframe_period) {
+		time_check = time_now;
+		generate_keyframe();
+		std::cout << "📸 Periodic keyframe generated" << std::endl;
+	}
+	
+	evaluate_state_transitions();
+}
+
+void SpecificWorker::exit_RECORDING() {
+	std::cout << "Exiting RECORDING state" << std::endl;
+	
+	// Generate final keyframe
+	generate_keyframe();
+	std::cout << "Final keyframe generated" << std::endl;
+	
+	// Persist changes to file
+	if (!current_mission_name.empty()) {
+		auto now = std::chrono::system_clock::now();
+		auto time_t_now = std::chrono::system_clock::to_time_t(now);
+		std::stringstream ss;
+		ss << std::put_time(std::localtime(&time_t_now), "%Y%m%d_%H%M%S");
+		std::string timestamp_str = ss.str();
+		
+		std::string filename = "mission_" + current_mission_name + "_" + timestamp_str + ".txt";
+		
+		// Create directory if not exists
+		system("mkdir -p ./recorded_missions");
+		
+		// Report before saving (because save clears the map)
+		size_t events_count = changes_map.size();
+		
+		save_changes_to_file("./recorded_missions/" + filename);
+		std::cout << "Mission saved: " << filename << " with " << events_count << " events" << std::endl;
+	}
+	
+	// Clean up
+	current_mission_id = 0;
+	current_mission_name = "";
+	mission_recording = false;
+	decoded_data.clear();
+}
+
+void SpecificWorker::request_state_transition(EpisodicState new_state) {
+	if (new_state != current_state) {
+		// Exit current state
+		if (current_state == EpisodicState::IDLE) {
+			exit_IDLE();
+		} else if (current_state == EpisodicState::WAITING_MISSION) {
+			exit_WAITING_MISSION();
+		} else if (current_state == EpisodicState::RECORDING) {
+			exit_RECORDING();
+		}
+		
+		// Enter new state
+		if (new_state == EpisodicState::IDLE) {
+			enter_IDLE();
+		} else if (new_state == EpisodicState::WAITING_MISSION) {
+			enter_WAITING_MISSION();
+		} else if (new_state == EpisodicState::RECORDING) {
+			enter_RECORDING();
+		}
+	}
+}
+
+void SpecificWorker::evaluate_state_transitions() {
+	auto mission_opt = find_mission_with_target_edge();
+	
+	if (!mission_opt.has_value()) {
+		// No active mission
+		if (current_state != EpisodicState::IDLE) {
+			request_state_transition(EpisodicState::IDLE);
+		}
+	} else {
+		current_mission_id = mission_opt.value();
+		auto name_opt = get_mission_name(current_mission_id);
+		if (name_opt.has_value()) {
+			current_mission_name = name_opt.value();
+		}
+		
+		// Check if mission is running
+		if (is_mission_active()) {
+			if (current_state != EpisodicState::RECORDING) {
+				request_state_transition(EpisodicState::RECORDING);
+			}
+		} else {
+			if (current_state != EpisodicState::WAITING_MISSION) {
+				request_state_transition(EpisodicState::WAITING_MISSION);
+			}
+		}
+	}
+}
+
+// ===== MISSION MONITORING HELPERS =====
+
+std::optional<uint64_t> SpecificWorker::find_mission_with_target_edge() {
+	// Look for edge "TARGET" from robot in grafo work
+	auto robot_opt = G->get_node("robot");
+	if (!robot_opt.has_value()) {
+		return std::nullopt;
+	}
+	
+	uint64_t robot_id = robot_opt.value().id();
+	auto target_edges = G->get_edges_by_type("TARGET");
+	
+	for (const auto &edge : target_edges) {
+		if (edge.from() == robot_id) {
+			// Found a TARGET edge from robot
+			return edge.to();
+		}
+	}
+	
+	return std::nullopt;
+}
+
+std::string SpecificWorker::get_mission_status(uint64_t mission_id) {
+	auto mission_opt = G->get_node(mission_id);
+	if (!mission_opt.has_value()) {
+		return "unknown";
+	}
+	
+	auto mission = mission_opt.value();
+	auto attrs = mission.attrs();
+	
+	if (attrs.count("status") > 0) {
+		auto status_attr = attrs.at("status");
+		// The attribute is stored as a variant, try to extract it as string
+		if (std::holds_alternative<std::string>(status_attr.value())) {
+			return std::get<std::string>(status_attr.value());
+		}
+	}
+	
+	return "unknown";
+}
+
+std::optional<std::string> SpecificWorker::get_mission_name(uint64_t mission_id) {
+	auto mission_opt = G->get_node(mission_id);
+	if (!mission_opt.has_value()) {
+		return std::nullopt;
+	}
+	
+	return mission_opt.value().name();
+}
+
+bool SpecificWorker::is_mission_active() {
+	if (current_mission_id == 0) {
+		return false;
+	}
+	
+	std::string status = get_mission_status(current_mission_id);
+	return (status == "running");
 }

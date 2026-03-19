@@ -16,7 +16,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "test_api.h"
+// #include "test_api.h"  // Comentado: no necesario para debugging básico
 
 /**
  * @brief Event meta data from a keyframe or modification

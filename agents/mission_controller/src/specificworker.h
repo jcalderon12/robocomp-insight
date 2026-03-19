@@ -1,5 +1,5 @@
 /*
- *    Copyright (C) 2025 by YOUR NAME HERE
+ *    Copyright (C) 2026 by YOUR NAME HERE
  *
  *    This file is part of RoboComp
  *
@@ -32,10 +32,15 @@
 //#define HIBERNATION_ENABLED
 
 #include <genericworker.h>
+#include "historic_manager.h"
+#include "DSRDecoder.h"
+#include "DSRTypeTrait.h"
+#include <fstream>
 #include "ui_mission_controller.h"
 #include "MissionModel.h"
 #include "MissionDelegate.h"
 #include "ui_add_mission_dialog.h"
+#include "ui_historic_debugger.h"
 #include <chrono>
 
 /**
@@ -64,7 +69,15 @@ public:
 	 */
 	std::vector<std::string> getAvailableMissions() const
 	{
-		return {"Follow Person", "Navigate to Point"};
+		return {
+			"Follow Path",
+			"Pick and Place",
+			"Navigation",
+			"Inspection",
+			"Patrol",
+			"Object Recognition",
+			"Manipulation"
+		};
 	}
 
 public slots:
@@ -107,6 +120,13 @@ public slots:
 	 * \brief Slot triggered when the "Start Mission" button is clicked.
 	 */
 	void on_startMission_clicked();
+	
+	// Historic debugger slots
+	void local_changes_management(int value);
+	void global_changes_management(int value);
+	void on_time_search();
+	void update_local_scrollbar(size_t keyframe_idx);
+	void load_mission_in_debugger(int row);
 
 	void modify_node_slot(std::uint64_t, const std::string &type){};
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names);
@@ -121,6 +141,8 @@ private:
      */
 	bool startup_check_flag;
 
+	std::shared_ptr<DSR::DSRGraph> mission_graph;
+
 	Ui::mission_controller mission_controller_ui;
 	QWidget mission_controller_widget;
 
@@ -132,7 +154,34 @@ private:
 	float mission_accumulated_time = 0;
 	QTimer *mission_timer;
 
+	// Map: model row index -> mission node id in episodic graph
+	std::map<int, uint64_t> mission_row_to_node_id;
+
 	void updateMissionTime();
+
+	// Historic debugger widget
+	Ui::historic_debugger historic_debugger_ui;
+	QWidget historic_debugger_widget;
+
+	// === DEBUGGER VARIABLES ===
+	std::shared_ptr<DSR::DSRGraph> historic_graph;
+	std::unique_ptr<HistoricManager> historic_manager;  // Viewer created automatically by config
+	
+	std::map<uint64_t, std::string> changes_map;  // timestamp -> dsr_data
+	std::map<uint64_t, DSREvent> decoded_data;    // timestamp -> decoded event
+	
+	int historic_value = 0;  // Current position in historic
+	
+	// Methods for debugger
+	void load_mission_changes(const std::string filename);
+	void display_debugger_graph();
+
+	// Methods for mission management in episodic graph
+	std::optional<uint64_t> insert_mission_node_episodic(const std::string &mission_name, int row);
+	void update_mission_status_episodic(uint64_t mission_id, const std::string &status);
+	void create_mission_target_edge(uint64_t mission_id);
+	void delete_mission_target_edge(uint64_t mission_id);
+	std::optional<uint64_t> find_mission_node_by_name(const std::string &mission_name);
 
 signals:
 	//void customSignal();

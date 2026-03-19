@@ -60,6 +60,39 @@ QPushButton:pressed {
     </widget>
    </item>
    <item>
+    <widget class="QPushButton" name="load_in_debugger_button">
+     <property name="minimumHeight">
+      <number>40</number>
+     </property>
+     <property name="font">
+      <font>
+       <pointsize>11</pointsize>
+       <weight>75</weight>
+       <bold>true</bold>
+      </font>
+     </property>
+     <property name="styleSheet">
+      <string>QPushButton {
+    background-color: #2196F3;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 8px 16px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #0b7dda;
+}
+QPushButton:pressed {
+    background-color: #0a63cc;
+}</string>
+     </property>
+     <property name="text">
+      <string>📺 Load in Debugger</string>
+     </property>
+    </widget>
+   </item>
+   <item>
     <widget class="QListView" name="mission_list">
      <property name="minimumHeight">
       <number>200</number>
