@@ -1,0 +1,813 @@
+#ifndef HISTORICMANAGER_H
+#define HISTORICMANAGER_H
+
+#include "DSRDecoder.h"
+#include "DSRTypeTrait.h"
+#include <atomic>
+#include <deque>
+#include <dsr/api/dsr_api.h>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <string>
+#include <thread>
+#include <unordered_set>
+#include <vector>
+
+#include "test_api.h"
+
+/**
+ * @brief Event meta data from a keyframe or modification
+ */
+struct EventMetadata {
+  uint64_t timestamp;            // timestamp
+  std::streampos file_position;  // position on file
+  size_t line_lenght;            // line lenght
+  std::string modification_type; // K - MN, MNA, ME, MEA, DN, DE
+  size_t keyframe_index; // keyframe it belongs (if modification other than K)
+};
+
+/**
+ * @brief Historic manager. Indexes the content of a DSR Event, stores data in a
+ * LRU cache and displays the graph.
+ */
+class HistoricManager {
+public:
+  HistoricManager(std::shared_ptr<DSR::DSRGraph> graph, size_t max_cache_size = 50)
+      : G(graph), max_cache_size(max_cache_size), preloading(false),
+        current_keyframe_idx(0) {
+          // auto node_opt = G->get_node("robot");
+          // if (node_opt.has_value()) {
+          //   auto node = node_opt.value();
+          //   G->add_or_modify_attrib_local<pos_x_att>(node, float(180.0));
+          //   G->update_node(node);
+          //   G->delete_node(node.id());
+          //   G->clear_deleted();
+          //   G->insert_node(node);
+          // }
+        }
+
+  ~HistoricManager() {
+    preloading = false;
+    if (preload_thread.joinable())
+      preload_thread.join();
+  }
+
+  /**
+   * @brief Indexes an event file, reading timestamps, event types and file
+   * positions.
+   */
+  bool index_file(const std::string &filepath) {
+    this->filepath = filepath;
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+      std::cerr << __FUNCTION__ << " - Cannot open file " << filepath
+                << std::endl;
+      return false;
+    }
+
+    keyframe_metadata.clear();
+    local_changes_metadata.clear();
+    all_events_metadata.clear();
+
+    std::string line;
+    size_t current_keyframe = 0;
+    size_t event_idx = 0;
+
+    while (std::getline(file, line)) {
+      if (line.empty())
+        continue;
+
+      std::streampos pos = file.tellg();
+      pos -= static_cast<std::streamoff>(line.size() + 1);
+
+      auto [timestamp, type] = quick_parse_header(line);
+      EventMetadata meta{timestamp, pos, line.size(), type, current_keyframe};
+
+      if (type == DSRSpecialChars::K) {
+        keyframe_metadata.push_back(meta);
+        current_keyframe = keyframe_metadata.size() - 1;
+        meta.keyframe_index = current_keyframe;
+      } else {
+        local_changes_metadata[current_keyframe].push_back(meta);
+      }
+
+      all_events_metadata.push_back(meta);
+      event_idx++;
+    }
+
+    std::cout << __FUNCTION__ << " - [HistoricManager] Indexed " << keyframe_metadata.size() << " keyframes with "
+              << all_events_metadata.size() << " total events in " << filepath << std::endl;
+
+    return true;
+  }
+
+  /**
+   * @brief Get number of keyframe indexed
+   */
+  size_t get_keyframe_count() const { return keyframe_metadata.size(); }
+
+  /**
+   * @brief Get number of local changes inside a keyframe
+   */
+  size_t get_local_changes_count(size_t keyframe_idx, bool apply_local_changes = false) {
+    auto it = local_changes_metadata.find(keyframe_idx);
+    return (it != local_changes_metadata.end()) ? it->second.size() : 0;
+  }
+
+  /**
+   * @brief Change current keyframe and displays the new one
+   */
+  void load_keyframe(size_t keyframe_idx, bool apply_local_changes = false) {
+    if (keyframe_idx >= keyframe_metadata.size()) { std::cerr << __FUNCTION__ << " - [HistoricManager] Invalid keyframe index: " << keyframe_idx << std::endl; return; }
+    // std::cout << __FUNCTION__ << " - [HistoricManger] Loading keyframe " << keyframe_idx << std::endl;
+    // Update current keyframe for pre-loading
+    current_keyframe_idx = keyframe_idx;
+
+    // Get new event
+    DSREvent *keyframe_event = get_event_by_metadata(keyframe_metadata[keyframe_idx]);
+    if (!keyframe_event) { std::cout << __FUNCTION__<< " - [HistoricManager] Failed to decode keyframe " << keyframe_idx << std::endl; return; }
+
+    // Display new graph
+    reconstruct_graph_from_keyframe(*keyframe_event);
+
+    // Apply local changes
+    if (apply_local_changes)
+      apply_all_local_changes(keyframe_idx);
+
+    // Pre-load other keyframes
+    start_preload(keyframe_idx);
+  }
+
+  /**
+   * @brief Apply an specific local changes
+   */
+  void apply_local_change(size_t keyframe_idx, size_t local_change_idx) {
+    auto it = local_changes_metadata.find(keyframe_idx);
+    if (it == local_changes_metadata.end() ||
+        local_change_idx >= it->second.size()) {
+      std::cerr << __FUNCTION__<< " - [HistoricManger] Invalid local change index." << std::endl; return;
+    }
+
+    DSREvent *change = get_event_by_metadata(it->second[local_change_idx]);
+    if (!change)
+      return;
+
+    apply_modification_to_graph(*change);
+
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applied local change " << local_change_idx << " (" << change->modification_type << ")" << std::endl;
+  }
+
+  /**
+   * @brief Apply all local changes up to an specific index
+   */
+  void apply_local_changes_up_to(size_t keyframe_idx, size_t up_to_change_idx) {
+    auto it = local_changes_metadata.find(keyframe_idx);
+    if (it == local_changes_metadata.end()) return;
+
+    size_t limit = std::min(up_to_change_idx + 1, it->second.size());
+
+    for (size_t i = 0; i < limit; ++i) {
+      DSREvent *change = get_event_by_metadata(it->second[i]);
+      if (change) 
+      {
+        G->clear_deleted();
+        apply_modification_to_graph(*change);
+        std::cout << "    - Local change applied: " << change->modification_type << std::endl;
+      }
+    }
+
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applied " << limit << " local changes" << std::endl;
+  }
+
+  /**
+   * @brief Get timestamp of current keyframe
+   */
+  uint64_t get_current_keyframe_timestamp() const {
+    if (current_keyframe_idx < keyframe_metadata.size())
+      return keyframe_metadata[current_keyframe_idx].timestamp;
+    return 0;
+  }
+
+  /**
+   * @brief Get timestamp of an arbitrary keyframe
+   */
+  uint64_t get_keyframe_timestamp(size_t keyframe_idx) const {
+    if (keyframe_idx < keyframe_metadata.size())
+      return keyframe_metadata[keyframe_idx].timestamp;
+    return 0;
+  }
+
+  /**
+   * @brief Returns {timestamp, modification_type} for a local change.
+   *        Returns {0, ""} if the indices are out of range.
+   */
+  std::pair<uint64_t, std::string>
+  get_local_change_info(size_t keyframe_idx, size_t local_idx) const {
+    auto it = local_changes_metadata.find(keyframe_idx);
+    if (it == local_changes_metadata.end() || local_idx >= it->second.size())
+      return {0, ""};
+    const auto &meta = it->second[local_idx];
+    return {meta.timestamp, meta.modification_type};
+  }
+
+  /**
+   * @brief Clean up cache
+   */
+  void clear_cache() {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    event_cache.clear();
+    cache_order.clear();
+    std::cout << "[HistoricManager] Cache cleared" << std::endl;
+  }
+
+  /**
+   * @brief Find the keyframe at or before a given timestamp
+   * @param target_timestamp The target timestamp in nanoseconds
+   * @return Optional containing the keyframe index, or nullopt if not found
+   *
+   * Returns the index of the last keyframe whose timestamp is <= target_timestamp.
+   * This is useful for finding the state of the graph at a specific point in time.
+   *
+   * Example: keyframes at t=[0ns, 5e9ns, 10e9ns, 15e9ns]
+   *          searching for 7e9ns returns index 1 (keyframe at 5e9ns)
+   */
+  std::optional<size_t> find_keyframe_at_or_before(uint64_t target_timestamp) const {
+    if (keyframe_metadata.empty())
+      return std::nullopt;
+
+    // Handle case where target is before first keyframe
+    if (target_timestamp < keyframe_metadata[0].timestamp)
+      return std::nullopt;
+
+    // Handle case where target is after last keyframe
+    if (target_timestamp >= keyframe_metadata.back().timestamp)
+      return keyframe_metadata.size() - 1;
+
+    // Binary search for the largest timestamp <= target
+    size_t left = 0, right = keyframe_metadata.size() - 1;
+    size_t result = 0;
+
+    while (left <= right) {
+      size_t mid = left + (right - left) / 2;
+
+      if (keyframe_metadata[mid].timestamp <= target_timestamp) {
+        result = mid;
+        left = mid + 1;
+      } else {
+        if (mid == 0)
+          return std::nullopt;
+        right = mid - 1;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * @brief Find the local change closest to a given timestamp within a keyframe
+   * @param keyframe_idx The index of the keyframe
+   * @param target_timestamp The target timestamp in nanoseconds
+   * @return Optional containing the local change index, or nullopt if none found
+   *
+   * Returns the index of the local change whose timestamp is closest to target_timestamp
+   * within the specified keyframe. This enables fine-grained navigation within a keyframe.
+   *
+   * Example: changes at t=[1740000005500000000, 1740000005600000000, 1740000005700000000]
+   *          searching for 1740000005650000000 returns index 1 (closest)
+   */
+  std::optional<size_t> find_local_change_closest(size_t keyframe_idx, uint64_t target_timestamp) const {
+    auto it = local_changes_metadata.find(keyframe_idx);
+    if (it == local_changes_metadata.end() || it->second.empty())
+      return std::nullopt;
+
+    const auto &changes = it->second;
+
+    // Handle edge cases
+    if (target_timestamp < changes[0].timestamp)
+      return std::nullopt;
+    if (target_timestamp >= changes.back().timestamp)
+      return changes.size() - 1;
+
+    // Find closest using binary search
+    size_t left = 0, right = changes.size() - 1;
+    size_t closest_idx = 0;
+    uint64_t min_diff = std::numeric_limits<uint64_t>::max();
+
+    while (left <= right) {
+      size_t mid = left + (right - left) / 2;
+      uint64_t diff = (target_timestamp >= changes[mid].timestamp)
+                          ? (target_timestamp - changes[mid].timestamp)
+                          : (changes[mid].timestamp - target_timestamp);
+
+      if (diff < min_diff) {
+        min_diff = diff;
+        closest_idx = mid;
+      }
+
+      if (changes[mid].timestamp < target_timestamp)
+        left = mid + 1;
+      else if (changes[mid].timestamp > target_timestamp)
+        right = (mid == 0) ? mid : mid - 1;
+      else
+        return mid; // Exact match
+    }
+
+    return closest_idx;
+  }
+
+private:
+  std::shared_ptr<DSR::DSRGraph> G;
+  std::string filepath;
+
+  // ID cache
+  std::unordered_map<uint64_t, uint64_t> id_mapping; // original ID -> current ID (after deletions and re-insertions)
+  std::unordered_map<uint64_t, uint64_t> reverse_id_mapping; // current ID -> original ID 
+
+  // Metadata
+  std::vector<EventMetadata> keyframe_metadata;
+  std::map<size_t, std::vector<EventMetadata>> local_changes_metadata;
+  std::vector<EventMetadata> all_events_metadata;
+
+  // LRU cache
+  std::map<uint64_t, std::unique_ptr<DSREvent>> event_cache;
+  std::deque<uint64_t> cache_order;
+  size_t max_cache_size;
+  std::mutex cache_mutex;
+
+  // Pre-loading
+  std::thread preload_thread;
+  std::atomic<bool> preloading;
+  size_t current_keyframe_idx;
+
+  /**
+   * @brief Register an ID mapping
+   */
+  void register_id_mapping(uint64_t original_id, uint64_t current_id) {
+    id_mapping[original_id] = current_id;
+    reverse_id_mapping[current_id] = original_id;
+  }
+
+  /**
+   * @brief Delete an ID mapping (e.g. when a node/edge is deleted and its ID can be reused)
+   */
+  void unregister_id_mapping(uint64_t original_id) {
+    auto it = id_mapping.find(original_id);
+    if (it != id_mapping.end()) {
+      reverse_id_mapping.erase(it->second);
+      id_mapping.erase(it);
+    }
+  }
+
+  /**
+   * @brief Get original ID from current ID
+   */
+  std::optional<uint64_t> get_original_id(uint64_t current_id) {
+    auto it = reverse_id_mapping.find(current_id);
+    if (it != reverse_id_mapping.end())
+      return it->second;
+    return std::nullopt;
+  }
+
+  /**
+   * @brief Get current ID from original ID
+   */
+  std::optional<uint64_t> get_current_id(uint64_t original_id) {
+    auto it = id_mapping.find(original_id);
+    if (it != id_mapping.end())
+      return it->second;
+    return std::nullopt;
+  }
+
+  /**
+   * @brief Delete every ID mapping
+   */
+  void clear_id_mappings() {
+    id_mapping.clear();
+    reverse_id_mapping.clear();
+  }
+
+  /**
+   * @brief Header parser
+   */
+  std::pair<uint64_t, std::string> quick_parse_header(const std::string &line) {
+    size_t first_hash = line.find(DSRSpecialChars::SLOT);
+    size_t second_hash = line.find(DSRSpecialChars::SLOT, first_hash + 1);
+
+    if (first_hash == std::string::npos || second_hash == std::string::npos)
+      throw std::runtime_error("Invalid line format");
+
+    uint64_t ts = std::stoull(line.substr(0, first_hash));
+    std::string type =
+        line.substr(first_hash + 1, second_hash - first_hash - 1);
+
+    return {ts, type};
+  }
+
+  /**
+   * @brief Read a specific line from file
+   */
+  std::string read_line_at(std::streampos pos) {
+    std::ifstream file(filepath);
+    file.seekg(pos);
+    std::string line;
+    std::getline(file, line);
+    return line;
+  }
+
+  /**
+   * @brief Get a decoded event, from cache if posible
+   */
+  DSREvent *get_event_by_metadata(const EventMetadata &meta) {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+
+    // Cache search
+    auto it = event_cache.find(meta.timestamp);
+    if (it != event_cache.end()) {
+      update_lru(meta.timestamp);
+      return it->second.get();
+    }
+
+    // Not in cache, decode from file
+    std::string line = read_line_at(meta.file_position);
+    if (line.empty()) { std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to read line at position " << meta.file_position << std::endl; return nullptr; }
+    auto decoded = DSRDecoder::decode(line);
+    if (!decoded) { std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to decoded event at timestamp " << meta.timestamp << std::endl; return nullptr; }
+
+    // Add to cache
+    DSREvent *ptr = decoded.get();
+    event_cache[meta.timestamp] = std::move(decoded);
+    cache_order.push_back(meta.timestamp);
+
+    // Check cache size limits
+    while (cache_order.size() > max_cache_size) {
+      uint64_t oldest = cache_order.front();
+      cache_order.pop_front();
+      event_cache.erase(oldest);
+    }
+
+    return ptr;
+  }
+
+  /**
+   * @brief Updates LRU order when cache is accessed
+   */
+  void update_lru(uint64_t timestamp) {
+    //
+    auto it = std::find(cache_order.begin(), cache_order.end(), timestamp);
+    if (it != cache_order.end())
+      cache_order.erase(it);
+    cache_order.push_back(timestamp);
+  }
+
+  /**
+   * @brief
+   */
+  void reconstruct_graph_from_keyframe(DSREvent &keyframe) {
+    // Keyframe verification
+    if (keyframe.modification_type != DSRSpecialChars::K) { std::cerr << __FUNCTION__ << " - [HistoricManager] Event is not a keyframe." << std::endl; return; }
+    // std::cout << __FUNCTION__<< " - [HistoricManager] Reconstructing graph from keyframe with " << keyframe.nodes.size() << " nodes and " << keyframe.edges.size() << " edges." << std::endl;
+      
+    // Clear current graph (nodes will cascade delete edges, so we only need to delete nodes)
+    auto current_nodes = G->get_nodes();
+    for (const auto &node : current_nodes) {
+      try {
+        G->delete_node(node.id());
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__<< " - [HistoricManager] Error deleting node " << node.id() << ": " << e.what() << std::endl;
+      }
+    }
+
+    clear_id_mappings();
+
+    // Insert nodes from the keyframe
+    for (auto node : keyframe.nodes) {
+      uint64_t original_id = node.id();
+
+      DSR::Node new_node;
+      new_node.type(node.type());
+      new_node.name(node.name());
+
+      // Copy attributes
+      for (const auto &[name, attr] : node.attrs())
+        if (name != DSRAttributeNames::ID)
+          new_node.attrs()[name] = attr;
+
+      try {
+        auto real_id_opt = G->insert_node(new_node);
+        if (real_id_opt.has_value()) {
+          uint64_t real_id = real_id_opt.value();
+          register_id_mapping(original_id, real_id);
+        } else { std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to insert node " << new_node.name() << std::endl; }
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__<< " - [HistoricManager] Error inserting node " << new_node.id() << ": " << e.what() << std::endl;
+      }
+    }
+
+    // Insert edges from the keyframe
+    for (auto edge : keyframe.edges) {
+      uint64_t original_from_id = edge.from();
+      uint64_t original_to_id = edge.to();
+
+      auto real_from_id_opt = get_current_id(original_from_id);
+      auto real_to_id_opt = get_current_id(original_to_id);
+
+      if (!real_from_id_opt.has_value() || !real_to_id_opt.has_value()) {
+        std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to insert edge from " << original_from_id << " to " << original_to_id << ": Node ID mapping not found." << std::endl;
+        continue;
+      }
+
+      uint64_t real_from_id = real_from_id_opt.value();
+      uint64_t real_to_id = real_to_id_opt.value();
+
+      DSR::Edge new_edge;
+      new_edge.from(real_from_id);
+      new_edge.to(real_to_id);
+      new_edge.type(edge.type());
+
+      // Copy attributes
+      for (const auto &[name, attr] : edge.attrs())
+        if (name != DSRAttributeNames::IDF && name != DSRAttributeNames::IDT)
+          new_edge.attrs()[name] = attr;
+
+      try {
+        G->insert_or_assign_edge(new_edge);
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__<< " - [HistoricManager] Error inserting edge " << new_edge.from() << "->" << new_edge.to() << ": " << e.what() << std::endl;
+      }
+    }
+
+    // std::cout << __FUNCTION__ << " - [HistoricManager] Graph reconstructed successfully." << std::endl; 
+  }
+
+  /**
+   * @brief Apply one modification by its event type
+   */
+  void apply_modification_to_graph(const DSREvent &mod) {
+    try {
+      if (mod.modification_type == DSRSpecialChars::MN)
+        apply_modify_node(mod);
+      else if (mod.modification_type == DSRSpecialChars::MNA)
+        apply_modify_node_attrs(mod);
+      else if (mod.modification_type == DSRSpecialChars::ME)
+        apply_modify_edge(mod);
+      else if (mod.modification_type == DSRSpecialChars::MEA)
+        apply_modify_edge_attrs(mod);
+      else if (mod.modification_type == DSRSpecialChars::DN)
+        apply_delete_node(mod);
+      else if (mod.modification_type == DSRSpecialChars::DE)
+        apply_delete_edge(mod);
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - []" << e.what() << '\n';
+    }
+  }
+
+  /**
+   * @brief Apply MN - Modify Node
+   */
+  void apply_modify_node(const DSREvent &mod) {
+    if (!mod.node_id.has_value() || !mod.type.has_value() || !mod.node_name.has_value()) { std::cerr << __FUNCTION__<< " - [HistoricManager] MN: Missing required fields" << std::endl; return; }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying MN" << std::endl;
+
+    uint64_t original_id = *mod.node_id;
+    auto current_id_opt = get_current_id(original_id);
+    
+    // Check if node exists and ID is mapped
+    if (!current_id_opt.has_value()) {
+      // Node doesn't exist, create it with the original ID
+      DSR::Node node;
+      node.id(original_id);
+      node.type(*mod.type);
+      node.name(*mod.node_name);
+
+      for (const auto &[name, attr] : mod.attributes)
+        if (name != DSRAttributeNames::ID && name != DSRAttributeNames::TYPE && name != DSRAttributeNames::NODE_NAME)
+          node.attrs()[name] = attr;
+
+      try {
+        auto real_id_opt = G->insert_node(node);
+        if (real_id_opt.has_value()) {
+          uint64_t real_id = real_id_opt.value();
+          register_id_mapping(original_id, real_id);
+        } else { std::cerr << __FUNCTION__<< " - [HistoricManager] Failed to insert node " << node.name() << std::endl; }
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__ << " - [HistoricManager] Error inserting node " << node.id() << ": " << e.what() << std::endl;
+      }
+      return;
+    }
+  }
+
+  /**
+   * @brief Apply MNA - Modify Node Attributes
+   */
+  void apply_modify_node_attrs(const DSREvent &mod) {
+    if (!mod.node_id.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Missing required fields" << std::endl; return; }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying MNA" << std::endl;
+
+    uint64_t original_id = *mod.node_id;
+    auto current_id_opt = get_current_id(original_id);
+    if (!current_id_opt.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Node ID mapping not found for node " << original_id << std::endl; return; }
+
+    uint64_t current_id = current_id_opt.value();
+
+    // Get node by current ID
+    auto node_optional = G->get_node(current_id);
+    if (!node_optional.has_value()) { std::cerr << __FUNCTION__ << " - [HistoricManager] MNA: Node " << current_id << " not found" << std::endl; return; }
+
+    DSR::Node node = node_optional.value();
+    for (const auto &[name, attr] : mod.attributes)
+      if (name != DSRAttributeNames::ID && name != DSRAttributeNames::TYPE && name != DSRAttributeNames::NODE_NAME)
+          node.attrs()[name] = attr;
+
+    try {
+      G->update_node(node);
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - [HistoricManager] Error updating node " << node.id() << ": " << e.what() << std::endl;
+    }
+  }
+
+  /**
+   * @brief Apply ME - Modify Edge
+   */
+  void apply_modify_edge(const DSREvent &mod) {
+    if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() || !mod.type.has_value()) {
+      std::cerr << __FUNCTION__<< " - [HistoricManager] ME: Missing required fields" << std::endl; return; }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying ME" << std::endl;
+
+    uint64_t original_from_id = *mod.edge_from_id;
+    uint64_t original_to_id = *mod.edge_to_id;
+
+    auto real_from_id_opt = get_current_id(original_from_id);
+    auto real_to_id_opt = get_current_id(original_to_id);
+    if (!real_from_id_opt.has_value() || !real_to_id_opt.has_value()) {
+      std::cerr << __FUNCTION__<< " - [HistoricManager] ME: Node ID mapping not found for edge from " << original_from_id << " to " << original_to_id << std::endl; return; }
+
+    uint64_t real_from_id = real_from_id_opt.value();
+    uint64_t real_to_id = real_to_id_opt.value();
+
+    auto edge_opt = G->get_edge(real_from_id, real_to_id, *mod.type);
+    if (!edge_opt.has_value()) {
+      // Edge doesn't exist, create it with the original IDs
+      DSR::Edge edge;
+      edge.from(real_from_id);
+      edge.to(real_to_id);
+      edge.type(*mod.type);
+
+      for (const auto &[name, attr] : mod.attributes)
+        if (name != DSRAttributeNames::IDF && name != DSRAttributeNames::IDT && name != DSRAttributeNames::TYPE)
+          edge.attrs()[name] = attr;
+
+      try {
+        G->insert_or_assign_edge(edge);
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__ << " - [HistoricManager] Error inserting edge: " << e.what() << std::endl;
+      }
+    } 
+    else { std::cout << " Edge already exists (ignoring duplicate ME)" << std::endl; }
+  }
+
+  /**
+   * @brief Apply MEA - Modify Edge Attributes
+   */
+  void apply_modify_edge_attrs(const DSREvent &mod) {
+    if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() || !mod.type.has_value()) { std::cerr << __FUNCTION__<< " - [HistoricManager] MEA: Missing required fields" << std::endl; return; }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying MEA" << std::endl;
+
+    uint64_t original_from_id = *mod.edge_from_id;
+    uint64_t original_to_id = *mod.edge_to_id;
+
+    auto real_from_id_opt = get_current_id(original_from_id);
+    auto real_to_id_opt = get_current_id(original_to_id);
+    if (!real_from_id_opt.has_value() || !real_to_id_opt.has_value())    { std::cerr << __FUNCTION__<< " - [HistoricManager] MEA: Node ID mapping not found for edge from " << original_from_id << " to " << original_to_id << std::endl; return; }
+
+    uint64_t real_from_id = real_from_id_opt.value();
+    uint64_t real_to_id = real_to_id_opt.value();
+
+    auto edge_opt = G->get_edge(real_from_id, real_to_id, *mod.type);
+    if (!edge_opt.has_value()) { std::cerr << __FUNCTION__<< " - [HistoricManager] MEA: Edge not found from " << real_from_id << " to " << real_to_id << std::endl; return; }
+
+    DSR::Edge edge = edge_opt.value();
+
+    for (const auto &[name, attr] : mod.attributes)
+      if (name != DSRAttributeNames::IDF && name != DSRAttributeNames::IDT && name != DSRAttributeNames::TYPE)
+        edge.attrs()[name] = attr;
+
+    try {
+      G->insert_or_assign_edge(edge);
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - [HistoricManager] Error updating edge: " << e.what() << std::endl;
+    }
+  }
+
+  /**
+   * @brief Apply DN - Delete Node
+   */
+  void apply_delete_node(const DSREvent &mod) {
+    // Check if node exists
+    if (!mod.node_id.has_value())
+      return;
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying DN" << std::endl;
+
+    uint64_t original_id = *mod.node_id;
+    auto current_id_opt = get_current_id(original_id);
+    if (!current_id_opt.has_value()) { std::cerr << __FUNCTION__<< " - [HistoricManager] DN: Node ID mapping not found for node " << original_id << std::endl; return; }
+
+    uint64_t current_id = current_id_opt.value();
+
+    try {
+      G->delete_node(current_id);
+      unregister_id_mapping(original_id);
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - [HistoricManager] Error deleting node " << current_id << ": " << e.what() << std::endl;
+    }
+  }
+
+  /**
+   * @brief Apply DE - Delete Edge
+   */
+  void apply_delete_edge(const DSREvent &mod) {
+    // Check if edge exists
+    if (!mod.edge_from_id.has_value() || !mod.edge_to_id.has_value() ||
+        !mod.type.has_value())
+      return;
+    std::cout << __FUNCTION__ << " - [HistoricManager] Applying DE" << std::endl;
+
+    uint64_t original_from_id = *mod.edge_from_id;
+    uint64_t original_to_id = *mod.edge_to_id;
+
+    auto real_from_id_opt = get_current_id(original_from_id);
+    auto real_to_id_opt = get_current_id(original_to_id);
+    if (!real_from_id_opt.has_value() || !real_to_id_opt.has_value())    { std::cerr << __FUNCTION__<< " - [HistoricManager] DE: Node ID mapping not found for edge from " << original_from_id << " to " << original_to_id << std::endl; return; }
+
+    uint64_t real_from_id = real_from_id_opt.value();
+    uint64_t real_to_id = real_to_id_opt.value();
+
+    try {
+      G->delete_edge(real_from_id, real_to_id, *mod.type);
+    } catch (const std::exception &e) {
+      std::cerr << __FUNCTION__ << " - [HistoricManager] Error deleting edge from " << real_from_id << " to " << real_to_id << ": " << e.what() << std::endl;
+    }
+  }
+
+  /**
+   * @brief Apply every local change from a keyframe
+   */
+  void apply_all_local_changes(size_t keyframe_idx) {
+    auto it = local_changes_metadata.find(keyframe_idx);
+    if (it == local_changes_metadata.end())
+      return;
+
+    for (const auto &meta : it->second) {
+      DSREvent *change = get_event_by_metadata(meta);
+      if (change)
+        apply_modification_to_graph(*change);
+    }
+  }
+
+  /**
+   * @brief Removes all nodes (and their edges) from the graph without
+   * destroying the RTPS participant. Used as a fallback; prefer the
+   * diff-based upsert in reconstruct_graph_from_keyframe.
+   */
+  void clear_graph() {
+    auto nodes = G->get_nodes();
+    for (const auto &node : nodes) {
+      try {
+        G->delete_node(node.id());
+      } catch (const std::exception &e) {
+        std::cerr << __FUNCTION__ << " - [HistoricManager] Error deleting node " << node.id() << ": " << e.what() << std::endl;
+      }
+    }
+    std::cout << __FUNCTION__ << " - [HistoricManager] Graph cleared" << std::endl;
+  }
+
+  /**
+   * @brief Initiates the background pre-load of keyframes around
+   */
+  void start_preload(size_t center_idx) {
+    if (preloading)
+      return;
+
+    if (preload_thread.joinable())
+      preload_thread.join();
+
+    preload_thread = std::thread([this, center_idx]() {
+      preloading = true;
+      for (int offset = 1; offset <= 3; ++offset) {
+        // Onwards
+        if (center_idx + offset < keyframe_metadata.size())
+          get_event_by_metadata(keyframe_metadata[center_idx + offset]);
+        // Backwards
+        if (center_idx >= static_cast<size_t>(offset))
+          get_event_by_metadata(keyframe_metadata[center_idx - offset]);
+      }
+
+      preloading = false;
+      // std::cout << __FUNCTION__ << " - [HistoricManger] Preload completed." << std::endl;
+    });
+  }
+};
+
+#endif

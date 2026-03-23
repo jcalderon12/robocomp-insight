@@ -1,0 +1,153 @@
+/*
+ *    Copyright (C) 2026 by YOUR NAME HERE
+ *
+ *    This file is part of RoboComp
+ *
+ *    RoboComp is free software: you can redistribute it and/or modify
+ *    it under the terms of the GNU General Public License as published by
+ *    the Free Software Foundation, either version 3 of the License, or
+ *    (at your option) any later version.
+ *
+ *    RoboComp is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU General Public License for more details.
+ *
+ *    You should have received a copy of the GNU General Public License
+ *    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+/**
+	\brief
+	@author authorname
+*/
+
+
+
+#ifndef SPECIFICWORKER_H
+#define SPECIFICWORKER_H
+
+
+// If you want to reduce the period automatically due to lack of use, you must uncomment the following line
+//#define HIBERNATION_ENABLED
+
+#include <genericworker.h>
+#include <fstream>
+#include "ui_historic_debugger.h"
+#include "historic_manager.h"
+#include "DSRDecoder.h"
+#include "DSRTypeTrait.h"
+
+
+#include "test_decoder.h"
+
+
+
+
+
+/**
+ * \brief Class SpecificWorker implements the core functionality of the component.
+ */
+class SpecificWorker : public GenericWorker
+{
+Q_OBJECT
+public:
+    /**
+     * \brief Constructor for SpecificWorker.
+     * \param configLoader Configuration loader for the component.
+     * \param tprx Tuple of proxies required for the component.
+     * \param startup_check Indicates whether to perform startup checks.
+     */
+	SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check);
+
+	/**
+     * \brief Destructor for SpecificWorker.
+     */
+	~SpecificWorker();
+
+
+public slots:
+
+	/**
+	 * \brief Initializes the worker one time.
+	 */
+	void initialize();
+
+	/**
+	 * \brief Main compute loop of the worker.
+	 */
+	void compute();
+
+	/**
+	 * \brief Handles the emergency state loop.
+	 */
+	void emergency();
+
+	/**
+	 * \brief Restores the component from an emergency state.
+	 */
+	void restore();
+
+    /**
+     * \brief Performs startup checks for the component.
+     * \return An integer representing the result of the checks.
+     */
+	int startup_check();
+
+	// G Changes SLOTS
+	void modify_node_slot(std::uint64_t, const std::string &type);
+	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names);
+	void modify_edge_slot(std::uint64_t from, std::uint64_t to,  const std::string &type);
+	void modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to, const std::string &type, const std::vector<std::string>& att_names);
+	void del_node_slot(std::uint64_t from);     
+	void del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag);
+
+	// UI SLOTS
+	void local_changes_management(int value);
+	void global_changes_management(int value);
+	void on_time_search();
+
+
+private:
+
+	/**
+     * \brief Flag indicating whether startup checks are enabled.
+     */
+	bool startup_check_flag;
+	bool string_check_flag = true;
+ 
+	// Historic window, graph, viewer and manager
+	QMainWindow *historic_window;
+	std::shared_ptr<DSR::DSRGraph> historic_graph;
+	std::unique_ptr<DSR::DSRViewer> historic_viewer;
+	std::unique_ptr<HistoricManager> historic_manager;
+
+	// Historic debugger widget
+	Ui::historic_debugger historic_debugger_ui;
+	QWidget historic_debugger_widget;
+	int historic_value;
+
+	std::map<uint64_t, std::string> changes_map;
+	std::map<uint64_t, DSREvent> decoded_data;
+	std::chrono::time_point<std::chrono::system_clock> time_check;
+	std::chrono::milliseconds keyframe_period;
+	bool show_deb;	
+
+	void generate_keyframe();
+	std::optional<std::string> assemble_string(const auto &timestamp, const std::string &slot, 
+				const std::variant<std::uint64_t, std::tuple<uint64_t, uint64_t>> &id_variant,		
+				const std::string &type, const std::vector<std::string> &att_names);	
+
+	std::tuple<std::string, std::string> attribute_value_and_type_to_string(const auto &value);
+
+	void save_changes_to_file(const std::string& filename = "mission.txt");
+	void load_changes(const std::string filename = "mission.txt");
+
+	void display_debugger_graph();
+	void update_local_scrollbar(size_t keyframe_idx);
+
+signals:
+	//void customSignal();
+};
+
+#endif
