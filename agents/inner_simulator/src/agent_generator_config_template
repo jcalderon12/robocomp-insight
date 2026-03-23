@@ -5,7 +5,7 @@ Proxies.TopicManager = "IceStorm/TopicManager:default -p 9999"
 Proxies.VisualElementsPubPrefix = ""
 
 # Proxies for required interfaces
-Proxies.Camera360RGB = "camera360rgb:tcp -h localhost -p 0"
+Proxies.CameraRGBDSimple = "camerargbdsimple:tcp -h localhost -p 10096"
 
 
 # --- Common Agent Data ---

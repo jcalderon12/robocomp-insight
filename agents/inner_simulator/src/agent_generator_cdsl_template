@@ -1,11 +1,11 @@
 import "VisualElementsPub.idsl";
-import "Camera360RGB.idsl";
+import "CameraRGBDSimple.idsl";
 Component concept_{{concept_name}}
 {
     Communications
     {
         publishes VisualElementsPub;
-        requires Camera360RGB;
+        requires CameraRGBDSimple;
     };
     language python;
     options dsr;

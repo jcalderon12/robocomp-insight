@@ -1,15 +1,21 @@
+import os
 import sys
 import time
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from rich.console import Console
+from ultralytics import YOLO
 from genericworker import *
-import interfaces as ifaces
 import pybullet as p
+import pybullet_utils.bullet_client as bc
 from agent_training.yolo_dataset import YoloDataset
 from agent_training.yolo_trainer import YoloTrainer
 import cv2
+import random
+import multiprocessing as mp
+import signal
+import atexit
 
 sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
@@ -17,131 +23,85 @@ console = Console(highlight=False)
 from pydsr import *
 import numpy as np
 
-CONCEPT_NAME = "bump"
+CONCEPT_NAME = "{{concept_name}}"
+MODEL_OUTPUT_DIR = "yolo_concept_model"
 
 class SpecificWorker(GenericWorker):
     def __init__(self, proxy_map, configData, startup_check=False):
         super(SpecificWorker, self).__init__(proxy_map, configData)
         self.Period = configData["Period"]["Compute"]
-        
-        # ================ PYBULLET SIMULATION SETUP  ================
-        # ============================================================
-
-        self.physicsClient = p.connect(p.GUI)
-        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
-        
-        # p.setRealTimeSimulation(1) # Enable real-time simulation
-        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15,
-                                     cameraTargetPosition=[-1.3, -0.5, 0.2])
-        
-        self.dt = 1./62. # Simulation time step (60 Hz)
-        p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
-        
-        p.setGravity(0, 0, -9.81)
+        print("SpecificWorker initialized")
 
         # ================= PYBULLET MODELS LOADING  ================
         # ===========================================================
-        
-        self.concept_position = [1, 0, 0.01]
-        self.initial_robot_position = [0, 0, -0.07]
 
-        flags = p.URDF_USE_INERTIA_FROM_FILE
-
-        # LOAD PLANE IN THE SIMULATION
-        self.plane = p.loadURDF("../../../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0]) 
-
-        # LOAD CONCEPT IN THE SIMULATION
-        self.concept = p.loadURDF("../../../../etc/URDFs/bump/bump_100x5cm.urdf", self.concept_position)
-        # Paint the concept red to make it easily detectable in the images
-        p.changeVisualShape(self.concept, -1, rgbaColor=[1, 0, 0, 1])  # Red color
-        
-        # LOAD ROBOT IN THE SIMULATION
-        self.robot = p.loadURDF("../../../../etc/URDFs/shadow/shadow.urdf", self.concept_position, flags=flags)
-
-        # Make ricoh_theta_z1 invisible to avoid it appearing in the camera images and interfering with the concept detection
-        cam_link_id = self.get_link_info(self.robot).get("ricoh_theta_z1")
-        if cam_link_id is not None:
-            p.setCollisionFilterGroupMask(self.robot, cam_link_id, 0, 0)  # Disable collisions
-            p.changeVisualShape(self.robot, cam_link_id, rgbaColor=[0, 0, 0, 0])  # Make invisible
-        else:
-            console.print("Camera link 'ricoh_theta_z1' not found in robot model. This should NOT happen. Exiting...", style="bold red")
-            exit()
+        self.dt = 1./62. # Simulation time step (60 Hz)
+        self.concept_position = [1, 0, -0.01]
 
         # TImage getROI(int cx, int cy, int sx, int sy, int roiwidth, int roiheight);
-        print("Waiting for camera image from robot...")
-        self.robot_img = self.camera360rgb_proxy.getROI(-1, -1, -1, -1, -1, -1) # A bump in the way
-        print(type(self.robot_img.image))
-        # np from buffer (self.robot_img.image)
-        robot_img_array = np.frombuffer(self.robot_img.image, dtype=np.uint8)
-        # Display img array with cv2
-        robot_img_array = robot_img_array.reshape((self.robot_img.height, self.robot_img.width, 3)) # RGBA
-        cv2.imshow("Robot Camera Image", robot_img_array)
-        cv2.waitKey(1)  # Needed to display the image window
-        print("Camera image received from robot. Shape:")
-        print(self.robot_img.width, self.robot_img.height)
-
-
-        time.sleep(0.5)
-
-
-        # ================ ROBOT PARAMETERS  ===============
-        # ==================================================
-
-        self.wheels_radius = 0.1
-        self.distance_between_wheels = 0.44
-        self.distance_from_center_to_wheels = self.distance_between_wheels / 2
-
-        self.motors = ["frame_back_right2motor_back_right", "frame_back_left2motor_back_left", "frame_front_right2motor_front_right", "frame_front_left2motor_front_left"]
-        self.joints_name = self.get_joints_info(self.robot)
-        self.links_name = self.get_link_info(self.robot)
-
-        self.init_pos, self.init_orn = p.getBasePositionAndOrientation(self.robot)
-        self.forward_vel, self.angular_vel = 0, 0
-
-        self.print_time = self.actual_time = self.initial_time = time.time()
-
+        self.robot_img = self.camerargbdsimple_proxy.getImage("zed") # A bump in the way --- IGNORE ---
+        self.print_time = self.actual_time = time.time()
 
         # ================ SIMULATION PARAM  ===============
         # ==================================================
         
         # Dataset initialization variables
-        self.unsorted_image_list = []
-        self.dataset_size = 16
-        self.dataset = YoloDataset("concept_dataset", "concept")
+        self.dataset_size = 20 # number of positions to generate per ring (not including recolouring and augmentation)
+        self.augment_per_image = 0  # number of augmented copies per original image
+        self.dataset = YoloDataset(os.getcwd(), "concept_dataset", "concept")
 
+        # Concept color change table. A new image will be generated for each color in this table.
+        # If any augmentation is set, it will also be applied.
+        self.concept_color_table = {
+            "white": [1, 1, 1, 1],
+            "green": [0, 1, 0, 1],
+            "blue": [0, 0, 1, 1],
+            "brown": [0.59, 0.29, 0, 1],
+            "yellow": [1, 1, 0, 1],
+            "cyan": [0, 1, 1, 1],
+            "magenta": [1, 0, 1, 1],
+        }
+        
         # Path parameters
-        self.radius = 1.6
+        self.radius = 1.0 # base radius of the circle on which the camera will navigate around the concept.
+        self.radius_rings = 16  # number of concentric rings to generate
+        self.radius_ring_distance = 0.25  # radial distance between consecutive rings
         angles = np.linspace(0, 2*np.pi, self.dataset_size, endpoint=False)
-        self.robot_nav_path = [[self.concept_position[0] + self.radius*np.cos(angle), 
-                            self.concept_position[1] + self.radius*np.sin(angle), 
-                            0.01] for angle in angles]
-        self.current_path_point = 0
+        self.camera_nav_path = []
+        for ring_idx in range(self.radius_rings):
+            ring_radius = self.radius + ring_idx * self.radius_ring_distance
+            for angle in angles:
+                self.camera_nav_path.append([
+                    self.concept_position[0] + ring_radius * np.cos(angle),
+                    self.concept_position[1] + ring_radius * np.sin(angle),
+                    0.01,
+                ])
 
-        # Camera parameters (cubemap → equirectangular)
+        # Camera parameters
         self.cam_near = 0.01
         self.cam_far = 100
-        self.cube_face_size = self.robot_img.height          # each cubemap face is square
-        self.equirect_w = self.robot_img.width               # output equirectangular width
-        self.equirect_h = self.robot_img.height              # output equirectangular height
-        self.cube_proj = p.computeProjectionMatrixFOV(90, 1.0, self.cam_near, self.cam_far)
-        self.cam_ricoh_offset = np.array([-0.16759, 0.0, 1.28231]) # ricoh_theta_z1 position relative to base_link
-        self._build_equirect_remap()  # precompute lookup tables once
+        self.camera_offset = np.array([-0.07657113, 0.06000005, 0.94259881])
         
         # Status variables
         self.has_concept_been_found = False
-    
+
+        # Multiprocessing count. Sets how many proccesses to use.
+        self.instance_count = 12
+        self._owner_pid = os.getpid()
+        self._dataset_workers = []
+        self._register_termination_handlers()
+
         if startup_check:
             self.startup_check()
         else:
             self.timer.timeout.connect(self.compute)
             self.timer.start(self.Period)
-        
-
+            
         self.stage = "IDLE"
 
     def __del__(self):
         """Destructor"""
-
+        self._terminate_dataset_workers()
 
     @QtCore.Slot()
     def compute(self):
@@ -149,100 +109,244 @@ class SpecificWorker(GenericWorker):
         self.publish_status_to_dsr()
         
         match self.stage:
+            
             case "IDLE":
-                # If model already exists go directly to testing
-                # Otherwise go to training
-                self.stage = "TRAINING" 
-                pass
-            
+                # If model already exists go directly to testing. Otherwise go to training.
+                model = os.path.join(os.getcwd(), "runs", "detect", MODEL_OUTPUT_DIR, "weights", "best.pt")
+                if os.path.exists(model):
+                    console.print("Trained model found. Skipping training and going directly to analysis stage.", style="bold green")
+                    self.trained_model = model
+                    self.stage = "ANALYZE"
+                else:
+                    console.print("No trained model found. Starting training stage.", style="bold yellow")
+                    self.stage = "TRAINING"
+
+
             case "TRAINING":
-                # Teleport robot to the next point in the path
-                target_pos = self.robot_nav_path[self.current_path_point]
-                p.resetBasePositionAndOrientation(self.robot, target_pos, self.init_orn)
-                self.current_path_point = (self.current_path_point + 1) % self.dataset_size
-
-                # Place the virtual eye at the ricoh_theta_z1 link origin.
-                pos, ori = p.getBasePositionAndOrientation(self.robot)
-                cam_pos = [
-                    pos[0] + self.cam_ricoh_offset[0],
-                    pos[1] + self.cam_ricoh_offset[1],
-                    pos[2] + self.cam_ricoh_offset[2],
-                ]
-
-                # Forward direction matches the robot's own orientation (X-axis of the local frame)
-                rot_matrix = p.getMatrixFromQuaternion(ori)
-                forward = [rot_matrix[0], rot_matrix[3]]  # 2-D forward (x, y)
-
-                # Render 360° panoramic strip
-                panorama = self.render_360_image(cam_pos, forward)
-                self.unsorted_image_list.append(panorama)
-
-                # If we have enough images, create dataset and train model.
-                if len(self.unsorted_image_list) >= self.dataset_size:
-                    # We add 80% for training and 20% for validation
-                    for i, img in enumerate(self.unsorted_image_list):
-                        # Analyze the image with CV2 to detect a red bump (placeholder).
-                        # Then, we use CV2 to generate a bounding box around the detected bump and create the corresponding label in YOLO format.
-                        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)  # Convert RGBA to BGR (OpenCV native format)
-                        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-                        lower_red = np.array([0, 70, 50])
-                        upper_red = np.array([10, 255, 255])
-                        mask = cv2.inRange(hsv, lower_red, upper_red)
-                        debug_img = img.copy()
-                        cv2.imwrite(f"debug-img/debug_image_{i}.png", debug_img)  # Save debug image with bounding box
-                        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                        if contours:
-                            # Assume the largest contour is the bump
-                            largest_contour = max(contours, key=cv2.contourArea)
-                            x, y, w, h = cv2.boundingRect(largest_contour)
-                            # Convert to YOLO format (class_id, x_center, y_center, width, height) normalized by image dimensions
-                            img_h, img_w = img.shape[:2]
-                            x_center = (x + w / 2) / img_w
-                            y_center = (y + h / 2) / img_h
-                            width = w / img_w
-                            height = h / img_h
-                            label = f"0 {x_center} {y_center} {width} {height}"  # Class 0 for bump
-
-                            # DEBUG: Draw bounding box on the image and display it
-                            cv2.rectangle(debug_img, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                        else:
-                            # If no bump detected, create a label with zero size at the center (or skip)
-                            label = "0 0.5 0.5 0 0"  # No object
-
-                        if i < int(0.8 * self.dataset_size):
-                            self.dataset.add_image(img, label, True)
-                            print(f"Added image {i} to TRAINING set with label: {label}")
-                        else:
-                            self.dataset.add_image(img, label, False)
-                            print(f"Added image {i} to VALIDATION set with label: {label}")
-
-                    # Build dataset YAML
-                    self.dataset.create_yaml()
-
-                    # Train model
-                    trainer = YoloTrainer(dataset_path=self.dataset.get_data_yaml_path(), model_name="yolov8n.pt", output_dir=f"yolo_concept_model")
-                    trainer.init_training()
-                    print(trainer.get_trained_model_path())
-                    self.stage = "TESTING"
-            
-            case "TESTING":
+                total_positions = len(self.camera_nav_path)
+                console.print(f"Generating dataset of {total_positions} positions ({self.dataset_size} per ring x {self.radius_rings} rings)...", style="bold yellow")
                 
+                # Distribute the circle points between the instances
+                points = []
+                for i in range(self.instance_count):
+                    points.append([])
+                for i in range(total_positions):
+                    points[i % self.instance_count].append(i)
+                
+                try:
+                    # Start the processes to generate the dataset in parallel
+                    self._dataset_workers = []
+                    for i in range(self.instance_count):
+                        worker = mp.Process(target=self.render_images, args=(points[i],), daemon=True)
+                        worker.start()
+                        self._dataset_workers.append(worker)
+
+                    # Wait for all processes to finish
+                    for worker in self._dataset_workers:
+                        worker.join()
+                except KeyboardInterrupt:
+                    console.print("Training interrupted. Terminating dataset workers...", style="bold red")
+                    self._terminate_dataset_workers()
+                    self.stage = "TERMINATE"
+                    return True
+                finally:
+                    self._terminate_dataset_workers()
+
+                console.print(f"Dataset complete: {self.dataset.get_dataset_size()} images (incl. augmentations)", style="bold green")
+
+                # Build dataset YAML and train
+                self.dataset.create_yaml()
+                self.trainer = YoloTrainer(base_path=os.getcwd(), dataset_path=self.dataset.get_data_yaml_path(), model_name="yolov8n.pt", epochs=20, output_dir=MODEL_OUTPUT_DIR)
+                self.trainer.init_training()
+                print(self.trainer.get_trained_model_path())
+                self.trained_model = self.trainer.get_trained_model_path()
+                self.stage = "ANALYZE"
+                
+            
+            case "ANALYZE":
+                # Load the trained YOLO model
+                model = YOLO(self.trained_model)
+                while True:
+                    # Capture image 60Hz at a time
+                    start_time = time.time()
+                    # Detect if CTRL+C has been pressed to break the loop
+                    if QApplication.instance().closingDown():
+                        break
+                    
+                    # Get image from robot camera
+                    #self.robot_img = self.camera360rgb_proxy.getROI(-1, -1, -1, -1, -1, -1)
+                    self.robot_img = self.camerargbdsimple_proxy.getImage("zed") # A bump in the way --- IGNORE ---
+                    robot_img_array = np.frombuffer(self.robot_img.image, dtype=np.uint8)
+                    self.robot_img_image = robot_img_array.reshape((self.robot_img.height, self.robot_img.width, 3)) # RGBA
+                    # Analyze image (current robot image)
+                    results = model.predict(self.robot_img_image, verbose=False)
+                    if len(results[0].boxes) > 0:
+                        # Set new status
+                        self.has_concept_been_found = True
+                        
+                        # Draw the results on it
+                        img_with_detections = self.robot_img_image.copy()
+                        for result in results:
+                            boxes = result.boxes.xyxy.cpu().numpy().astype(int)  # Bounding box coordinates
+                            for box in boxes:
+                                x1, y1, x2, y2 = box
+                                cv2.rectangle(img_with_detections, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green box
+                                # draw the confidence score on top of the box                                
+                                confidence = result.boxes.conf.cpu().numpy()
+                                label = f"{confidence[0]:.2f}"
+                                cv2.putText(img_with_detections, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                
+                        self.robot_img_image = img_with_detections
+                        
+                    else:
+                        # draw a small red cross inside a box on the image top left corner to indicate that the concept has not been found
+                        img_with_detections = self.robot_img_image.copy()
+                        cv2.line(img_with_detections, (10, 10), (30, 30), (0, 0, 255), 2)
+                        cv2.line(img_with_detections, (30, 10), (10, 30), (0, 0, 255), 2)
+                        cv2.rectangle(img_with_detections, (5, 5), (35, 35), (0, 0, 255), 2)
+                        self.robot_img_image = img_with_detections
+                        self.has_concept_been_found = False
+
+                    # Publish the current status
+                    self.publish_status_to_dsr()
+                    
+                    # Display the original image
+                    cv2.imshow("Agent Vision (TM)", self.robot_img_image)
+                    cv2.waitKey(1)
+                    # wait for the remaining time to complete 1/60s
+                    elapsed = time.time() - start_time
+                    wait_time = max(0, self.dt - elapsed)
+                    time.sleep(wait_time)
+                    
+                self.STAGE = "TERMINATE"
+
+            case "TERMINATE":
                 pass
-        
+
         return True
 
     def startup_check(self):
         QTimer.singleShot(200, QApplication.instance().quit)
 
+    def _register_termination_handlers(self):
+        """Ensure child processes are terminated when this process receives a stop signal."""
+        atexit.register(self._terminate_dataset_workers)
+        signal.signal(signal.SIGINT, self._handle_termination_signal)
+        signal.signal(signal.SIGTERM, self._handle_termination_signal)
+
+    def _handle_termination_signal(self, signum, _frame):
+        if os.getpid() == self._owner_pid:
+            console.print(f"Signal {signum} received. Terminating dataset workers...", style="bold red")
+            self._terminate_dataset_workers()
+        raise SystemExit(128 + signum)
+
+    def _terminate_dataset_workers(self):
+        """Terminate and join running dataset worker processes."""
+        # Multiprocessing children created via fork inherit this object and the
+        # atexit handler, but they must not manage Process objects created by
+        # the parent process.
+        if os.getpid() != self._owner_pid:
+            return
+
+        for worker in self._dataset_workers:
+            if worker.is_alive():
+                worker.terminate()
+        for worker in self._dataset_workers:
+            worker.join(timeout=2)
+        self._dataset_workers = []
 
 
 
+
+
+    # ================ PYBULLET SIMULATION RELATED  ================
+    # ==============================================================
+
+    def init_pybullet_sim(self):
+        """
+        Initializes a new PyBullet simulation instance with plane and concept.
+        """
+        client = bc.BulletClient(connection_mode=p.DIRECT)
+        client.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
+        client.setGravity(0, 0, -9.81)
+
+        # LOAD PLANE IN THE SIMULATION
+        client.loadURDF("../../../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0])
+
+        # LOAD CONCEPT IN THE SIMULATION
+        concept = client.loadURDF("../../../../etc/URDFs/bump/bump_100x5cm.urdf", self.concept_position)
+        # Paint the concept red to make it easily detectable in the images
+        client.changeVisualShape(concept, -1, rgbaColor=[1, 0, 0, 1])  # Red color
+
+        return [client, concept]
+
+    def render_images(self, dataset_index_list):
+        """
+        Creates a new Pybullet instance and renders a set of images given the list
+        of indexes of the camera_nav_path list.
+        It's meant to be called in parallel using multiprocessing.
+        """
+
+        # Create a new pybullet instance
+        target_instance = self.init_pybullet_sim()
+        client = target_instance[0]
+        concept = target_instance[1]
+
+        for dataset_index in dataset_index_list:
+            target_pos = self.camera_nav_path[dataset_index]
+
+            # Place a virtual camera with fixed mount offset and make it look at the bump.
+            cam_pos = [
+                target_pos[0] + self.camera_offset[0],
+                target_pos[1] + self.camera_offset[1],
+                target_pos[2] + self.camera_offset[2],
+            ]
+            direction_to_concept = [
+                self.concept_position[0] - cam_pos[0],
+                self.concept_position[1] - cam_pos[1],
+            ]
+            norm = np.sqrt(direction_to_concept[0]**2 + direction_to_concept[1]**2)
+            if norm > 1e-6:
+                forward = [direction_to_concept[0] / norm, direction_to_concept[1] / norm]
+            else:
+                forward = [1, 0]
+
+            # Capture an image
+            capture = self.capture_zed_image(cam_pos, forward)
+
+            # Detect concept and build label, then add directly to dataset
+            img_bgr = cv2.cvtColor(capture, cv2.COLOR_RGBA2BGR)
+            label = self._detect_and_label(img_bgr)
+            is_train = dataset_index < int(0.8 * len(self.camera_nav_path))
+            self.dataset.add_image(img_bgr, label, is_train)
+
+            # Data augmentation (only for training images)
+            if is_train:
+                self._augment_and_add(img_bgr, label, is_train=True)
+
+            # Generate the remaining images changing only the concept color.
+            for _, color_rgba in self.concept_color_table.items():
+                client.changeVisualShape(concept, -1, rgbaColor=color_rgba)
+                capture = self.capture_zed_image(cam_pos, forward)
+                img_bgr = cv2.cvtColor(capture, cv2.COLOR_RGBA2BGR)
+                self.dataset.add_image(img_bgr, label, is_train)
+                if is_train:
+                    self._augment_and_add(img_bgr, label, is_train=True)
+
+            # Restore red concept
+            client.changeVisualShape(concept, -1, rgbaColor=[1, 0, 0, 1])
+
+            console.print(f"  [THREAD:ID{dataset_index}] finished generating image.", style="yellow")
+
+        client.disconnect()
+        
+        
+        
     # ====================  HELPERS  =====================
     # ====================================================
 
-
     def publish_status_to_dsr(self):
-        """ Publishes the status of the concept to DSR."""
+        """ Publishes the current status of the concept to DSR."""
         # check if we have found the concept in this compute step. if so, publish the possible_concept object node to DSR. If not, destroy it (if it exists)
         if not self.has_concept_been_found:
             # check if we have to destroy the node in DSR
@@ -265,7 +369,6 @@ class SpecificWorker(GenericWorker):
                 edge = Edge(object_node.id, robot_node.id, "thinks", self.agent_id)
                 self.g.insert_or_assign_edge(edge)
                 
-
     def show_compute_time_step(self):
         """
         Get the time step between compute calls
@@ -278,165 +381,125 @@ class SpecificWorker(GenericWorker):
             console.print(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
             
         return time_step
+
+
+
+    # ====================  CAPTURING HELPERS  =====================
+    # ==============================================================
     
-    
-    def _build_equirect_remap(self):
+    def capture_zed_image(self, cam_pos: list, forward: list, fov_v: float = 70.0) -> np.ndarray:
         """
-        Precomputes the cubemap → equirectangular remap tables.
-        For each pixel (u, v) in the output equirectangular image, we compute
-        the spherical direction, find the corresponding cubemap face, and store
-        the source coordinates to be used later with cv2.remap.
-        """
-        W, H = self.equirect_w, self.equirect_h
-        F = self.cube_face_size
-
-        # Cubemap face axes in a local frame where +X=forward, +Y=left, +Z=up.
-        # Each tuple: (forward_axis, right_axis, up_axis) matching the
-        # OpenGL view produced by PyBullet's computeViewMatrix for that face.
-        #                       forward          right (s)        up (u)
-        self._cube_faces = [
-            (( 1,  0,  0), ( 0, -1,  0), ( 0,  0,  1)),  # 0  Front  +X
-            ((-1,  0,  0), ( 0,  1,  0), ( 0,  0,  1)),  # 1  Back   −X
-            (( 0,  1,  0), ( 1,  0,  0), ( 0,  0,  1)),  # 2  Left   +Y
-            (( 0, -1,  0), (-1,  0,  0), ( 0,  0,  1)),  # 3  Right  −Y
-            (( 0,  0,  1), ( 0, -1,  0), (-1,  0,  0)),  # 4  Top    +Z
-            (( 0,  0, -1), ( 0, -1,  0), ( 1,  0,  0)),  # 5  Bottom −Z
-        ]
-
-        u_px = np.arange(W, dtype=np.float64)
-        v_px = np.arange(H, dtype=np.float64)
-        u_grid, v_grid = np.meshgrid(u_px, v_px)
-
-        # Spherical coordinates for each output pixel
-        theta = 2.0 * np.pi * u_grid / W              # longitude  [0, 2π)
-        phi   = np.pi * (0.5 - v_grid / H)            # latitude   [π/2 … −π/2]
-
-        # 3-D direction in local frame
-        dx = np.cos(phi) * np.cos(theta)   # forward
-        dy = np.cos(phi) * np.sin(theta)   # left
-        dz = np.sin(phi)                   # up
-
-        # Determine dominant axis → cubemap face
-        abs_d = np.stack([np.abs(dx), np.abs(dy), np.abs(dz)], axis=-1)
-        axis = np.argmax(abs_d, axis=-1)                # 0=X, 1=Y, 2=Z
-        dominant_val = np.choose(axis, [dx, dy, dz])
-        face_idx = axis * 2 + (dominant_val < 0).astype(int)
-
-        d = np.stack([dx, dy, dz], axis=-1)             # (H, W, 3)
-
-        # Build remap arrays.  All six faces are laid out side-by-side in a
-        # single atlas of shape (F, 6·F, 4) so cv2.remap can handle them in
-        # one call.
-        map_x = np.zeros((H, W), dtype=np.float32)
-        map_y = np.zeros((H, W), dtype=np.float32)
-
-        for fi in range(6):
-            mask = face_idx == fi
-            if not np.any(mask):
-                continue
-            fwd = np.array(self._cube_faces[fi][0], dtype=np.float64)
-            s_v = np.array(self._cube_faces[fi][1], dtype=np.float64)
-            u_v = np.array(self._cube_faces[fi][2], dtype=np.float64)
-
-            d_m = d[mask]                                # (N, 3)
-            dot_f = d_m @ fwd                            # projection on face normal
-            nx = (d_m @ s_v) / dot_f                     # normalised screen-x  [−1, 1]
-            ny = (d_m @ u_v) / dot_f                     # normalised screen-y  [−1, 1]
-
-            px = (nx + 1.0) / 2.0 * (F - 1)             # pixel-x in face
-            py = (1.0 - ny) / 2.0 * (F - 1)             # pixel-y in face
-
-            map_x[mask] = (fi * F + px).astype(np.float32)
-            map_y[mask] = py.astype(np.float32)
-
-        self._remap_x = map_x
-        self._remap_y = map_y
-
-    def render_360_image(self, cam_pos: list, forward: list) -> np.ndarray:
-        """
-        Renders a 360° equirectangular image using a 6-face cubemap.
-
+        Renders a perspective image from the ZED camera simulation using PyBullet.
+        
         :param cam_pos: [x, y, z] world position of the camera
-        :param forward: [fx, fy] normalized 2-D forward direction vector
-        :return: numpy array (equirect_h, equirect_w, 4) RGBA
+        :param forward: [fx, fy] normalized 2-D forward direction vector in the XY plane
+        :param fov_v: Vertical field of view in degrees (default: 70° for f/2.0 lens)
+        :return: numpy array (height, width, 4) RGBA image
+        
+        ZED Camera Specifications (dual lens configuration):
+        
+        Lens 1 (f/2.0) - Primary lens used:
+        - Focal Length: 2.1mm
+        - Aperture: ƒ/2.0
+        - Field of View: 110°(H) x 70°(V) x 120°(D) max.
+        - Resolution: 1280 x 720 pixels
+        
+        Lens 2 (f/1.8) - Alternative:
+        - Focal Length: 4mm
+        - Aperture: ƒ/1.8
+        - Field of View: 72°(H) x 44°(V) x 81°(D) max.
+        
+        Wide-angle 8-element all-glass dual lens with optically corrected distortion
         """
+        # Normalize the forward vector
+        norm = np.sqrt(forward[0]**2 + forward[1]**2)
+        if norm < 1e-6:
+            forward = [1, 0]  # Default to +X if invalid
+        else:
+            forward = [forward[0]/norm, forward[1]/norm]
+        
         fx, fy = forward
-        F = self.cube_face_size
-
-        # World-space target positions and up vectors for six cubemap faces.
-        # Local frame: +X = (fx,fy,0), +Y = (−fy,fx,0), +Z = (0,0,1)
-        face_params = [
-            ([cam_pos[0] + fx,  cam_pos[1] + fy,  cam_pos[2]],     [0, 0, 1]),        # Front
-            ([cam_pos[0] - fx,  cam_pos[1] - fy,  cam_pos[2]],     [0, 0, 1]),        # Back
-            ([cam_pos[0] - fy,  cam_pos[1] + fx,  cam_pos[2]],     [0, 0, 1]),        # Left
-            ([cam_pos[0] + fy,  cam_pos[1] - fx,  cam_pos[2]],     [0, 0, 1]),        # Right
-            ([cam_pos[0],       cam_pos[1],       cam_pos[2] + 1],  [-fx, -fy, 0]),   # Top
-            ([cam_pos[0],       cam_pos[1],       cam_pos[2] - 1],  [fx, fy, 0]),     # Bottom
+        
+        # ZED camera resolution: 1280 x 720 pixels
+        width = 1280
+        height = 720
+        
+        # Build the up vector perpendicular to forward and world Z
+        # Local frame: +X = (fx,fy,0), +Z = (0,0,1), +Y = (-fy,fx,0)
+        up = [0, 0, 1]
+        
+        # ZED aspect ratio: 1280 / 720
+        aspect_ratio = 1280.0 / 720.0
+        
+        # Target point in the direction the camera is looking
+        target = [
+            cam_pos[0] + fx,
+            cam_pos[1] + fy,
+            cam_pos[2]
         ]
+        
+        # Create view matrix
+        view_matrix = p.computeViewMatrix(cameraEyePosition=cam_pos,
+                                         cameraTargetPosition=target,
+                                         cameraUpVector=up)
+        
+        # Create projection matrix with the specified FOV
+        projection_matrix = p.computeProjectionMatrixFOV(
+            fov=fov_v,                    # PyBullet uses vertical FOV
+            aspect=aspect_ratio,
+            nearVal=self.cam_near,
+            farVal=self.cam_far
+        )
+        
+        # Render the image
+        _, _, rgb, _, _ = p.getCameraImage(
+            width=width,
+            height=height,
+            viewMatrix=view_matrix,
+            projectionMatrix=projection_matrix,
+            renderer=p.ER_BULLET_HARDWARE_OPENGL
+        )
+        
+        # Convert to numpy array with RGBA format
+        image = np.array(rgb, dtype=np.uint8).reshape(height, width, 4)
+        
+        return image
 
-        # Render the 6 faces and pack them into a horizontal atlas
-        atlas = np.empty((F, 6 * F, 4), dtype=np.uint8)
-        for i, (target, up) in enumerate(face_params):
-            vm = p.computeViewMatrix(cam_pos, target, up)
-            _, _, rgb, _, _ = p.getCameraImage(
-                width=F, height=F,
-                viewMatrix=vm,
-                projectionMatrix=self.cube_proj,
-                renderer=p.ER_BULLET_HARDWARE_OPENGL,
-            )
-            atlas[:, i * F:(i + 1) * F, :] = np.array(rgb, dtype=np.uint8).reshape(F, F, 4)
-
-        # Remap the cubemap atlas into the equirectangular panorama
-        equirect = cv2.remap(atlas, self._remap_x, self._remap_y,
-                             cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
-        return equirect
     
+    
+    # ==================  DETECTION & AUGMENTATION ==================
+    # ===============================================================
 
-    # ====================  ROBOT HELPERS  =====================
-    # ==========================================================
+    def _detect_and_label(self, img_bgr: np.ndarray) -> str:
+        """Detect the red concept in a BGR image and return YOLO-format label string"""
+        hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, np.array([0, 70, 50]), np.array([10, 255, 255]))
+        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(largest)
+            img_h, img_w = img_bgr.shape[:2]
+            return f"0 {(x + w / 2) / img_w} {(y + h / 2) / img_h} {w / img_w} {h / img_h}"
+        return "0 0.5 0.5 0 0"
 
-    def get_joints_info(self, robot_id):
+    def _augment_and_add(self, img_bgr: np.ndarray, label: str, is_train: bool) -> None:
         """
-        Get joint names and IDs from a robot model
-
-        @param robot_id: ID of the robot model in the simulation
-        @return: Dictionary with joint names as keys and joint IDs as values
+        Generate augmented copies of an image + label and add them to the dataset.
+        Augmentations:
+          1) Brightness / contrast jitter
+          2) Gaussian noise
         """
-        joint_name_to_id = {}
-        # Get number of joints in the model
-        num_joints = p.getNumJoints(robot_id)
-        # print("Num joints:", num_joints)
+        for _ in range(self.augment_per_image):
+            aug = img_bgr.copy()
 
-        # Populate the dictionary with joint names and IDs
-        for i in range(num_joints):
-            joint_info = p.getJointInfo(robot_id, i)
-            joint_name = joint_info[1].decode("utf-8")
-            joint_name_to_id[joint_name] = i
-            jid = joint_info[0]
-            jtype = joint_info[2]
-            if jtype == p.JOINT_REVOLUTE:
-                p.setJointMotorControl2(bodyUniqueId=robot_id,
-                                        jointIndex=jid,
-                                        controlMode=p.VELOCITY_CONTROL,
-                                        targetVelocity=0,
-                                        force=0)
-        return joint_name_to_id
+            # --- 1. Brightness / contrast jitter ---
+            alpha = random.uniform(0.7, 1.3)   # contrast
+            beta = random.randint(-30, 30)      # brightness
+            aug = cv2.convertScaleAbs(aug, alpha=alpha, beta=beta)
 
-    def get_link_info(self, robot_id):
-        """
-        Get link names and IDs from a robot model
+            # --- 2. Gaussian noise ---
+            if random.random() < 0.5:
+                noise = np.random.normal(0, 8, aug.shape).astype(np.int16)
+                aug = np.clip(aug.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
-        @param robot_id: ID of the robot model in the simulation
-        @return: Dictionary with link names as keys and link IDs as values
-        """
-        link_name_to_id = {}
-        # Get number of joints in the model
-        num_links = p.getNumJoints(robot_id)
-        # print("Num links:", num_links)
-
-        # Populate the dictionary with link names and IDs
-        for i in range(num_links):
-            link_info = p.getJointInfo(robot_id, i)
-            link_name = link_info[12].decode("utf-8")
-            link_name_to_id[link_name] = i
-        return link_name_to_id
+            self.dataset.add_image(aug, label, is_train)

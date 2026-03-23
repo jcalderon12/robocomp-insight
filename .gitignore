@@ -289,3 +289,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 agents/inner_simulator/agents/
+agents/inner_simulator/*.pth
+agents/inner_simulator/*runs/
