@@ -36,6 +36,7 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
+#include <filesystem>
 #include "ui_historic_debugger.h"
 #include "historic_manager.h"
 #include "DSRDecoder.h"
@@ -104,6 +105,9 @@ public slots:
 	void local_changes_management(int value);
 	void global_changes_management(int value);
 	void on_time_search();
+	
+	// Keyframe timer slot
+	void on_keyframe_timer_timeout();
 
 
 private:
@@ -138,6 +142,9 @@ private:
 	std::chrono::time_point<std::chrono::system_clock> time_check;
 	std::chrono::milliseconds keyframe_period;
 	bool show_deb;
+	
+	// Periodic keyframe timer
+	QTimer *keyframe_timer = nullptr;
 
 	// ===== EPISODIC MEMORY STATE MACHINE =====
 	enum class EpisodicState { IDLE, WAITING_MISSION, RECORDING };

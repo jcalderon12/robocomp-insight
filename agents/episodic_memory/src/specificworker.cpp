@@ -20,6 +20,7 @@
 
 SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx, bool startup_check)
     : GenericWorker(configLoader, tprx) {
+	std::cout << "--- SpecificWorker CONSTRUCTOR START ---" << std::endl;
 	this->startup_check_flag = startup_check;
 	if (this->startup_check_flag) {
 		this->startup_check();
@@ -27,70 +28,8 @@ SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx, 
 #ifdef HIBERNATION_ENABLED
 	hibernationChecker.start(500);
 #endif
-
-	// Example statemachine:
-	/***
-	//Your definition for the statesmachine (if you dont want use a execute
-	function, use nullptr) states["CustomState"] =
-	std::make_unique<GRAFCETStep>("CustomState", period, std::bind(&SpecificWorker::customLoop, this),  // Cyclic function
-	std::bind(&SpecificWorker::customEnter, this), // On-enter function
-	std::bind(&SpecificWorker::customExit, this)); // On-exit function
-
-	//Add your definition of transitions (addTransition(originOfSignal, signal,
-	dstState)) states["CustomState"]->addTransition(states["CustomState"].get(),
-	SIGNAL(entered()), states["OtherState"].get());
-	states["Compute"]->addTransition(this, SIGNAL(customSignal()),
-	states["CustomState"].get()); //Define your signal in the .h file under the
-    "Signals" section.
-
-    //Add your custom state
-    statemachine.addState(states["CustomState"].get());
-    ***/
-
-	// ===== EPISODIC MEMORY STATE MACHINE =====
-	int state_period = 100; // milliseconds
-
-	// IDLE state
-	states["IDLE"] = std::make_unique<GRAFCETStep>(
-		"IDLE", 
-		state_period,
-		std::bind(&SpecificWorker::loop_IDLE, this),
-		std::bind(&SpecificWorker::enter_IDLE, this),
-		std::bind(&SpecificWorker::exit_IDLE, this)
-	);
-	statemachine.addState(states["IDLE"].get());
-
-	// WAITING_MISSION state
-	states["WAITING_MISSION"] = std::make_unique<GRAFCETStep>(
-		"WAITING_MISSION",
-		state_period,
-		std::bind(&SpecificWorker::loop_WAITING_MISSION, this),
-		std::bind(&SpecificWorker::enter_WAITING_MISSION, this),
-		std::bind(&SpecificWorker::exit_WAITING_MISSION, this)
-	);
-	statemachine.addState(states["WAITING_MISSION"].get());
-
-	// RECORDING state
-	states["RECORDING"] = std::make_unique<GRAFCETStep>(
-		"RECORDING",
-		state_period,
-		std::bind(&SpecificWorker::loop_RECORDING, this),
-		std::bind(&SpecificWorker::enter_RECORDING, this),
-		std::bind(&SpecificWorker::exit_RECORDING, this)
-	);
-	statemachine.addState(states["RECORDING"].get());
-
-	// Set initial state
-	statemachine.setInitialState(states["IDLE"].get());
-    statemachine.start();
-
-    auto error = statemachine.errorString();
-    if (error.length() > 0) {
-      qWarning() << error;
-      throw error;
-    }
-
-    // historic_graph = std::make_shared<DSR::DSRGraph>("historic_view", 4000, "", false, -1);
+    // Schedule initialize() to run after construction
+    QTimer::singleShot(100, this, &SpecificWorker::initialize);
   }
 }
 
@@ -103,8 +42,23 @@ SpecificWorker::~SpecificWorker() {
 void SpecificWorker::initialize() {
 	std::cout << "initialize worker" << std::endl;
 	GenericWorker::initialize();
+	
+	// Assign graphs AFTER GenericWorker::initialize() to avoid being overwritten
+	std::cout << "Available graphs: " << Graphs.size() << std::endl;
+	for (const auto& [name, graph] : Graphs) {
+		std::cout << "  - Graph: " << name << " (ptr: " << graph.get() << ")" << std::endl;
+	}
+	
 	G = Graphs.at("work");
 	mission_graph = Graphs.at("episodic");
+	
+	std::cout << "After assignment: G pointer: " << G.get() << ", mission_graph pointer: " << mission_graph.get() << std::endl;
+	std::cout << "G nodes: ";
+	auto g_nodes = G->get_nodes();
+	for (const auto& n : g_nodes) {
+		std::cout << n.name() << "(" << n.type() << ") ";
+	}
+	std::cout << std::endl;
 
 	// ===== EPISODIC MEMORY STATE MACHINE INITIALIZATION =====
 	current_state = EpisodicState::IDLE;
@@ -197,26 +151,55 @@ void SpecificWorker::initialize() {
 	// int period = configLoader.get<int>("Period.Compute") //NOTE: If you want
 	// get period of compute use getPeriod("compute") std::string device =
 	// configLoader.get<std::string>("Device.name")
+	
+	// ===== SETUP EPISODIC MEMORY STATE MACHINE =====
+	int state_period = 100; // milliseconds
+
+	// IDLE state
+	states["IDLE"] = std::make_unique<GRAFCETStep>(
+		"IDLE", 
+		state_period,
+		std::bind(&SpecificWorker::loop_IDLE, this),
+		std::bind(&SpecificWorker::enter_IDLE, this),
+		std::bind(&SpecificWorker::exit_IDLE, this)
+	);
+	statemachine.addState(states["IDLE"].get());
+
+	// WAITING_MISSION state
+	states["WAITING_MISSION"] = std::make_unique<GRAFCETStep>(
+		"WAITING_MISSION",
+		state_period,
+		std::bind(&SpecificWorker::loop_WAITING_MISSION, this),
+		std::bind(&SpecificWorker::enter_WAITING_MISSION, this),
+		std::bind(&SpecificWorker::exit_WAITING_MISSION, this)
+	);
+	statemachine.addState(states["WAITING_MISSION"].get());
+
+	// RECORDING state
+	states["RECORDING"] = std::make_unique<GRAFCETStep>(
+		"RECORDING",
+		state_period,
+		std::bind(&SpecificWorker::loop_RECORDING, this),
+		std::bind(&SpecificWorker::enter_RECORDING, this),
+		std::bind(&SpecificWorker::exit_RECORDING, this)
+	);
+	statemachine.addState(states["RECORDING"].get());
+
+	// Set initial state
+	statemachine.setInitialState(states["IDLE"].get());
+	statemachine.start();
+
+	auto error = statemachine.errorString();
+	if (error.length() > 0) {
+		qWarning() << error;
+		throw error;
 	}
+	
+	std::cout << "State machine started successfully" << std::endl;
+}
 
-	void SpecificWorker::compute() {
-	//   // Generate a new keyframe every X seconds
-	//   static int delete_me = 0;
-	//   auto time_now = std::chrono::system_clock::now();
-	//   if (time_now - time_check >= keyframe_period) {
-	//     time_check = std::chrono::system_clock::now();
-
-	//     if (delete_me != -1)
-	//       delete_me++;
-	//     if (delete_me <= 3 && delete_me != -1) {
-	//       generate_keyframe();
-	//     } else if (delete_me != -1) {
-	//       show_deb = true;
-	//       delete_me = -1;
-	//       save_changes_to_file("keyframes_and_changes.txt");
-	//       // load_changes("mission.txt");
-	//     }
-	//   }
+void SpecificWorker::compute() {
+	// Nothing needed here - state machine and timers handle everything
 }
 
 void SpecificWorker::emergency() {
@@ -586,8 +569,7 @@ void SpecificWorker::del_node_slot(std::uint64_t from) {
 	}
 }
 
-std::tuple<std::string, std::string>
-SpecificWorker::attribute_value_and_type_to_string(const auto &att) {
+std::tuple<std::string, std::string> SpecificWorker::attribute_value_and_type_to_string(const auto &att) {
 	  return std::visit(
 		[](const auto &value) -> std::tuple<std::string, std::string> {
 			using T = std::decay_t<decltype(value)>;
@@ -724,12 +706,8 @@ void SpecificWorker::generate_keyframe() {
 	std::vector<std::string> edges_str_v;
 	std::string dsr_kdata = "";
 
-	// timestamp + K
-	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_check.time_since_epoch()).count();
-	dsr_kdata += std::to_string(new_timestamp);
-	dsr_kdata += DSRSpecialChars::SLOT;
-	dsr_kdata += DSRSpecialChars::K;
-	dsr_kdata += DSRSpecialChars::SLOT;
+	auto time_now = std::chrono::high_resolution_clock::now();
+	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 
 	auto nodes = G->get_nodes();
 	for (const auto &node : nodes) {
@@ -837,7 +815,9 @@ void SpecificWorker::generate_keyframe() {
 		dsr_kdata += edge_str;
 	dsr_kdata += DSRSpecialChars::K_DIV;
 
-	changes_map[new_timestamp] = dsr_kdata;
+	// Format keyframe: timestamp#K#<data>
+	std::string keyframe_entry = std::to_string(new_timestamp) + "#K#" + dsr_kdata;
+	changes_map[new_timestamp] = keyframe_entry;
 	// std::cout << dsr_kdata << std::endl;
 	// std::cout << std::endl;
 }
@@ -845,7 +825,7 @@ void SpecificWorker::generate_keyframe() {
 // ===== STATE MACHINE METHODS =====
 
 void SpecificWorker::enter_IDLE() {
-	std::cout << "📍 Entering IDLE state" << std::endl;
+	std::cout << "- Entering IDLE state" << std::endl;
 	current_state = EpisodicState::IDLE;
 	current_mission_id = 0;
 	current_mission_name = "";
@@ -861,7 +841,7 @@ void SpecificWorker::exit_IDLE() {
 }
 
 void SpecificWorker::enter_WAITING_MISSION() {
-	std::cout << "⏳ Entering WAITING_MISSION state (mission: " << current_mission_name << ")" << std::endl;
+	std::cout << "- Entering WAITING_MISSION state (mission: " << current_mission_name << ")" << std::endl;
 	current_state = EpisodicState::WAITING_MISSION;
 	mission_recording = false;
 }
@@ -875,7 +855,7 @@ void SpecificWorker::exit_WAITING_MISSION() {
 }
 
 void SpecificWorker::enter_RECORDING() {
-	std::cout << "🔴 Entering RECORDING state (mission: " << current_mission_name << ")" << std::endl;
+	std::cout << "- Entering RECORDING state (mission: " << current_mission_name << ")" << std::endl;
 	current_state = EpisodicState::RECORDING;
 	mission_recording = true;
 	mission_start_time = std::chrono::system_clock::now();
@@ -886,45 +866,75 @@ void SpecificWorker::enter_RECORDING() {
 	// Generate initial keyframe
 	generate_keyframe();
 	std::cout << "Initial keyframe generated" << std::endl;
+	
+	// Start periodic keyframe timer
+	if (!keyframe_timer) {
+		keyframe_timer = new QTimer(this);
+		connect(keyframe_timer, &QTimer::timeout, this, &SpecificWorker::on_keyframe_timer_timeout);
+	}
+	keyframe_timer->start(keyframe_period.count());
+	std::cout << "Periodic keyframe timer started (" << keyframe_period.count() << " ms interval)" << std::endl;
 }
 
 void SpecificWorker::loop_RECORDING() {
-	// Generate periodic keyframes
-	auto time_now = std::chrono::system_clock::now();
-	if (time_now - time_check >= keyframe_period) {
-		time_check = time_now;
-		generate_keyframe();
-		std::cout << "📸 Periodic keyframe generated" << std::endl;
-	}
-	
+	// Evaluate state transitions
 	evaluate_state_transitions();
 }
 
+void SpecificWorker::on_keyframe_timer_timeout() {
+	if (mission_recording) {
+		generate_keyframe();
+		std::cout << "- Periodic keyframe generated" << std::endl << std::flush;
+	}
+}
+
 void SpecificWorker::exit_RECORDING() {
-	std::cout << "Exiting RECORDING state" << std::endl;
+	std::cout << "- Exiting RECORDING state" << std::endl;
 	
 	// Generate final keyframe
 	generate_keyframe();
-	std::cout << "Final keyframe generated" << std::endl;
+	std::cout << "- Final keyframe generated" << std::endl;
 	
 	// Persist changes to file
 	if (!current_mission_name.empty()) {
 		auto now = std::chrono::system_clock::now();
 		auto time_t_now = std::chrono::system_clock::to_time_t(now);
 		std::stringstream ss;
-		ss << std::put_time(std::localtime(&time_t_now), "%Y%m%d_%H%M%S");
+		ss << std::put_time(std::localtime(&time_t_now), "%d%m%Y_%H%M%S");
 		std::string timestamp_str = ss.str();
 		
 		std::string filename = "mission_" + current_mission_name + "_" + timestamp_str + ".txt";
+		std::string relative_path = "./recorded_missions/" + filename;
+		
+		// Convert to absolute path
+		std::filesystem::path abs_path = std::filesystem::absolute(relative_path);
+		std::string filepath = abs_path.string();
 		
 		// Create directory if not exists
-		system("mkdir -p ./recorded_missions");
+		std::filesystem::create_directories(std::filesystem::path(filepath).parent_path());
 		
 		// Report before saving (because save clears the map)
 		size_t events_count = changes_map.size();
 		
-		save_changes_to_file("./recorded_missions/" + filename);
-		std::cout << "Mission saved: " << filename << " with " << events_count << " events" << std::endl;
+		save_changes_to_file(filepath);
+		std::cout << "- Mission saved: " << filename << " with " << events_count << " events" << std::endl;
+		
+		// Add filepath attribute to mission node
+		if (current_mission_id != 0) {
+			try {
+				auto mission_opt = mission_graph->get_node(current_mission_id);
+				if (mission_opt.has_value()) {
+					auto mission = mission_opt.value();
+					DSR::Attribute filepath_attr;
+					filepath_attr.value(filepath);
+					mission.attrs()["filepath"] = filepath_attr;
+					mission_graph->update_node(mission);
+					std::cout << "- Mission node updated with filepath: " << filepath << std::endl;
+				}
+			} catch (const std::exception& e) {
+				std::cerr << "Could not add filepath attribute: " << e.what() << std::endl;
+			}
+		}
 	}
 	
 	// Clean up
@@ -932,6 +942,12 @@ void SpecificWorker::exit_RECORDING() {
 	current_mission_name = "";
 	mission_recording = false;
 	decoded_data.clear();
+	
+	// Stop periodic keyframe timer
+	if (keyframe_timer) {
+		keyframe_timer->stop();
+		std::cout << "Periodic keyframe timer stopped" << std::endl;
+	}
 }
 
 void SpecificWorker::request_state_transition(EpisodicState new_state) {
@@ -987,18 +1003,16 @@ void SpecificWorker::evaluate_state_transitions() {
 // ===== MISSION MONITORING HELPERS =====
 
 std::optional<uint64_t> SpecificWorker::find_mission_with_target_edge() {
-	// Look for edge "TARGET" from robot in grafo work
-	auto robot_opt = G->get_node("robot");
+	auto robot_opt = mission_graph->get_node("robot");
 	if (!robot_opt.has_value()) {
 		return std::nullopt;
 	}
 	
 	uint64_t robot_id = robot_opt.value().id();
-	auto target_edges = G->get_edges_by_type("TARGET");
+	auto target_edges = mission_graph->get_edges_by_type("TARGET");
 	
 	for (const auto &edge : target_edges) {
 		if (edge.from() == robot_id) {
-			// Found a TARGET edge from robot
 			return edge.to();
 		}
 	}
@@ -1007,7 +1021,7 @@ std::optional<uint64_t> SpecificWorker::find_mission_with_target_edge() {
 }
 
 std::string SpecificWorker::get_mission_status(uint64_t mission_id) {
-	auto mission_opt = G->get_node(mission_id);
+	auto mission_opt = mission_graph->get_node(mission_id);
 	if (!mission_opt.has_value()) {
 		return "unknown";
 	}
@@ -1027,7 +1041,7 @@ std::string SpecificWorker::get_mission_status(uint64_t mission_id) {
 }
 
 std::optional<std::string> SpecificWorker::get_mission_name(uint64_t mission_id) {
-	auto mission_opt = G->get_node(mission_id);
+	auto mission_opt = mission_graph->get_node(mission_id);
 	if (!mission_opt.has_value()) {
 		return std::nullopt;
 	}
