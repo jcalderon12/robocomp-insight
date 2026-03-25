@@ -178,27 +178,16 @@ class SpecificWorker(GenericWorker):
         self.imu_history[GYROSCOPE] = []
 
 
-    # def record_imu(self, current_time):
-    #     """" Record the current real IMU measurements and store it at the IMU history dictionary. """ 
-    #     # Get real IMU node data from DSR
-    #     real_imu_node = self.g.get_node("imu")
-    #     if real_imu_node is not None:
-    #         acc = real_imu_node.attrs["imu_accelerometer"].value
-    #         ang = real_imu_node.attrs["imu_gyroscope"].value
-    #     self.imu_history[TIMESTAMP].append(current_time)
-    #     self.imu_history[ACCELEROMETER].append(acc.tolist())
-    #     self.imu_history[GYROSCOPE].append(ang.tolist())
-    
-    def convert_episodic_to_imu_history(self):
-        """ Convert the episodic memory data of the real IMU into the IMU history dictionary format. """
-        # Get real IMU data from episodic memory
-        mem_api = mem.EpisodicMemoryAPI("history.txt")
-        if mem.is_ready():
-
-            for record in mem_data:
-                self.imu_history[TIMESTAMP].append(record["timestamp"])
-                self.imu_history[ACCELEROMETER].append(record["accelerometer"])
-                self.imu_history[GYROSCOPE].append(record["gyroscope"])
+    def record_imu(self, current_time):
+        """" Record the current real IMU measurements and store it at the IMU history dictionary. """ 
+        # Get real IMU node data from DSR
+        real_imu_node = self.g.get_node("imu")
+        if real_imu_node is not None:
+            acc = real_imu_node.attrs["imu_accelerometer"].value
+            ang = real_imu_node.attrs["imu_gyroscope"].value
+        self.imu_history[TIMESTAMP].append(current_time)
+        self.imu_history[ACCELEROMETER].append(acc.tolist())
+        self.imu_history[GYROSCOPE].append(ang.tolist())
 
 
     # DEBUG: Write fake JSON file
@@ -291,7 +280,8 @@ class SpecificWorker(GenericWorker):
                     rpipe, wpipe = os.pipe()
                     json_data = {"cause": cause}
                     json_data = json.dumps(json_data)
-                    pids.append([subprocess.Popen([sys.executable, "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
+
+                    pids.append([subprocess.Popen(str(sys.executable)), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
                     # Close wpipe descriptor to prevent deadlocks
                     os.close(wpipe)
                 
