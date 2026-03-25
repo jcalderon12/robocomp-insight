@@ -38,6 +38,7 @@ import time
 import os
 import subprocess
 import sys
+import episodic_memory_api as mem
 from concurrent.futures import ProcessPoolExecutor
 from .agent_generator import *
 
@@ -127,11 +128,6 @@ class SpecificWorker(GenericWorker):
         # LOAD PLANE IN THE SIMULATION
         self.plane = p.loadURDF("../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0]) 
 
-        # LOAD OBSTACLES IN THE SIMULATION
-        # self.bump_100x5cm = p.loadURDF("./URDFs/bump/bump_100x5cm.urdf", [0, -0.33, 0.001], flags=flags)
-        # self.bump_1000x10cm = p.loadURDF("./URDFs/bump/bump_100x10cm.urdf", [0, -0.33, 0.001], flags=flags)
-        # self.cylinder_bump_10m = p.loadURDF("./URDFs/bump/cylinder_bump_10m.urdf", [0, -0.8, 0.001], p.getQuaternionFromEuler([0, 0, np.pi/2]), flags=flags)
-
         # LOAD ROBOT IN THE SIMULATION
         self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", ROBOT_POS, flags=flags)
 
@@ -182,16 +178,27 @@ class SpecificWorker(GenericWorker):
         self.imu_history[GYROSCOPE] = []
 
 
-    def record_imu(self, current_time):
-        """" Record the current real IMU measurements and store it at the IMU history dictionary. """ 
-        # Get real IMU node data from DSR
-        real_imu_node = self.g.get_node("imu")
-        if real_imu_node is not None:
-            acc = real_imu_node.attrs["imu_accelerometer"].value
-            ang = real_imu_node.attrs["imu_gyroscope"].value
-        self.imu_history[TIMESTAMP].append(current_time)
-        self.imu_history[ACCELEROMETER].append(acc.tolist())
-        self.imu_history[GYROSCOPE].append(ang.tolist())
+    # def record_imu(self, current_time):
+    #     """" Record the current real IMU measurements and store it at the IMU history dictionary. """ 
+    #     # Get real IMU node data from DSR
+    #     real_imu_node = self.g.get_node("imu")
+    #     if real_imu_node is not None:
+    #         acc = real_imu_node.attrs["imu_accelerometer"].value
+    #         ang = real_imu_node.attrs["imu_gyroscope"].value
+    #     self.imu_history[TIMESTAMP].append(current_time)
+    #     self.imu_history[ACCELEROMETER].append(acc.tolist())
+    #     self.imu_history[GYROSCOPE].append(ang.tolist())
+    
+    def convert_episodic_to_imu_history(self):
+        """ Convert the episodic memory data of the real IMU into the IMU history dictionary format. """
+        # Get real IMU data from episodic memory
+        mem_api = mem.EpisodicMemoryAPI("history.txt")
+        if mem.is_ready():
+
+            for record in mem_data:
+                self.imu_history[TIMESTAMP].append(record["timestamp"])
+                self.imu_history[ACCELEROMETER].append(record["accelerometer"])
+                self.imu_history[GYROSCOPE].append(record["gyroscope"])
 
 
     # DEBUG: Write fake JSON file
@@ -284,8 +291,7 @@ class SpecificWorker(GenericWorker):
                     rpipe, wpipe = os.pipe()
                     json_data = {"cause": cause}
                     json_data = json.dumps(json_data)
-
-                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
+                    pids.append([subprocess.Popen([sys.executable, "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
                     # Close wpipe descriptor to prevent deadlocks
                     os.close(wpipe)
                 

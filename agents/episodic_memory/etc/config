@@ -14,7 +14,7 @@ Agent.name = "episodic_memory"
 
 # --- Multiple Instance Template ---
 # If you define sub-instances, the single instance config above will be ignored.
-Agent.work.configFile = "episodic_dsr.json"
+Agent.work.configFile = ""#"episodic_dsr.json"
 Agent.work.domain = 0
 Agent.work.tree = true
 Agent.work.graph = true

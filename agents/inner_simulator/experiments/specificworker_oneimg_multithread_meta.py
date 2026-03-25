@@ -20,13 +20,12 @@ import atexit
 import torch
 import torchvision.transforms.v2 as v2_transforms
 
-
 sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
 from pydsr import *
 import numpy as np
 
-CONCEPT_NAME = {{concept_name}}
+CONCEPT_NAME = "bump"
 MODEL_OUTPUT_DIR = "yolo_concept_model"
 META_REPO_DIR = "/home/robolab_practicas/robocomp/components/robocomp-insight/agents/inner_simulator/dino3/"
 
