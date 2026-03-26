@@ -2,6 +2,7 @@
 #include <QPainter>
 #include <QApplication>
 #include <QMouseEvent>
+#include <iostream>
 
 MissionDelegate::MissionDelegate(QObject *parent) : QStyledItemDelegate(parent) {}
 

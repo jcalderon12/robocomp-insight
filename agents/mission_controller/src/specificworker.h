@@ -41,6 +41,7 @@
 #include "MissionDelegate.h"
 #include "ui_add_mission_dialog.h"
 #include "ui_historic_debugger.h"
+#include "MissionScheduler.h"
 #include <chrono>
 
 /**
@@ -70,13 +71,8 @@ public:
 	std::vector<std::string> getAvailableMissions() const
 	{
 		return {
-			"Follow Path",
-			"Pick and Place",
-			"Navigation",
-			"Inspection",
-			"Patrol",
-			"Object Recognition",
-			"Manipulation"
+			"Follow Person",
+			"Search Problem Cause"
 		};
 	}
 
@@ -156,6 +152,9 @@ private:
 
 	// Map: model row index -> mission node id in episodic graph
 	std::map<int, uint64_t> mission_row_to_node_id;
+	
+	// Mission scheduler for priority-based mission management
+	MissionScheduler mission_scheduler;
 
 	void updateMissionTime();
 

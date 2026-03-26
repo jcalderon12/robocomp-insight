@@ -21,12 +21,15 @@
 #include <QMessageBox>
 #include <fstream>
 #include <chrono>
+#include <thread>
 #include <iomanip>
 #include <sstream>
 #include <ctime>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <random>
+#include <algorithm>
+#include <filesystem>
 
 SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check) : GenericWorker(configLoader, tprx)
 {
@@ -119,10 +122,14 @@ void SpecificWorker::initialize()
 	//graph_viewer->add_custom_widget_to_dock("CustomWidget", &custom_widget);
 
 	mission_controller_ui.setupUi(&mission_controller_widget);
+	historic_debugger_ui.setupUi(&historic_debugger_widget);
 
 	// Agregar el widget personalizado en el dock de la ventana episodic
-	if (!graph_viewers.empty())
+	if (!graph_viewers.empty()) {
 		graph_viewers.at("episodic")->add_custom_widget_to_dock("Mission Controller", &mission_controller_widget);
+		graph_viewers.at("debugger")->add_custom_widget_to_dock("Historic Debugger", &historic_debugger_widget);
+		windows.at("debugger")->hide();;
+	}
 
 	model = new MissionModel(this);
 	delegate = new MissionDelegate(this);
@@ -141,27 +148,155 @@ void SpecificWorker::initialize()
 			mission_accumulated_time += elapsed;
 			
 			model->setMissionStatus(row, MissionStatus::STOPPED);
+			model->setMissionElapsedTime(row, mission_accumulated_time);  // Sync elapsed time to model
 			
-			// Update mission status to "stopped" and delete TARGET edge in episodic graph
+			// Update mission status to "stopped" and DELETE TARGET edge
 			if (mission_row_to_node_id.count(row) > 0) {
 				uint64_t mission_id = mission_row_to_node_id[row];
 				update_mission_status_episodic(mission_id, "stopped");
-				delete_mission_target_edge(mission_id);
+				delete_mission_target_edge(mission_id);  // Remove TARGET when pausing
+				mission_scheduler.updateMissionStatus(mission_id, "stopped");  // Update scheduler
+				
+				// Save elapsed_time to mission node for persistence
+				try {
+					auto mission_opt = mission_graph->get_node(mission_id);
+					if (mission_opt.has_value()) {
+						auto mission = mission_opt.value();
+						DSR::Attribute elapsed_attr;
+						elapsed_attr.value(mission_accumulated_time);
+						mission.attrs()["elapsed_time"] = elapsed_attr;
+						mission_graph->update_node(mission);
+						std::cout << "    ✓ Elapsed time saved to mission node: " << mission_accumulated_time << "s" << std::endl;
+					}
+				} catch (const std::exception& e) {
+					std::cerr << "Error saving elapsed time to mission node: " << e.what() << std::endl;
+				}
 			}
 			
 			on_stopMission_clicked();
 		}
 		else if (m.status != MissionStatus::COMPLETED)
 		{
+			// Copy mission_id for scheduler operations
+			uint64_t new_mission_id = 0;
+			if (mission_row_to_node_id.count(row) > 0) {
+				new_mission_id = mission_row_to_node_id[row];
+			}
+			
+			// Check if this mission should preempt the current one
+			if (active_mission_row >= 0 && active_mission_row != row && new_mission_id != 0) {
+				if (mission_scheduler.shouldPreempt(new_mission_id)) {
+					std::cout << "\n[PREEMPTION_START] ⚠⚠⚠ Mission \"" << model->getMission(row).name.toStdString() << "\" (id: " << new_mission_id << ") is PREEMPTING current mission" << std::endl;
+					// Pause the current mission
+					if (mission_row_to_node_id.count(active_mission_row) > 0) {
+						uint64_t prev_mission_id = mission_row_to_node_id[active_mission_row];
+						std::cout << "[PREEMPTION_OLD] Suspending mission \"" << model->getMission(active_mission_row).name.toStdString() << "\" (id: " << prev_mission_id << ")" << std::endl;
+						
+						// Calculate and save elapsed time for preempted mission
+						auto now = std::chrono::steady_clock::now();
+						auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
+						mission_accumulated_time += elapsed;
+						
+						model->setMissionStatus(active_mission_row, MissionStatus::STOPPED);
+						model->setMissionElapsedTime(active_mission_row, mission_accumulated_time);
+						
+						update_mission_status_episodic(prev_mission_id, "stopped");
+						delete_mission_target_edge(prev_mission_id);
+						mission_scheduler.updateMissionStatus(prev_mission_id, "stopped");
+						
+						// Save elapsed_time to mission node for persistence
+						try {
+							auto mission_opt = mission_graph->get_node(prev_mission_id);
+							if (mission_opt.has_value()) {
+								auto mission = mission_opt.value();
+								DSR::Attribute elapsed_attr;
+								elapsed_attr.value(mission_accumulated_time);
+								mission.attrs()["elapsed_time"] = elapsed_attr;
+								mission_graph->update_node(mission);
+								std::cout << "    ✓ Preempted mission elapsed time saved: " << mission_accumulated_time << "s" << std::endl;
+							}
+						} catch (const std::exception& e) {
+							std::cerr << "Error saving preempted mission elapsed time: " << e.what() << std::endl;
+						}
+						
+						std::cout << "    ✓ Previous mission paused due to preemption" << std::endl;
+					}
+				} else {
+					// Delete TARGET edge from previous mission if any exists and update its status in model
+					if (mission_row_to_node_id.count(active_mission_row) > 0) {
+						uint64_t prev_mission_id = mission_row_to_node_id[active_mission_row];
+						
+						// Calculate and save elapsed time for superseded mission
+						auto now = std::chrono::steady_clock::now();
+						auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
+						mission_accumulated_time += elapsed;
+						
+						delete_mission_target_edge(prev_mission_id);
+						
+						// Update model status for old mission to STOPPED (even though no preemption)
+						model->setMissionStatus(active_mission_row, MissionStatus::STOPPED);
+						model->setMissionElapsedTime(active_mission_row, mission_accumulated_time);
+						
+						// Update graph status and elapsed_time too
+						update_mission_status_episodic(prev_mission_id, "stopped");
+						
+						// Save elapsed_time to mission node for persistence
+						try {
+							auto mission_opt = mission_graph->get_node(prev_mission_id);
+							if (mission_opt.has_value()) {
+								auto mission = mission_opt.value();
+								DSR::Attribute elapsed_attr;
+								elapsed_attr.value(mission_accumulated_time);
+								mission.attrs()["elapsed_time"] = elapsed_attr;
+								mission_graph->update_node(mission);
+								std::cout << "    ✓ Superseded mission elapsed time saved: " << mission_accumulated_time << "s" << std::endl;
+							}
+						} catch (const std::exception& e) {
+							std::cerr << "Error saving superseded mission elapsed time: " << e.what() << std::endl;
+						}
+					}
+				}
+			}
+			
 			active_mission_row = row;
 			mission_start_time = std::chrono::steady_clock::now();
+			
+			// Read elapsed_time from mission node to resume from saved state
+			mission_accumulated_time = 0.0f;
+			if (mission_row_to_node_id.count(row) > 0) {
+				uint64_t mission_id = mission_row_to_node_id[row];
+				try {
+					auto mission_opt = mission_graph->get_node(mission_id);
+					if (mission_opt.has_value()) {
+						auto mission = mission_opt.value();
+						auto elapsed_attr_iter = mission.attrs().find("elapsed_time");
+						if (elapsed_attr_iter != mission.attrs().end()) {
+							try {
+								mission_accumulated_time = std::get<float>(elapsed_attr_iter->second.value());
+								std::cout << "    ✓ Resumed from saved elapsed time: " << mission_accumulated_time << "s" << std::endl;
+							} catch (const std::bad_variant_access& e) {
+								std::cerr << "Error reading elapsed_time value: " << e.what() << std::endl;
+							}
+						}
+					}
+				} catch (const std::exception& e) {
+					std::cerr << "Error reading mission node for elapsed_time: " << e.what() << std::endl;
+				}
+			}
+			
 			model->setMissionStatus(row, MissionStatus::RUNNING);
+			model->setMissionElapsedTime(row, mission_accumulated_time);
 			
 			// Update mission status to "running" and create TARGET edge in episodic graph
 			if (mission_row_to_node_id.count(row) > 0) {
 				uint64_t mission_id = mission_row_to_node_id[row];
+				std::cout << "[PREEMPTION_NEW] Starting new mission \"" << model->getMission(row).name.toStdString() << "\" (id: " << mission_id << ")" << std::endl;
 				update_mission_status_episodic(mission_id, "running");
+				std::cout << "[PREEMPTION_GRAPH_UPDATE] Mission status updated to 'running' in graph" << std::endl;
 				create_mission_target_edge(mission_id);
+				std::cout << "[PREEMPTION_COMPLETE] ✓ New mission now active with TARGET edge" << std::endl;
+				mission_scheduler.setCurrentMission(mission_id);  // Update scheduler
+				mission_scheduler.updateMissionStatus(mission_id, "running");
 			}
 			
 			on_startMission_clicked();
@@ -200,6 +335,7 @@ void SpecificWorker::initialize()
 			uint64_t mission_id = mission_row_to_node_id[row];
 			update_mission_status_episodic(mission_id, "completed");
 			delete_mission_target_edge(mission_id);  // Remove TARGET edge when mission completes
+			mission_scheduler.updateMissionStatus(mission_id, "completed");  // Update scheduler
 			
 			// Optionally add elapsed_time attribute
 			try {
@@ -215,8 +351,6 @@ void SpecificWorker::initialize()
 				std::cerr << "Could not add elapsed_time attribute: " << e.what() << std::endl;
 			}
 		}
-		
-		// NO CARGAR CAMBIOS AQUÍ - El episodic_memory es responsable de gestionar los cambios
 	});
 
 	connect(mission_controller_ui.add_mission_button, &QPushButton::clicked, this, [this]()
@@ -260,18 +394,9 @@ void SpecificWorker::initialize()
 			on_setMission_clicked();
 		}
 	});
-
 	// Configurar timer para actualizar tiempo en tiempo real
 	mission_timer = new QTimer(this);
-	connect(mission_timer, &QTimer::timeout, this, &SpecificWorker::updateMissionTime);
-	mission_timer->start(100);  // Actualizar cada 100ms
 
-	// === HISTORIC DEBUGGER SETUP ===
-	historic_debugger_ui.setupUi(&historic_debugger_widget);
-	
-	if (!graph_viewers.empty())
-		graph_viewers.at("debugger")->add_custom_widget_to_dock("Historic debugger", &historic_debugger_widget);
-	
 	// Connect debugger scrollbars and search
 	connect(historic_debugger_ui.local_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::local_changes_management);
 	connect(historic_debugger_ui.global_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::global_changes_management);
@@ -280,6 +405,9 @@ void SpecificWorker::initialize()
 	// Connect load_in_debugger button if it exists
 	if (mission_controller_ui.load_in_debugger_button)
 	{
+		// Always enabled - check mission status when clicked
+		mission_controller_ui.load_in_debugger_button->setEnabled(true);
+		
 		connect(mission_controller_ui.load_in_debugger_button, &QPushButton::clicked, this, [this]()
 		{
 			QModelIndex current_index = mission_controller_ui.mission_list->currentIndex();
@@ -299,6 +427,11 @@ void SpecificWorker::initialize()
     /////////GET PARAMS, OPEND DEVICES....////////
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
+
+	// Initialize mission timer for real-time updates
+	mission_timer = new QTimer(this);
+	connect(mission_timer, &QTimer::timeout, this, &SpecificWorker::updateMissionTime);
+	mission_timer->start(10); 
 }
 
 
@@ -365,10 +498,8 @@ void SpecificWorker::on_startMission_clicked()
 		DSR::Node follow_me_node = optional_node.value();
 		G->add_or_modify_attrib_local<aff_interacting_att>(follow_me_node, true);
 		G->update_node(follow_me_node);
-		std::cout << "Affordance activated." << std::endl;
 	}
 	else{
-		std::cout << "Follow me affordance node not found in DSR." << std::endl;
 	}
 }
 
@@ -379,10 +510,8 @@ void SpecificWorker::on_stopMission_clicked()
 		DSR::Node follow_me_node = optional_node.value();
 		G->add_or_modify_attrib_local<aff_interacting_att>(follow_me_node, false);
 		G->update_node(follow_me_node);
-		std::cout << "Affordance stopped." << std::endl;
 	}
 	else{
-		std::cout << "Follow me affordance node not found in DSR." << std::endl;
 	}
 }
 
@@ -626,45 +755,120 @@ void SpecificWorker::load_mission_in_debugger(int row) {
 	if (!model) return;
 	
 	Mission m = model->getMission(row);
+	std::string mission_name_std = m.name.toStdString();
 	
-	// We need to find and load the saved mission file for this mission
-	// Since missions are saved with a timestamp, we need to match by mission name or last saved
-	// For now, load the most recent mission file
-	std::string most_recent_mission = "";
-	time_t most_recent_time = 0;
-	
-	DIR* dir = opendir("./completed_missions");
-	if (dir != nullptr)
-	{
-		struct dirent* entry;
-		while ((entry = readdir(dir)) != nullptr)
-		{
-			std::string filename = entry->d_name;
-			if (filename.find("mission_") == 0 && filename.find(".txt") != std::string::npos)
-			{
-				std::string filepath = "./completed_missions/" + filename;
-				struct stat file_stat;
-				if (stat(filepath.c_str(), &file_stat) == 0)
-				{
-					if (file_stat.st_mtime > most_recent_time)
-					{
-						most_recent_time = file_stat.st_mtime;
-						most_recent_mission = filepath;
+	// Check if mission is completed before loading
+	bool mission_completed = false;
+	if (mission_graph && mission_row_to_node_id.count(row) > 0) {
+		try {
+			uint64_t mission_id = mission_row_to_node_id[row];
+			auto mission_opt = mission_graph->get_node(mission_id);
+			if (mission_opt.has_value()) {
+				auto mission = mission_opt.value();
+				auto status_attr = mission.attrs().find("status");
+				if (status_attr != mission.attrs().end()) {
+					try {
+						std::string status = std::get<std::string>(status_attr->second.value());
+						mission_completed = (status == "completed");
+						if (!mission_completed) {
+							QMessageBox::warning(&mission_controller_widget, "Warning",
+								"Mission '" + QString::fromStdString(mission_name_std) + "' is not completed.\n\n" +
+								"Only completed missions can be loaded in the debugger.");
+							return;
+						}
+					} catch (const std::bad_variant_access& e) {
+						std::cerr << "Error getting status value: " << e.what() << std::endl;
+						mission_completed = false;
 					}
 				}
 			}
+		} catch (const std::exception& e) {
+			std::cerr << "Error checking mission status: " << e.what() << std::endl;
+			mission_completed = false;
 		}
-		closedir(dir);
+	} else {
+		// If we can't check status, allow loading (mission_graph not ready or mission_id not mapped)
+		mission_completed = true;
+	}
+	
+	std::string most_recent_mission = "";
+	
+	// IMPORTANT: Give episodic_memory time to write the file (200ms delay)
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	
+	std::string mission_name_safe = mission_name_std;
+	std::replace(mission_name_safe.begin(), mission_name_safe.end(), ' ', '_');
+	
+	// Search paths (relative first, as they work from any location)
+	std::vector<std::string> search_paths = {
+		"../episodic_memory/recorded_missions",
+		"./recorded_missions",
+		"/home/robolab/robocomp/components/robocomp-insight/agents/episodic_memory/recorded_missions"
+	};
+	
+	time_t most_recent_time = 0;
+	std::cout << "Loading mission '" << mission_name_std << "' in debugger..." << std::endl;
+	
+	for (const auto& search_path : search_paths)
+	{
+		DIR* dir = opendir(search_path.c_str());
+		if (dir != nullptr)
+		{
+			struct dirent* entry;
+			
+			while ((entry = readdir(dir)) != nullptr)
+			{
+				std::string filename = entry->d_name;
+				
+				// Match mission_name_ pattern
+				if (filename.find("mission_" + mission_name_safe + "_") == 0 && filename.find(".txt") != std::string::npos)
+				{
+					std::string filepath = search_path + "/" + filename;
+					struct stat file_stat;
+					
+					if (stat(filepath.c_str(), &file_stat) == 0)
+					{
+						if (file_stat.st_mtime > most_recent_time)
+						{
+							most_recent_time = file_stat.st_mtime;
+							most_recent_mission = filepath;
+						}
+					}
+				}
+			}
+			
+			closedir(dir);
+		}
 	}
 	
 	if (!most_recent_mission.empty())
 	{
-		// NO CARGAR CAMBIOS AQUÍ - El episodic_memory es responsable de gestionar los cambios
-		std::cout << "Mission completed and stored. episodic_memory will manage the changes." << std::endl;
+		// Verify the file exists and can be read
+		struct stat buffer;
+		if (stat(most_recent_mission.c_str(), &buffer) == 0) {
+			decoded_data.clear();
+			load_mission_changes(most_recent_mission);
+			std::cout << "✓ Mission loaded in debugger with " << historic_manager->get_keyframe_count() << " keyframes" << std::endl;
+			
+			// Show debugger window and bring to front
+			if (windows.find("debugger") != windows.end())
+			{
+				windows.at("debugger").get()->show();
+				windows.at("debugger").get()->raise();
+				windows.at("debugger").get()->activateWindow();
+			}
+		} else {
+			QMessageBox::warning(&mission_controller_widget, "Error", 
+				"Mission file found but cannot be read:\n" +
+				QString::fromStdString(most_recent_mission) + "\n\n" +
+				"Check file permissions.");
+		}
 	}
 	else
 	{
-		QMessageBox::warning(&mission_controller_widget, "Error", "No completed missions found to load");
+		QMessageBox::warning(&mission_controller_widget, "Error", 
+			"No mission file found for '" + QString::fromStdString(mission_name_std) + "'\n\n" +
+			"Make sure episodic_memory has saved the mission.");
 	}
 }
 
@@ -672,9 +876,46 @@ void SpecificWorker::load_mission_in_debugger(int row) {
 
 std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::string &mission_name, int row) {
 	try {
+		// Generate unique mission name with timestamp and random number
+		auto now = std::chrono::system_clock::now();
+		auto time_t_now = std::chrono::system_clock::to_time_t(now);
+		std::stringstream ss;
+		ss << std::put_time(std::localtime(&time_t_now), "%d%m%Y_%H%M%S");
+		std::string timestamp_str = ss.str();
+		
+		// Add random number for uniqueness
+		std::random_device rd;
+		std::mt19937 gen(rd());
+		std::uniform_int_distribution<> dis(1000, 9999);
+		int random_num = dis(gen);
+		
+		std::string unique_mission_name = mission_name + "-" + timestamp_str + "-" + std::to_string(random_num);
+		
+		// Replace spaces with underscores in mission name for file naming
+		std::string mission_name_safe = mission_name;
+		std::replace(mission_name_safe.begin(), mission_name_safe.end(), ' ', '_');
+		
+		// Generate filepath (absolute path)
+		std::filesystem::path missions_dir = std::filesystem::current_path() / "recorded_missions";
+		std::filesystem::create_directories(missions_dir);
+		
+		std::string filename = "mission_" + mission_name_safe + "_" + timestamp_str + ".txt";
+		std::filesystem::path filepath = missions_dir / filename;
+		std::string filepath_str = filepath.string();
+		
+		// Pre-create mission file (empty)
+		std::ofstream mission_file(filepath_str, std::ios::app);
+		if (!mission_file.is_open()) {
+			std::cerr << "Failed to create mission file: " << filepath_str << std::endl;
+			return std::nullopt;
+		}
+		mission_file.close();
+		std::cout << "Pre-created mission file: " << filepath_str << std::endl;
+		
+		// Create mission node with unique name
 		DSR::Node mission_node;
 		mission_node.type("intention");
-		mission_node.name(mission_name);
+		mission_node.name(unique_mission_name);
 		mission_node.agent_id(agent_id);
 		
 		// Add status attribute (initially "pending")
@@ -682,12 +923,30 @@ std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::
 		status_attr.value("pending");
 		mission_node.attrs()["status"] = status_attr;
 		
+		// Add filepath attribute (absolute path where data will be saved)
+		DSR::Attribute filepath_attr;
+		filepath_attr.value(filepath_str);
+		mission_node.attrs()["filepath"] = filepath_attr;
+		
+		// Add priority attribute (default 50)
+		DSR::Attribute priority_attr;
+		priority_attr.value(50);
+		mission_node.attrs()["priority"] = priority_attr;
+		
+		// Add elapsed_time attribute (initially 0.0)
+		DSR::Attribute elapsed_time_attr;
+		elapsed_time_attr.value(0.0f);
+		mission_node.attrs()["elapsed_time"] = elapsed_time_attr;
+		
 		auto mission_id_opt = mission_graph->insert_node(mission_node);
 		
 		if (mission_id_opt.has_value()) {
 			uint64_t mission_id = mission_id_opt.value();
 			mission_row_to_node_id[row] = mission_id;
-			std::cout << "Mission node created in episodic graph: " << mission_name << " (id: " << mission_id << ")" << std::endl;
+			std::cout << "Mission node created in episodic graph: " << unique_mission_name << " (id: " << mission_id << ")" << std::endl;
+			std::cout << "  ✓ Unique name: " << unique_mission_name << std::endl;
+			std::cout << "  ✓ Filepath: " << filepath_str << std::endl;
+			std::cout << "  ✓ Priority: 50 (default)" << std::endl;
 			
 			// Add has_intention edge from robot to mission
 			try {
@@ -703,9 +962,13 @@ std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::
 				std::cerr << "Exception creating has_intention edge: " << e.what() << std::endl;
 			}
 			
+			// Add mission to scheduler (all new missions are USER-initiated by default)
+			mission_scheduler.addMission(mission_id, 50, MissionType::USER);
+			std::cout << "  ✓ Mission added to scheduler with priority 50" << std::endl;
+			
 			return mission_id;
 		} else {
-			std::cerr << "Failed to insert mission node: " << mission_name << std::endl;
+			std::cerr << "Failed to insert mission node: " << unique_mission_name << std::endl;
 			return std::nullopt;
 		}
 	} catch (const std::exception& e) {
@@ -718,19 +981,42 @@ void SpecificWorker::update_mission_status_episodic(uint64_t mission_id, const s
 	try {
 		auto mission_opt = mission_graph->get_node(mission_id);
 		if (!mission_opt.has_value()) {
-			std::cerr << "Mission node not found: " << mission_id << std::endl;
+			std::cerr << "[STATUS_UPDATE_ERROR] Mission node not found: " << mission_id << std::endl;
 			return;
 		}
 		
 		auto mission = mission_opt.value();
+		
+		// Verify CURRENT status BEFORE change
+		auto current_status_iter = mission.attrs().find("status");
+		std::string current_status = (current_status_iter != mission.attrs().end()) ? 
+		                              std::get<std::string>(current_status_iter->second.value()) : "unknown";
+		std::cout << "[STATUS_UPDATE_START] Mission id: " << mission_id << ", Current status: '" << current_status 
+		          << "', New status: '" << status << "'" << std::endl;
+		
 		DSR::Attribute status_attr;
 		status_attr.value(status);
 		mission.attrs()["status"] = status_attr;
 		
 		mission_graph->update_node(mission);
-		std::cout << "Mission status updated to: " << status << std::endl;
+		std::cout << "[STATUS_UPDATE_EXECUTE] update_node() called" << std::endl;
+		
+		// VERIFY the update actually happened
+		auto mission_verify = mission_graph->get_node(mission_id);
+		if (mission_verify.has_value()) {
+			auto verified_mission = mission_verify.value();
+			auto verified_status_iter = verified_mission.attrs().find("status");
+			if (verified_status_iter != verified_mission.attrs().end()) {
+				std::string verified_status = std::get<std::string>(verified_status_iter->second.value());
+				if (verified_status == status) {
+					std::cout << "[STATUS_UPDATE_SUCCESS] ??? Status verified in graph: '" << verified_status << "'" << std::endl;
+				} else {
+					std::cout << "[STATUS_UPDATE_MISMATCH] ??? Verified status '" << verified_status << "' != requested '" << status << "'" << std::endl;
+				}
+			}
+		}
 	} catch (const std::exception& e) {
-		std::cerr << "Exception updating mission status: " << e.what() << std::endl;
+		std::cerr << "[STATUS_UPDATE_EXCEPTION] Exception updating mission status: " << e.what() << std::endl;
 	}
 }
 
@@ -742,15 +1028,24 @@ void SpecificWorker::create_mission_target_edge(uint64_t mission_id) {
 			return;
 		}
 		
+		
 		DSR::Edge target_edge;
 		target_edge.from(robot_opt.value().id());
 		target_edge.to(mission_id);
 		target_edge.type("TARGET");
 		
 		mission_graph->insert_or_assign_edge(target_edge);
-		std::cout << "Edge TARGET created from robot to mission (id: " << mission_id << ")" << std::endl;
+		
+		// Verify the edge was actually created
+		auto all_target_edges = mission_graph->get_edges_by_type("TARGET");
+		int target_count = 0;
+		for (const auto& edge : all_target_edges) {
+			if (edge.from() == robot_opt.value().id() && edge.to() == mission_id) {
+				target_count++;
+			}
+		}
+		
 	} catch (const std::exception& e) {
-		std::cerr << "Exception creating TARGET edge: " << e.what() << std::endl;
 	}
 }
 
@@ -762,28 +1057,32 @@ void SpecificWorker::delete_mission_target_edge(uint64_t mission_id) {
 			return;
 		}
 		
-		mission_graph->delete_edge(robot_opt.value().id(), mission_id, "TARGET");
-		std::cout << "Edge TARGET deleted from robot to mission (id: " << mission_id << ")" << std::endl;
-	} catch (const std::exception& e) {
-		std::cerr << "Exception deleting TARGET edge: " << e.what() << std::endl;
-	}
-}
-
-std::optional<uint64_t> SpecificWorker::find_mission_node_by_name(const std::string &mission_name) {
-	try {
-		// Search for intention nodes with matching name
-		auto nodes = mission_graph->get_nodes_by_type("intention");
 		
-		for (const auto &node : nodes) {
-			if (node.name() == mission_name) {
-				return node.id();
+		// Count TARGET edges BEFORE deletion
+		auto all_target_edges_before = mission_graph->get_edges_by_type("TARGET");
+		int target_count_before = 0;
+		for (const auto& edge : all_target_edges_before) {
+			if (edge.from() == robot_opt.value().id() && edge.to() == mission_id) {
+				target_count_before++;
 			}
 		}
 		
-		return std::nullopt;
+		mission_graph->delete_edge(robot_opt.value().id(), mission_id, "TARGET");
+		
+		// Count TARGET edges AFTER deletion
+		auto all_target_edges_after = mission_graph->get_edges_by_type("TARGET");
+		int target_count_after = 0;
+		for (const auto& edge : all_target_edges_after) {
+			if (edge.from() == robot_opt.value().id() && edge.to() == mission_id) {
+				target_count_after++;
+			}
+		}
+		
+		if (target_count_after == 0) {
+		} else {
+		}
+		
 	} catch (const std::exception& e) {
-		std::cerr << "Exception finding mission node: " << e.what() << std::endl;
-		return std::nullopt;
 	}
 }
 

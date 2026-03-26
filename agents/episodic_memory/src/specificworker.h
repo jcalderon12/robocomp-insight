@@ -37,6 +37,7 @@
 #include <iomanip>
 #include <ctime>
 #include <filesystem>
+#include <algorithm>
 #include "ui_historic_debugger.h"
 #include "historic_manager.h"
 #include "DSRDecoder.h"
@@ -152,6 +153,7 @@ private:
 	EpisodicState current_state = EpisodicState::IDLE;
 	uint64_t current_mission_id = 0;
 	std::string current_mission_name = "";
+	std::string current_mission_filepath = "";  // Filepath read from mission node attribute
 	bool mission_recording = false;
 	std::chrono::time_point<std::chrono::system_clock> mission_start_time;
 

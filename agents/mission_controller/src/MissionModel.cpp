@@ -1,4 +1,5 @@
 #include "MissionModel.h"
+#include <iostream>
 
 MissionModel::MissionModel(QObject *parent) : QAbstractListModel(parent) {}
 
@@ -33,6 +34,10 @@ Mission MissionModel::getMission(int row) const {
 }
 
 void MissionModel::setMissionStatus(int row, MissionStatus status) {
+    if (row < 0 || row >= static_cast<int>(missions.size())) {
+        return;
+    }
+    
     missions[row].status = status;
     emit dataChanged(index(row), index(row));
 }

@@ -855,13 +855,38 @@ void SpecificWorker::exit_WAITING_MISSION() {
 }
 
 void SpecificWorker::enter_RECORDING() {
-	std::cout << "- Entering RECORDING state (mission: " << current_mission_name << ")" << std::endl;
 	current_state = EpisodicState::RECORDING;
 	mission_recording = true;
 	mission_start_time = std::chrono::system_clock::now();
 	changes_map.clear();
 	decoded_data.clear();
 	time_check = mission_start_time;
+	
+	// Read filepath from mission node attribute (set by mission_controller)
+	current_mission_filepath = "";
+	try {
+		auto mission_opt = mission_graph->get_node(current_mission_id);
+		if (mission_opt.has_value()) {
+			auto mission = mission_opt.value();
+			auto filepath_attr = mission.attrs().find("filepath");
+			if (filepath_attr != mission.attrs().end()) {
+				try {
+					current_mission_filepath = std::get<std::string>(filepath_attr->second.value());
+					std::cout << "  ✓ Read filepath from mission node: " << current_mission_filepath << std::endl;
+				} catch (const std::bad_variant_access& e) {
+					std::cerr << "Error reading filepath value: " << e.what() << std::endl;
+				}
+			} else {
+				std::cerr << "  ⚠ No filepath attribute found in mission node" << std::endl;
+			}
+		}
+	} catch (const std::exception& e) {
+		std::cerr << "Error reading mission node for filepath: " << e.what() << std::endl;
+	}
+	
+	if (current_mission_filepath.empty()) {
+		std::cerr << "  ⚠ WARNING: No valid filepath for mission_id " << current_mission_id << std::endl;
+	}
 	
 	// Generate initial keyframe
 	generate_keyframe();
@@ -873,7 +898,6 @@ void SpecificWorker::enter_RECORDING() {
 		connect(keyframe_timer, &QTimer::timeout, this, &SpecificWorker::on_keyframe_timer_timeout);
 	}
 	keyframe_timer->start(keyframe_period.count());
-	std::cout << "Periodic keyframe timer started (" << keyframe_period.count() << " ms interval)" << std::endl;
 }
 
 void SpecificWorker::loop_RECORDING() {
@@ -889,65 +913,49 @@ void SpecificWorker::on_keyframe_timer_timeout() {
 }
 
 void SpecificWorker::exit_RECORDING() {
-	std::cout << "- Exiting RECORDING state" << std::endl;
 	
 	// Generate final keyframe
 	generate_keyframe();
-	std::cout << "- Final keyframe generated" << std::endl;
 	
-	// Persist changes to file
-	if (!current_mission_name.empty()) {
-		auto now = std::chrono::system_clock::now();
-		auto time_t_now = std::chrono::system_clock::to_time_t(now);
-		std::stringstream ss;
-		ss << std::put_time(std::localtime(&time_t_now), "%d%m%Y_%H%M%S");
-		std::string timestamp_str = ss.str();
-		
-		std::string filename = "mission_" + current_mission_name + "_" + timestamp_str + ".txt";
-		std::string relative_path = "./recorded_missions/" + filename;
-		
-		// Convert to absolute path
-		std::filesystem::path abs_path = std::filesystem::absolute(relative_path);
-		std::string filepath = abs_path.string();
-		
-		// Create directory if not exists
-		std::filesystem::create_directories(std::filesystem::path(filepath).parent_path());
-		
-		// Report before saving (because save clears the map)
-		size_t events_count = changes_map.size();
-		
-		save_changes_to_file(filepath);
-		std::cout << "- Mission saved: " << filename << " with " << events_count << " events" << std::endl;
-		
-		// Add filepath attribute to mission node
-		if (current_mission_id != 0) {
+	// Stop periodic keyframe timer FIRST
+	if (keyframe_timer) {
+		keyframe_timer->stop();
+	}
+	
+	// Persist changes to file using filepath from mission node
+	if (!current_mission_name.empty() && current_mission_id != 0) {
+		if (!current_mission_filepath.empty()) {
+			// Report before saving (because save clears the map)
+			size_t events_count = changes_map.size();
+			
+			save_changes_to_file(current_mission_filepath);
+			
+			// Add/update filepath attribute to mission node (redundant but ensures consistency)
 			try {
 				auto mission_opt = mission_graph->get_node(current_mission_id);
 				if (mission_opt.has_value()) {
 					auto mission = mission_opt.value();
 					DSR::Attribute filepath_attr;
-					filepath_attr.value(filepath);
+					filepath_attr.value(current_mission_filepath);
 					mission.attrs()["filepath"] = filepath_attr;
 					mission_graph->update_node(mission);
-					std::cout << "- Mission node updated with filepath: " << filepath << std::endl;
+					std::cout << "  ✓ Mission node updated with filepath" << std::endl;
 				}
 			} catch (const std::exception& e) {
-				std::cerr << "Could not add filepath attribute: " << e.what() << std::endl;
+				std::cerr << "Could not update filepath attribute: " << e.what() << std::endl;
 			}
+		} else {
 		}
+	} else {
 	}
 	
 	// Clean up
 	current_mission_id = 0;
 	current_mission_name = "";
+	current_mission_filepath = "";
 	mission_recording = false;
 	decoded_data.clear();
 	
-	// Stop periodic keyframe timer
-	if (keyframe_timer) {
-		keyframe_timer->stop();
-		std::cout << "Periodic keyframe timer stopped" << std::endl;
-	}
 }
 
 void SpecificWorker::request_state_transition(EpisodicState new_state) {
@@ -973,28 +981,50 @@ void SpecificWorker::request_state_transition(EpisodicState new_state) {
 }
 
 void SpecificWorker::evaluate_state_transitions() {
+
+	
+	uint64_t previous_mission_id = current_mission_id;  // Save previous for comparison
 	auto mission_opt = find_mission_with_target_edge();
 	
 	if (!mission_opt.has_value()) {
 		// No active mission
+
 		if (current_state != EpisodicState::IDLE) {
+
 			request_state_transition(EpisodicState::IDLE);
 		}
 	} else {
-		current_mission_id = mission_opt.value();
+		uint64_t detected_mission_id = mission_opt.value();
+		
+		// CHECK IF MISSION CHANGED (preemption/switch scenario)
+		if (previous_mission_id != 0 && detected_mission_id != previous_mission_id) {
+			
+			// If we were recording, force EXIT first to save current mission properly
+			if (current_state == EpisodicState::RECORDING) {
+				request_state_transition(EpisodicState::WAITING_MISSION);  // Will trigger exit_RECORDING()
+			}
+		}
+		
+		current_mission_id = detected_mission_id;
+		
 		auto name_opt = get_mission_name(current_mission_id);
 		if (name_opt.has_value()) {
 			current_mission_name = name_opt.value();
 		}
 		
+		
 		// Check if mission is running
-		if (is_mission_active()) {
+		bool mission_running = is_mission_active();
+		
+		if (mission_running) {
 			if (current_state != EpisodicState::RECORDING) {
 				request_state_transition(EpisodicState::RECORDING);
+			} else {
 			}
 		} else {
 			if (current_state != EpisodicState::WAITING_MISSION) {
 				request_state_transition(EpisodicState::WAITING_MISSION);
+			} else {
 			}
 		}
 	}
@@ -1011,10 +1041,25 @@ std::optional<uint64_t> SpecificWorker::find_mission_with_target_edge() {
 	uint64_t robot_id = robot_opt.value().id();
 	auto target_edges = mission_graph->get_edges_by_type("TARGET");
 	
+
+	
+	int robot_target_count = 0;
+	uint64_t found_mission_id = 0;
+	
 	for (const auto &edge : target_edges) {
 		if (edge.from() == robot_id) {
-			return edge.to();
+			robot_target_count++;
+			found_mission_id = edge.to();
+			auto mission_status = get_mission_status(found_mission_id);
 		}
+	}
+	
+	
+	if (robot_target_count > 1) {
+	}
+	
+	if (found_mission_id > 0) {
+		return found_mission_id;
 	}
 	
 	return std::nullopt;
