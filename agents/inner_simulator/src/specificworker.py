@@ -26,6 +26,7 @@ from genericworker import *
 import interfaces as ifaces
 from src.simulation_scene import SimulationScene
 
+
 import json
 import pybullet as p
 import numpy as np
@@ -37,10 +38,13 @@ import time
 import os
 import subprocess
 import sys
+import episodic_memory_api as mem
 from concurrent.futures import ProcessPoolExecutor
+from .agent_generator import *
 
-# causes.json constants
+# File constants
 JSON_FILE = "src/causes.json"
+AGENTS_FOLDER = "agents/"
 
 # Keys of IMU history dictionary
 TIMESTAMP = "timestamp"
@@ -118,18 +122,11 @@ class SpecificWorker(GenericWorker):
 
         # ================= PYBULLET MODELS LOADING  ================
         # ===========================================================
-# Keys of 
-
 
         flags = p.URDF_USE_INERTIA_FROM_FILE
 
         # LOAD PLANE IN THE SIMULATION
         self.plane = p.loadURDF("../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0]) 
-
-        # LOAD OBSTACLES IN THE SIMULATION
-        # self.bump_100x5cm = p.loadURDF("./URDFs/bump/bump_100x5cm.urdf", [0, -0.33, 0.001], flags=flags)
-        # self.bump_1000x10cm = p.loadURDF("./URDFs/bump/bump_100x10cm.urdf", [0, -0.33, 0.001], flags=flags)
-        # self.cylinder_bump_10m = p.loadURDF("./URDFs/bump/cylinder_bump_10m.urdf", [0, -0.8, 0.001], p.getQuaternionFromEuler([0, 0, np.pi/2]), flags=flags)
 
         # LOAD ROBOT IN THE SIMULATION
         self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", ROBOT_POS, flags=flags)
@@ -199,7 +196,7 @@ class SpecificWorker(GenericWorker):
        # Fake SIM_SCENE JSON file
        self.sim_scene.problem_position, self.sim_scene.problem_orientation = p.getBasePositionAndOrientation(self.robot)
        self.sim_scene.simulation_length = self.actual_time - self.initial_time
-       self.sim_scene.num_of_repetitions = 300
+       self.sim_scene.num_of_repetitions = 10
        self.sim_scene.bottle_position = BOTTLE_POS
        self.sim_scene.bottle_orientation = [0,0,0,0]
        self.sim_scene.model_validate(self.sim_scene.__dict__)
@@ -226,6 +223,7 @@ class SpecificWorker(GenericWorker):
 
     @QtCore.Slot()
     def compute(self):
+        print(flush=True, end="")
         self.show_compute_time_step()
         actual_imu_measurement = self.imu.get_measurement()
 
@@ -282,8 +280,7 @@ class SpecificWorker(GenericWorker):
                     rpipe, wpipe = os.pipe()
                     json_data = {"cause": cause}
                     json_data = json.dumps(json_data)
-
-                    pids.append([subprocess.Popen(["python", "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=[wpipe]), rpipe])
+                    pids.append([subprocess.Popen([str(sys.executable), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=(wpipe,)), rpipe])
                     # Close wpipe descriptor to prevent deadlocks
                     os.close(wpipe)
                 
@@ -369,15 +366,13 @@ class SpecificWorker(GenericWorker):
                 
                 print("Simulations finished. Results written to sim_output.json!")
                 
-                # Calculate the aproximate bottle position from the best 5 recordings for each cause
-                for register in sim_out["registers"]:
-                    list_of_positions = []
-                    list_of_positions.extend([recording[BOTTLE_POSITION] for recording in register["top_five"]])
-                    # Average position (in the three axis)
-                    avg_position = np.mean(list_of_positions, axis=0)
-                
-                    print(f"Approximate bottle position for {register['cause_definition']['name']}: {avg_position}")
+                # Create agent template (CDSL) for each cause
+                for cause in self.causes_data:
+                    if not generate_agent(cause["name"], AGENTS_FOLDER):
+                        print("Error while generating agent template for cause", cause["name"])
                     
+                print("Agents templated generated at folder", AGENTS_FOLDER)
+            
                 self.state = "IDLE"                
                 
         return True

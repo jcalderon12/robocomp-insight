@@ -113,8 +113,8 @@ void SpecificWorker::compute()
 
 	std::vector<float> actual_velocities = getVelocitiesFromDSR();
 
-	if (has_significant_change(actual_velocities, last_velocities_readed))
-		this->omnirobot_proxy->setSpeedBase(0.0, actual_velocities[0], -actual_velocities[1]);
+	if (has_significant_change(actual_velocities, last_velocities_readed)) 
+		this->omnirobot_proxy->setSpeedBase(0.0 , actual_velocities[0], -actual_velocities[1]);
 
 	last_velocities_readed = actual_velocities;	
 	
@@ -193,7 +193,7 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     float y = t[1];   
 
     float distance_to_target = std::sqrt(x*x + y*y);
-    float angle_to_target = std::atan2(y, x);
+    float angle_to_target = std::atan2(x, y);
 
 	float distance_error = distance_to_target - desired_distance;
 
@@ -201,7 +201,7 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
         distance_error = 0.0f;
 
     float Kp_lin = 1.0f;
-    float Kp_ang = 2.0f;
+    float Kp_ang = 1.0f;
 
     float linear_velocity  = Kp_lin * distance_error;
     float angular_velocity = Kp_ang * angle_to_target;

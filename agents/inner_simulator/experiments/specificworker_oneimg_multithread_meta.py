@@ -1,0 +1,929 @@
+import os
+import sys
+import time
+
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+from rich.console import Console
+from ultralytics import YOLO
+from genericworker import *
+import pybullet as p
+import pybullet_data as pd
+import pybullet_utils.bullet_client as bc
+from agent_training.yolo_dataset import YoloDataset
+from agent_training.yolo_trainer import YoloTrainer
+import cv2
+import random
+import multiprocessing as mp
+import signal
+import atexit
+import torch
+import torchvision.transforms.v2 as v2_transforms
+
+sys.path.append('/opt/robocomp/lib')
+console = Console(highlight=False)
+from pydsr import *
+import numpy as np
+
+CONCEPT_NAME = "bump"
+MODEL_OUTPUT_DIR = "yolo_concept_model"
+META_REPO_DIR = "/home/robolab_practicas/robocomp/components/robocomp-insight/agents/inner_simulator/dino3/"
+
+
+class SpecificWorker(GenericWorker):
+    def __init__(self, proxy_map, configData, startup_check=False):
+        super(SpecificWorker, self).__init__(proxy_map, configData)
+        self.Period = configData["Period"]["Compute"]
+        print("SpecificWorker initialized")
+
+        # ================= PYBULLET MODELS LOADING  ================
+        # ===========================================================
+
+        self.dt = 1./62. # Simulation time step (60 Hz)
+        self.concept_position = [1, 0, -0.01]
+
+        # TImage getROI(int cx, int cy, int sx, int sy, int roiwidth, int roiheight);
+        self.robot_img = self.camerargbdsimple_proxy.getImage("zed") # A bump in the way --- IGNORE ---
+        self.print_time = self.actual_time = time.time()
+
+        # ================ SIMULATION PARAM  ===============
+        # ==================================================
+        
+        # Dataset initialization variables
+        self.dataset_size = 3 # number of positions to generate per ring (not including recolouring and augmentation)
+        self.augment_per_image = 0  # number of augmented copies per original image
+        self.negative_sample_ratio = 0.2
+        self.dataset = YoloDataset(os.getcwd(), "concept_dataset", "concept")
+        self.meta_mode = False
+
+        # Concept color change table. A new image will be generated for each color in this table.
+        # If any augmentation is set, it will also be applied.
+        self.concept_color_table = {
+            "white": [1, 1, 1, 1],
+            "green": [0, 1, 0, 1],
+            "brown": [0.59, 0.29, 0, 1],
+            "yellow": [1, 1, 0, 1]
+        }
+        
+        # Path parameters
+        self.radius = 1.75 # base radius of the circle on which the camera will navigate around the concept.
+        self.radius_rings = 16  # number of concentric rings to generate
+        self.radius_ring_distance = 0.5  # radial distance between consecutive rings
+        angles = np.linspace(0, 2*np.pi, self.dataset_size, endpoint=False)
+        self.camera_nav_path = []
+        for ring_idx in range(self.radius_rings):
+            ring_radius = self.radius + ring_idx * self.radius_ring_distance
+            for angle in angles:
+                self.camera_nav_path.append([
+                    self.concept_position[0] + ring_radius * np.cos(angle),
+                    self.concept_position[1] + ring_radius * np.sin(angle),
+                    0.01,
+                ])
+
+        # Camera parameters
+        self.cam_near = 0.01
+        self.cam_far = 100
+        self.camera_offset = np.array([-0.07657113, 0.06000005, 0.94259881])
+        
+        # Concept height variation parameters
+        # Height varies randomly between concept_height_min and concept_height_max during dataset generation
+        # Reduced range to avoid extreme depth variations where bump becomes barely visible
+        self.concept_height_min = -0.015  # Minimum height (slight depression)
+        self.concept_height_max = 0.015   # Maximum height (slight elevation)
+        
+        # Status variables
+        self.has_concept_been_found = False
+
+        # Multiprocessing count. Sets how many proccesses to use.
+        self.instance_count = 12
+        self._owner_pid = os.getpid()
+        self._dataset_workers = []
+        self._register_termination_handlers()
+         
+        # Initialize random objects dictionary for training variety
+        self.init_random_obj_dict()
+        self.random_objects_instances = []
+        self.random_object_count_range = (3, 8)
+
+        if startup_check:
+            self.startup_check()
+        else:
+            self.timer.timeout.connect(self.compute)
+            self.timer.start(self.Period)
+            
+        self.stage = "IDLE"
+
+    def init_random_obj_dict(self):
+        """Initialize a dictionary of ~50 random objects from pybullet_data for training.
+        Each object has a label and path to the URDF/OBJ file."""
+        datapath = pd.getDataPath()
+        self.random_objects = {
+            # Primitives and simple rigid bodies
+            "sphere_small": {"label": "sphere", "path": os.path.join(datapath, "sphere_small.urdf")},
+            "sphere_1cm": {"label": "sphere", "path": os.path.join(datapath, "sphere_1cm.urdf")},
+            "sphere2": {"label": "sphere", "path": os.path.join(datapath, "sphere2.urdf")},
+            "cube": {"label": "cube", "path": os.path.join(datapath, "cube.urdf")},
+            "cube_small": {"label": "cube", "path": os.path.join(datapath, "cube_small.urdf")},
+            "block": {"label": "block", "path": os.path.join(datapath, "block.urdf")},
+
+            # Small objects and toys
+            "duck": {"label": "duck", "path": os.path.join(datapath, "duck_vhacd.urdf")},
+            "jenga": {"label": "jenga", "path": os.path.join(datapath, "jenga", "jenga.urdf")},
+            "lego": {"label": "lego", "path": os.path.join(datapath, "lego", "lego.urdf")},
+            "bunny": {"label": "animal", "path": os.path.join(datapath, "bunny.obj")},
+            "stone": {"label": "stone", "path": os.path.join(datapath, "stone.obj")},
+            "soccerball": {"label": "ball", "path": os.path.join(datapath, "soccerball.obj")},
+
+            # Grippers
+            "gripper_left": {"label": "gripper", "path": os.path.join(datapath, "gripper", "wsg50_one_motor_gripper_left_finger.urdf")},
+            "gripper_right": {"label": "gripper", "path": os.path.join(datapath, "gripper", "wsg50_one_motor_gripper_right_finger.urdf")},
+            "pr2_gripper": {"label": "gripper", "path": os.path.join(datapath, "pr2_gripper.urdf")},
+
+            # Furniture and structures
+            "table": {"label": "table", "path": os.path.join(datapath, "table", "table.urdf")},
+            "table_square": {"label": "table", "path": os.path.join(datapath, "table_square", "table_square.urdf")},
+            "tray": {"label": "tray", "path": os.path.join(datapath, "tray", "tray.urdf")},
+            "concave_box": {"label": "box", "path": os.path.join(datapath, "toys", "concave_box.urdf")},
+
+            # Robots and vehicles
+            "r2d2": {"label": "robot", "path": os.path.join(datapath, "r2d2.urdf")},
+            "humanoid": {"label": "humanoid", "path": os.path.join(datapath, "humanoid", "humanoid.urdf")},
+            "cartpole": {"label": "cartpole", "path": os.path.join(datapath, "cartpole.urdf")},
+            "husky": {"label": "robot", "path": os.path.join(datapath, "husky", "husky.urdf")},
+            "kuka_iiwa": {"label": "robot_arm", "path": os.path.join(datapath, "kuka_iiwa", "model.urdf")},
+            "racecar": {"label": "vehicle", "path": os.path.join(datapath, "racecar", "racecar.urdf")},
+            "cone": {"label": "cone", "path": os.path.join(datapath, "racecar", "meshes", "cone.obj")},
+
+            # Animals and deformables
+            "teddy": {"label": "animal", "path": os.path.join(datapath, "teddy_vhacd.urdf")},
+            "samurai": {"label": "object", "path": os.path.join(datapath, "samurai.urdf")},
+            "cloth": {"label": "cloth", "path": os.path.join(datapath, "cloth_z_up.urdf")},
+
+            # Environment
+            "plane": {"label": "plane", "path": os.path.join(datapath, "plane.urdf")},
+        }
+
+    def __del__(self):
+        """Destructor"""
+        self._terminate_dataset_workers()
+
+
+    @QtCore.Slot()
+    def compute(self):
+        self.show_compute_time_step()
+        self.publish_status_to_dsr()
+        
+        match self.stage:
+            
+            case "IDLE":
+                # If model already exists go directly to testing. Otherwise go to training.
+                model = os.path.join(os.getcwd(), "runs", "detect", MODEL_OUTPUT_DIR, "weights", "best.pt")
+                if os.path.exists(model):
+                    console.print("Trained model found. Skipping training and going directly to analysis stage.", style="bold green")
+                    self.trained_model = model
+                    self.stage = "ANALYZE"
+                else:
+                    console.print("No trained model found. Starting training stage.", style="bold yellow")
+                    self.stage = "TRAINING"
+
+
+            case "TRAINING":
+                if self.meta_mode:
+                    console.print("Meta mode enabled. Skipping dataset generation and YOLO training, and going directly to analysis with DINOv3 ConvNeXt Large.", style="bold yellow")
+                    self.stage = "ANALYZE"
+                    return 
+
+                total_positions = len(self.camera_nav_path)
+                console.print(f"Generating dataset of {total_positions} positions ({self.dataset_size} per ring x {self.radius_rings} rings)...", style="bold yellow")
+                
+                # Distribute the circle points between the instances
+                points = []
+                for i in range(self.instance_count):
+                    points.append([])
+                for i in range(total_positions):
+                    points[i % self.instance_count].append(i)
+                
+                try:
+                    # Start the processes to generate the dataset in parallel
+                    self._dataset_workers = []
+                    for i in range(self.instance_count):
+                        worker = mp.Process(target=self.render_images, args=(points[i],), daemon=True)
+                        worker.start()
+                        self._dataset_workers.append(worker)
+
+                    # Wait for all processes to finish
+                    for worker in self._dataset_workers:
+                        worker.join()
+                except KeyboardInterrupt:
+                    console.print("Training interrupted. Terminating dataset workers...", style="bold red")
+                    self._terminate_dataset_workers()
+                    self.stage = "TERMINATE"
+                    return True
+                finally:
+                    self._terminate_dataset_workers()
+
+                console.print(f"Dataset complete: {self.dataset.get_dataset_size()} images (incl. augmentations)", style="bold green")
+
+                # Build dataset YAML and train
+                self.dataset.create_yaml()
+                self.trainer = YoloTrainer(base_path=os.getcwd(), dataset_path=self.dataset.get_data_yaml_path(), model_name="yolov8n.pt", epochs=20, output_dir=MODEL_OUTPUT_DIR)
+                self.trainer.init_training()
+                print(self.trainer.get_trained_model_path())
+                self.trained_model = self.trainer.get_trained_model_path()
+                self.stage = "ANALYZE"
+                
+            
+            case "ANALYZE":
+                # Load the trained meta model, if enabled.
+                if self.meta_mode:
+                    # Load DINOv3 ConvNeXt Large model
+                    # Reference: https://github.com/facebookresearch/dinov3
+                    dinov3_convnext_large = torch.hub.load(META_REPO_DIR, 'dinov3_convnext_large', 
+                                                            source='local', 
+                                                            weights='../../dinov3_convnext_large_pretrain_lvd1689m-61fa432d.pth')
+                    dinov3_convnext_large.eval()
+                    
+                    # Create image transform following DINOv3 official guidelines for LVD-1689M weights
+                    # Reference: https://github.com/facebookresearch/dinov3#image-transforms
+                    dinov3_transform = self._make_dinov3_transform(resize_size=256)
+
+                    while True:
+                        start_time = time.time()
+                        # Detect if CTRL+C has been pressed to break the loop
+                        if QApplication.instance().closingDown():
+                            break
+                        
+                        # Capture the image
+                        self.robot_img = self.camerargbdsimple_proxy.getImage("zed")
+                        robot_img_array = np.frombuffer(self.robot_img.image, dtype=np.uint8)
+                        robot_img_bgr = robot_img_array.reshape((self.robot_img.height, self.robot_img.width, 3))
+                        
+                        # Convert BGR to RGB for PyTorch (standard color format)
+                        robot_img_rgb = cv2.cvtColor(robot_img_bgr, cv2.COLOR_BGR2RGB)
+                        
+                        # Apply DINOv3 transform (resize, normalize with ImageNet statistics)
+                        # This follows the official transform pipeline from the DINOv3 repo
+                        from PIL import Image
+                        img_pil = Image.fromarray(robot_img_rgb)
+                        image_tensor = dinov3_transform(img_pil).unsqueeze(0)  # Add batch dimension
+                        
+                        # Forward pass using torch.inference_mode for efficiency
+                        # Reference: https://github.com/facebookresearch/dinov3
+                        with torch.inference_mode():
+                            features_dict = dinov3_convnext_large.forward_features(image_tensor)
+                            patch_tokens = features_dict["x_norm_patchtokens"]  # (batch, num_patches, 384)
+
+                        # Extract features and reshape to spatial grid
+                        # patch_tokens shape: (batch, num_patches, features_dim)
+                        features = patch_tokens[0]  # (num_patches, 384)
+                        patch_grid_size = int(np.sqrt(features.shape[0]))
+                        
+                        # Reshape to spatial grid: (16, 16, 384) for 256x256 input
+                        features_spatial = features.reshape(patch_grid_size, patch_grid_size, -1).cpu().numpy()
+                        
+                        # Upsample features to original image resolution
+                        img_h, img_w = robot_img_bgr.shape[:2]
+                        
+                        # Use SIFT/ORB for multi-scale object detection
+                        detections = self._detect_objects_with_dinov3(
+                            features_spatial, robot_img_bgr, img_h, img_w
+                        )
+                        
+                        img_with_detections = robot_img_bgr.copy()
+                        self.has_concept_been_found = False
+                        
+                        # Draw all detected objects with their labels
+                        for detection in detections:
+                            x1, y1, x2, y2 = detection['bbox']
+                            obj_name = detection['name']
+                            confidence = detection['confidence']
+                            
+                            # Draw bounding box
+                            color = (0, 255, 0) if obj_name == "bump" else (255, 165, 0)
+                            cv2.rectangle(img_with_detections, (x1, y1), (x2, y2), color, 2)
+                            
+                            # Draw label with background
+                            label = f"{obj_name}: {confidence:.2f}"
+                            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                            cv2.rectangle(img_with_detections, (x1, max(10, y1 - label_size[1] - 5)),
+                                        (x1 + label_size[0], y1), color, -1)
+                            cv2.putText(img_with_detections, label, (x1, max(10, y1 - 5)),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                            
+                            # Track if red bump is found
+                            if obj_name == "bump":
+                                self.has_concept_been_found = True
+                        
+                        # If no detections, show red cross
+                        if not detections:
+                            cv2.line(img_with_detections, (10, 10), (30, 30), (0, 0, 255), 2)
+                            cv2.line(img_with_detections, (30, 10), (10, 30), (0, 0, 255), 2)
+                            cv2.rectangle(img_with_detections, (5, 5), (35, 35), (0, 0, 255), 2)
+                        
+                        self.robot_img_image = img_with_detections
+                        
+                        # Publish status to DSR
+                        self.publish_status_to_dsr()
+                        
+                        # Display the image
+                        cv2.imshow("Agent Vision (TM) - DINOv3", self.robot_img_image)
+                        cv2.waitKey(1)
+                        
+                        # Wait for the remaining time to complete 1/60s
+                        elapsed = time.time() - start_time
+                        wait_time = max(0, self.dt - elapsed)
+                        time.sleep(wait_time)
+                    
+                    self.stage = "TERMINATE"
+                    return True
+
+                # Load the trained YOLO model
+                model = YOLO(self.trained_model)
+                while True:
+                    # Capture image 60Hz at a time
+                    start_time = time.time()
+                    # Detect if CTRL+C has been pressed to break the loop
+                    if QApplication.instance().closingDown():
+                        break
+                    
+                    # Get image from robot camera
+                    #self.robot_img = self.camera360rgb_proxy.getROI(-1, -1, -1, -1, -1, -1)
+                    self.robot_img = self.camerargbdsimple_proxy.getImage("zed") # A bump in the way
+                    robot_img_array = np.frombuffer(self.robot_img.image, dtype=np.uint8)
+                    self.robot_img_image = robot_img_array.reshape((self.robot_img.height, self.robot_img.width, 3)) # RGBA
+                    # Analyze image (current robot image)
+                    results = model.predict(self.robot_img_image, verbose=False)
+                    if len(results[0].boxes) > 0:
+                        # Set new status
+                        self.has_concept_been_found = True
+                        
+                        # Draw the results on it
+                        img_with_detections = self.robot_img_image.copy()
+                        for result in results:
+                            boxes = result.boxes.xyxy.cpu().numpy().astype(int)  # Bounding box coordinates
+                            for box in boxes:
+                                x1, y1, x2, y2 = box
+                                cv2.rectangle(img_with_detections, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green box
+                                # draw the confidence score on top of the box                                
+                                confidence = result.boxes.conf.cpu().numpy()
+                                label = f"{confidence[0]:.2f}"
+                                cv2.putText(img_with_detections, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                
+                        self.robot_img_image = img_with_detections
+                        
+                    else:
+                        # draw a small red cross inside a box on the image top left corner to indicate that the concept has not been found
+                        img_with_detections = self.robot_img_image.copy()
+                        cv2.line(img_with_detections, (10, 10), (30, 30), (0, 0, 255), 2)
+                        cv2.line(img_with_detections, (30, 10), (10, 30), (0, 0, 255), 2)
+                        cv2.rectangle(img_with_detections, (5, 5), (35, 35), (0, 0, 255), 2)
+                        self.robot_img_image = img_with_detections
+                        self.has_concept_been_found = False
+
+                    # Publish the current status
+                    self.publish_status_to_dsr()
+                    
+                    # Display the original image
+                    cv2.imshow("Agent Vision (TM)", self.robot_img_image)
+                    cv2.waitKey(1)
+                    # wait for the remaining time to complete 1/60s
+                    elapsed = time.time() - start_time
+                    wait_time = max(0, self.dt - elapsed)
+                    time.sleep(wait_time)
+                    
+                self.STAGE = "TERMINATE"
+
+            case "TERMINATE":
+                pass
+
+        return True
+
+    def startup_check(self):
+        QTimer.singleShot(200, QApplication.instance().quit)
+
+
+
+    # ================ PYBULLET SIMULATION RELATED  ================
+    # ==============================================================
+
+    def init_pybullet_sim(self):
+        """
+        Initializes a new PyBullet simulation instance with plane and concept.
+        Configures lighting for dramatic shadows.
+        """
+        client = bc.BulletClient(connection_mode=p.DIRECT)
+        client.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
+        client.setGravity(0, 0, -9.81)
+        
+        # Configure dramatic lighting for better shadow visibility
+        # These settings make differences in elevation more visible
+        client.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
+        client.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1)
+        client.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME, 0)
+        client.configureDebugVisualizer(p.COV_ENABLE_SEGMENTATION_MARK_PREVIEW, 0)
+
+        # LOAD PLANE IN THE SIMULATION
+        client.loadURDF("../../../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0])
+
+        # LOAD CONCEPT IN THE SIMULATION
+        concept = client.loadURDF("../../../../etc/URDFs/bump/bump_100x5cm.urdf", self.concept_position)
+        # Paint the concept red to make it easily detectable in the images
+        client.changeVisualShape(concept, -1, rgbaColor=[1, 0, 0, 1])  # Red color
+
+        return [client, concept]
+
+    def render_images(self, dataset_index_list):
+        """
+        Creates a new Pybullet instance and renders a set of images given the list
+        of indexes of the camera_nav_path list.
+        It's meant to be called in parallel using multiprocessing.
+        """
+
+        # Create a new pybullet instance
+        target_instance = self.init_pybullet_sim()
+        client = target_instance[0]
+        concept = target_instance[1]
+
+        for dataset_index in dataset_index_list:
+            target_pos = self.camera_nav_path[dataset_index]
+
+            # Place a virtual camera with fixed mount offset and make it look at the bump.
+            cam_pos = [
+                target_pos[0] + self.camera_offset[0],
+                target_pos[1] + self.camera_offset[1],
+                target_pos[2] + self.camera_offset[2],
+            ]
+            
+            # Vary the concept height randomly for each image
+            concept_height = random.uniform(self.concept_height_min, self.concept_height_max)
+            concept_pos = [self.concept_position[0], self.concept_position[1], concept_height]
+            client.resetBasePositionAndOrientation(concept, concept_pos, [0, 0, 0, 1])
+            
+            direction_to_concept = [
+                concept_pos[0] - cam_pos[0],
+                concept_pos[1] - cam_pos[1],
+            ]
+            norm = np.sqrt(direction_to_concept[0]**2 + direction_to_concept[1]**2)
+            if norm > 1e-6:
+                forward = [direction_to_concept[0] / norm, direction_to_concept[1] / norm]
+            else:
+                forward = [1, 0]
+
+            # Capture an image
+            capture = self.capture_zed_image(cam_pos, forward)
+
+            # Detect concept and build label, then add directly to dataset
+            img_bgr = cv2.cvtColor(capture, cv2.COLOR_RGBA2BGR)
+            label = self._detect_and_label(img_bgr)
+            is_train = dataset_index < int(0.8 * len(self.camera_nav_path))
+            self.dataset.add_image(img_bgr, label, is_train)
+
+            # Data augmentation (only for training images)
+            if is_train:
+                self._augment_and_add(img_bgr, label, is_train=True)
+
+            # Generate the remaining images changing only the concept color.
+            for _, color_rgba in self.concept_color_table.items():
+                client.changeVisualShape(concept, -1, rgbaColor=color_rgba)
+                capture = self.capture_zed_image(cam_pos, forward)
+                img_bgr = cv2.cvtColor(capture, cv2.COLOR_RGBA2BGR)
+                self.dataset.add_image(img_bgr, label, is_train)
+                if is_train:
+                    self._augment_and_add(img_bgr, label, is_train=True)
+
+            # Restore red concept
+            client.changeVisualShape(concept, -1, rgbaColor=[1, 0, 0, 1])
+
+            # Generate negative samples (images without the concept) based on negative_sample_ratio
+            num_negative_samples = max(1, round(len(self.concept_color_table) * self.negative_sample_ratio))
+            for _ in range(num_negative_samples):
+                # Hide the concept by moving it far below the plane
+                hidden_concept_pos = [self.concept_position[0], self.concept_position[1], -10.0]
+                client.resetBasePositionAndOrientation(concept, hidden_concept_pos, [0, 0, 0, 1])
+                
+                # Capture image without concept
+                self.add_random_objects(client, random.randint(*self.random_object_count_range))
+                capture = self.capture_zed_image(cam_pos, forward)
+                self.remove_random_objects(client)
+                img_bgr = cv2.cvtColor(capture, cv2.COLOR_RGBA2BGR)
+                
+                # Add as negative image using the new add_negative_image method
+                self.dataset.add_negative_image(img_bgr, is_train)
+            
+            # Restore concept to original position
+            client.resetBasePositionAndOrientation(concept, concept_pos, [0, 0, 0, 1])
+
+            console.print(f"  [THREAD:ID{dataset_index}] finished generating image.", style="yellow")
+
+        client.disconnect()
+        
+        
+        
+    # ====================  HELPERS  =====================
+    # ====================================================
+
+    def _register_termination_handlers(self):
+        """Ensure child processes are terminated when this process receives a stop signal."""
+        atexit.register(self._terminate_dataset_workers)
+        signal.signal(signal.SIGINT, self._handle_termination_signal)
+        signal.signal(signal.SIGTERM, self._handle_termination_signal)
+
+    def _handle_termination_signal(self, signum, _frame):
+        """Handle termination signals by terminating dataset workers and exiting."""
+        if os.getpid() == self._owner_pid:
+            console.print(f"Signal {signum} received. Terminating dataset workers...", style="bold red")
+            self._terminate_dataset_workers()
+        raise SystemExit(128 + signum)
+
+    def _terminate_dataset_workers(self):
+        """Terminate and join running dataset worker processes."""
+        # Multiprocessing children created via fork inherit this object and the
+        # atexit handler, but they must not manage Process objects created by
+        # the parent process.
+        if os.getpid() != self._owner_pid:
+            return
+
+        for worker in self._dataset_workers:
+            if worker.is_alive():
+                worker.terminate()
+        for worker in self._dataset_workers:
+            worker.join(timeout=2)
+        self._dataset_workers = []
+
+    def publish_status_to_dsr(self):
+        """ Publishes the current status of the concept to DSR."""
+        # check if we have found the concept in this compute step. if so, publish the possible_concept object node to DSR. If not, destroy it (if it exists)
+        if not self.has_concept_been_found:
+            # check if we have to destroy the node in DSR
+            if self.g.get_node(f"object_{CONCEPT_NAME}") is not None:
+                # destroy node (edge is implicitly destroyed)
+                console.print(f"Destroying object node {CONCEPT_NAME}", style="bold red")
+                self.g.delete_node(f"object_{CONCEPT_NAME}")
+        else:
+            # check if we have to create the node in DSR
+            if self.g.get_node(f"object_{CONCEPT_NAME}") is None:
+                # create node
+                console.print(f"Creating object node {CONCEPT_NAME}", style="bold green")
+                object_node = Node(agent_id=self.agent_id, name=f"object_{CONCEPT_NAME}", type="object")
+                self.g.insert_node(object_node)                
+                # create edge
+                robot_node = self.g.get_node("robot")
+                if robot_node is None:
+                    console.print("Robot node not found in DSR graph. This should NOT happen. Exiting...", style="bold red")
+                    exit()
+                edge = Edge(object_node.id, robot_node.id, "thinks", self.agent_id)
+                self.g.insert_or_assign_edge(edge)
+                
+    def show_compute_time_step(self):
+        """
+        Get the time step between compute calls
+        :return: time
+        """
+        time_step = time.time() - self.actual_time
+        self.actual_time = time.time()
+        if time.time() - self.print_time > 5:
+            self.print_time = time.time()
+            console.print(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
+            
+        return time_step
+
+
+
+    # ====================  RENDERING HELPERS  =====================
+    # ==============================================================
+    
+    def capture_zed_image(self, cam_pos: list, forward: list, fov_v: float = 70.0) -> np.ndarray:
+        """
+        Renders a perspective image from the ZED camera simulation using PyBullet.
+        
+        :param cam_pos: [x, y, z] world position of the camera
+        :param forward: [fx, fy] normalized 2-D forward direction vector in the XY plane
+        :param fov_v: Vertical field of view in degrees (default: 70° for f/2.0 lens)
+        :return: numpy array (height, width, 4) RGBA image
+        
+        ZED Camera Specifications (dual lens configuration):
+        
+        Lens 1 (f/2.0) - Primary lens used:
+        - Focal Length: 2.1mm
+        - Aperture: ƒ/2.0
+        - Field of View: 110°(H) x 70°(V) x 120°(D) max.
+        - Resolution: 1280 x 720 pixels
+        
+        Lens 2 (f/1.8) - Alternative:
+        - Focal Length: 4mm
+        - Aperture: ƒ/1.8
+        - Field of View: 72°(H) x 44°(V) x 81°(D) max.
+        
+        Wide-angle 8-element all-glass dual lens with optically corrected distortion
+        """
+        # Normalize the forward vector
+        norm = np.sqrt(forward[0]**2 + forward[1]**2)
+        if norm < 1e-6:
+            forward = [1, 0]  # Default to +X if invalid
+        else:
+            forward = [forward[0]/norm, forward[1]/norm]
+        
+        fx, fy = forward
+        
+        # ZED camera resolution: 1280 x 720 pixels
+        width = 1280
+        height = 720
+        
+        # Build the up vector perpendicular to forward and world Z
+        # Local frame: +X = (fx,fy,0), +Z = (0,0,1), +Y = (-fy,fx,0)
+        up = [0, 0, 1]
+        
+        # ZED aspect ratio: 1280 / 720
+        aspect_ratio = 1280.0 / 720.0
+        
+        # Target point in the direction the camera is looking
+        target = [
+            cam_pos[0] + fx,
+            cam_pos[1] + fy,
+            cam_pos[2]
+        ]
+        
+        # Create view matrix
+        view_matrix = p.computeViewMatrix(cameraEyePosition=cam_pos,
+                                         cameraTargetPosition=target,
+                                         cameraUpVector=up)
+        
+        # Create projection matrix with the specified FOV
+        projection_matrix = p.computeProjectionMatrixFOV(
+            fov=fov_v,                    # PyBullet uses vertical FOV
+            aspect=aspect_ratio,
+            nearVal=self.cam_near,
+            farVal=self.cam_far
+        )
+        
+        # Render the image
+        _, _, rgb, _, _ = p.getCameraImage(
+            width=width,
+            height=height,
+            viewMatrix=view_matrix,
+            projectionMatrix=projection_matrix,
+            renderer=p.ER_BULLET_HARDWARE_OPENGL,
+            # Light coming like sunset to create shadows
+            lightDirection=[0.5, 0.5, 1],
+        )
+        
+        # Convert to numpy array with RGBA format
+        image = np.array(rgb, dtype=np.uint8).reshape(height, width, 4)
+        
+        return image
+
+    def _make_dinov3_transform(self, resize_size: int = 256):
+        """
+        Create image transform following DINOv3 official guidelines for LVD-1689M weights.
+        
+        Reference: https://github.com/facebookresearch/dinov3#image-transforms
+        
+        For models using LVD-1689M weights (pretrained on web images), this transform:
+        1. Converts image to tensor
+        2. Resizes to specified size (default: 256x256)
+        3. Converts to float32 and scales to [0, 1]
+        4. Normalizes with ImageNet statistics
+        
+        :param resize_size: Size to resize the image to (default: 256)
+        :return: torchvision transform pipeline
+        """
+        to_tensor = v2_transforms.ToImage()
+        resize = v2_transforms.Resize((resize_size, resize_size), antialias=True)
+        to_float = v2_transforms.ToDtype(torch.float32, scale=True)
+        normalize = v2_transforms.Normalize(
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        )
+        return v2_transforms.Compose([to_tensor, resize, to_float, normalize])
+
+    def _detect_objects_with_dinov3(self, features_spatial, image_bgr, img_h, img_w):
+        """
+        Detect multiple objects in the image using DINOv3 features and feature clustering.
+        
+        Uses SIFT keypoints combined with DINOv3 feature descriptors to detect and classify objects.
+        
+        :param features_spatial: Spatial feature map from DINOv3 (patch_grid_size, patch_grid_size, 384)
+        :param image_bgr: Original image in BGR format
+        :param img_h: Image height
+        :param img_w: Image width
+        :return: List of detections with format [{'bbox': (x1, y1, x2, y2), 'name': str, 'confidence': float}]
+        """
+        detections = []
+        
+        # Extract image features using SIFT for keypoint detection
+        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+        sift = cv2.SIFT_create()
+        keypoints, descriptors = sift.detectAndCompute(gray, None)
+        
+        if descriptors is None or len(keypoints) == 0:
+            return detections
+        
+        # Use DINOv3 features to enhance object detection
+        feature_norms = np.linalg.norm(features_spatial, axis=2)  # (patch_grid_size, patch_grid_size)
+        
+        # Upsample to image resolution
+        feature_map_upsampled = cv2.resize(feature_norms, (img_w, img_h), interpolation=cv2.INTER_CUBIC)
+        
+        # Normalize
+        if feature_map_upsampled.max() > feature_map_upsampled.min():
+            feature_map_norm = (feature_map_upsampled - feature_map_upsampled.min()) / \
+                             (feature_map_upsampled.max() - feature_map_upsampled.min())
+        else:
+            feature_map_norm = feature_map_upsampled
+        
+        # Create saliency-weighted mask
+        threshold = np.percentile(feature_map_norm, 60)
+        saliency_mask = (feature_map_norm > threshold).astype(np.uint8) * 255
+        
+        # Morphological operations
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        saliency_mask = cv2.morphologyEx(saliency_mask, cv2.MORPH_OPEN, kernel)
+        saliency_mask = cv2.morphologyEx(saliency_mask, cv2.MORPH_CLOSE, kernel)
+        saliency_mask = cv2.dilate(saliency_mask, kernel, iterations=1)
+        
+        # Find contours
+        contours, _ = cv2.findContours(saliency_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter contours by area
+        min_area = (img_h * img_w) * 0.003  # At least 0.3% of image
+        max_area = (img_h * img_w) * 0.8    # At most 80% of image
+        
+        valid_contours = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if min_area < area < max_area:
+                valid_contours.append(contour)
+        
+        # Sort by area (largest first)
+        valid_contours.sort(key=cv2.contourArea, reverse=True)
+        
+        # Process valid contours and create detections
+        for contour in valid_contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Skip very small detections
+            if w < 30 or h < 30:
+                continue
+            
+            # Extract region from the image for analysis
+            x1, y1 = max(0, x), max(0, y)
+            x2, y2 = min(img_w, x + w), min(img_h, y + h)
+            
+            # Classify object based on color and features
+            region = image_bgr[y1:y2, x1:x2]
+            obj_name, confidence = self._classify_object_region(region, feature_map_norm[y1:y2, x1:x2])
+            
+            detection = {
+                'bbox': (x1, y1, x2, y2),
+                'name': obj_name,
+                'confidence': confidence
+            }
+            detections.append(detection)
+        
+        return detections
+
+    def _classify_object_region(self, region_bgr, region_features):
+        """
+        Classify an object region using color analysis and feature magnitude.
+        
+        :param region_bgr: Region image in BGR format
+        :param region_features: Feature magnitude values for the region
+        :return: (object_name: str, confidence: float)
+        """
+        # Check for red color (bump indicator)
+        hsv = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2HSV)
+        
+        # Red detection
+        lower_red1 = np.array([0, 70, 50])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 70, 50])
+        upper_red2 = np.array([180, 255, 255])
+        
+        mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+        
+        red_ratio = np.sum(mask_red > 0) / (mask_red.shape[0] * mask_red.shape[1])
+        
+        # If significant red color, classify as bump
+        if red_ratio > 0.2:
+            confidence = min(0.99, red_ratio)
+            return "bump", confidence
+        
+        # Otherwise, classify as generic object
+        confidence = np.mean(region_features)
+        
+        # Determine generic object name based on size and shape
+        h, w = region_bgr.shape[:2]
+        aspect_ratio = float(w) / h if h > 0 else 1.0
+        
+        if 0.8 < aspect_ratio < 1.2:
+            obj_name = "cube"
+        elif aspect_ratio > 1.2:
+            obj_name = "block"
+        else:
+            obj_name = "object"
+        
+        return obj_name, confidence
+    
+    def add_random_objects(self, client, num_objects=5):
+        """Adds random objects to the simulation for visual variety."""
+        self.random_objects_instances = []
+        if not self.random_objects:
+            return
+
+        object_keys = list(self.random_objects.keys())
+        num_objects = max(0, min(num_objects, len(object_keys)))
+        if num_objects == 0:
+            return
+
+        selected_keys = random.sample(object_keys, num_objects)
+        for key in selected_keys:
+            obj_data = self.random_objects[key]
+            obj_path = obj_data["path"]
+            _, ext = os.path.splitext(obj_path)
+            ext = ext.lower()
+
+            # Place distractors around the concept while keeping the center mostly visible.
+            angle = random.uniform(0, 2 * np.pi)
+            radius = random.uniform(0.8, 3.2)
+            pos = [
+                self.concept_position[0] + radius * np.cos(angle),
+                self.concept_position[1] + radius * np.sin(angle),
+                random.uniform(0.02, 0.35),
+            ]
+            orn = client.getQuaternionFromEuler([0, 0, random.uniform(-np.pi, np.pi)])
+
+            body_id = None
+            try:
+                if ext == ".urdf":
+                    body_id = client.loadURDF(obj_path, basePosition=pos, baseOrientation=orn, useFixedBase=True)
+                elif ext in {".obj", ".vtk"}:
+                    visual_shape = client.createVisualShape(
+                        shapeType=p.GEOM_MESH,
+                        fileName=obj_path,
+                        meshScale=[0.2, 0.2, 0.2],
+                        rgbaColor=[random.random(), random.random(), random.random(), 1],
+                    )
+                    if visual_shape >= 0:
+                        body_id = client.createMultiBody(
+                            baseMass=0,
+                            baseVisualShapeIndex=visual_shape,
+                            baseCollisionShapeIndex=-1,
+                            basePosition=pos,
+                            baseOrientation=orn,
+                        )
+            except Exception:
+                # Ignore unsupported/random assets and continue with the rest.
+                continue
+
+            if body_id is not None and body_id >= 0:
+                self.random_objects_instances.append(body_id)
+
+    def remove_random_objects(self, client):
+        """Removes previously added random objects from the simulation."""
+        for obj in self.random_objects_instances:
+            try:
+                client.removeBody(obj)
+            except Exception:
+                pass
+        self.random_objects_instances = []
+
+
+
+    # ==================  DETECTION & AUGMENTATION ==================
+    # ===============================================================
+
+    def _detect_and_label(self, img_bgr: np.ndarray) -> str:
+        """Detect the red concept in a BGR image and return YOLO-format label string"""
+        hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, np.array([0, 70, 50]), np.array([10, 255, 255]))
+        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(largest)
+            img_h, img_w = img_bgr.shape[:2]
+            return f"0 {(x + w / 2) / img_w} {(y + h / 2) / img_h} {w / img_w} {h / img_h}"
+        return "0 0.5 0.5 0 0"
+
+    def _augment_and_add(self, img_bgr: np.ndarray, label: str, is_train: bool) -> None:
+        """
+        Generate augmented copies of an image + label and add them to the dataset.
+        Augmentations:
+          1) Brightness / contrast jitter
+          2) Gaussian noise
+        """
+        for _ in range(self.augment_per_image):
+            aug = img_bgr.copy()
+
+            # --- 1. Brightness / contrast jitter ---
+            alpha = random.uniform(0.7, 1.3)   # contrast
+            beta = random.randint(-30, 30)      # brightness
+            aug = cv2.convertScaleAbs(aug, alpha=alpha, beta=beta)
+
+            # --- 2. Gaussian noise ---
+            if random.random() < 0.5:
+                noise = np.random.normal(0, 8, aug.shape).astype(np.int16)
+                aug = np.clip(aug.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+            self.dataset.add_image(aug, label, is_train)
