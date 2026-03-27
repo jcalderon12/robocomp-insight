@@ -14,9 +14,9 @@
  */
 struct MissionComparator {
     bool operator()(const std::pair<uint64_t, int>& a, const std::pair<uint64_t, int>& b) const {
-        // Lower priority values = higher priority (1 is max priority, 100 is min priority)
-        // So we want SMALLER values to come FIRST (higher priority)
-        return a.second > b.second;
+        // Higher priority values = higher priority (5=Critical is max, 1=VeryLow is min)
+        // So we want LARGER values to come FIRST (higher priority)
+        return a.second < b.second;  // Reverse: larger values have higher priority
     }
 };
 
@@ -33,11 +33,11 @@ enum class MissionType {
  */
 struct MissionInfo {
     uint64_t mission_id;
-    int priority;           // 1-100, where 1=highest priority
+    int priority;           // 1-5, where 5=Critical (highest) and 1=VeryLow (lowest)
     MissionType type;       // USER or AUTONOMOUS
     std::string status;     // "pending", "running", "stopped", "completed"
     
-    MissionInfo() : mission_id(0), priority(50), type(MissionType::AUTONOMOUS), status("pending") {}
+    MissionInfo() : mission_id(0), priority(3), type(MissionType::AUTONOMOUS), status("pending") {}
     
     MissionInfo(uint64_t id, int pr, MissionType t, const std::string& st = "pending")
         : mission_id(id), priority(pr), type(t), status(st) {}
@@ -47,7 +47,7 @@ struct MissionInfo {
  * @brief MissionScheduler manages mission priorities and scheduling logic
  * 
  * Features:
- * - Priority-based mission queue (1=highest, 100=lowest)
+ * - Priority-based mission queue (5=Critical/highest, 1=VeryLow/lowest)
  * - Support for USER and AUTONOMOUS missions
  * - Preemption logic: USER missions can preempt AUTONOMOUS missions of lower priority
  * - Automatic selection of next mission to run
@@ -64,12 +64,12 @@ public:
     /**
      * @brief Add or update a mission in the scheduler
      * @param mission_id Unique mission identifier
-     * @param priority Priority level (1-100, where 1 is highest)
+     * @param priority Priority level (1-5, where 5=Critical is highest)
      * @param type Mission type (USER or AUTONOMOUS)
      */
     void addMission(uint64_t mission_id, int priority, MissionType type) {
-        // Clamp priority to [1, 100]
-        priority = std::max(1, std::min(100, priority));
+        // Clamp priority to [1, 5]
+        priority = std::max(1, std::min(5, priority));
         missions[mission_id] = MissionInfo(mission_id, priority, type);
     }
     
@@ -88,12 +88,12 @@ public:
     /**
      * @brief Update the priority of a mission
      * @param mission_id Mission to update
-     * @param priority New priority level (1-100)
+     * @param priority New priority level (1-5, where 5=Critical is highest)
      */
     void updateMissionPriority(uint64_t mission_id, int priority) {
         auto it = missions.find(mission_id);
         if (it != missions.end()) {
-            priority = std::max(1, std::min(100, priority));
+            priority = std::max(1, std::min(5, priority));
             it->second.priority = priority;
         }
     }
@@ -150,12 +150,12 @@ public:
      */
     std::optional<uint64_t> selectNextMission() const {
         uint64_t best_mission_id = 0;
-        int best_priority = 101;  // Worse than any valid priority
+        int best_priority = 0;  // Start at minimum priority (will find highest)
         
         for (const auto& [mission_id, info] : missions) {
             // Look for PENDING or STOPPED missions (not RUNNING or COMPLETED)
             if ((info.status == "pending" || info.status == "stopped") && 
-                info.priority < best_priority) {
+                info.priority > best_priority) { 
                 best_mission_id = mission_id;
                 best_priority = info.priority;
             }

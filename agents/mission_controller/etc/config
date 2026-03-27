@@ -23,17 +23,17 @@ Agent.work.3d = true
 
 Agent.episodic.configFile = "root_dsr.json"
 Agent.episodic.domain = 1
-Agent.episodic.tree = true
+Agent.episodic.tree = false
 Agent.episodic.graph = true
-Agent.episodic.2d = true
-Agent.episodic.3d = true
+Agent.episodic.2d = false
+Agent.episodic.3d = false
 
 Agent.debugger.configFile = "root_dsr.json"
 Agent.debugger.domain = 2
-Agent.debugger.tree = true
+Agent.debugger.tree = false
 Agent.debugger.graph = true
-Agent.debugger.2d = true
-Agent.debugger.3d = true
+Agent.debugger.2d = false
+Agent.debugger.3d = false
 
 Period.Compute = 100
 Period.Emergency = 500

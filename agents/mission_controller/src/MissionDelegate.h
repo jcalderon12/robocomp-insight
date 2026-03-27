@@ -22,9 +22,11 @@ signals:
 private:
     QRect getToggleButtonRect(const QStyleOptionViewItem &option) const;
     QRect getCompletedButtonRect(const QStyleOptionViewItem &option) const;
+    QPair<QColor, QString> getPriorityColorAndName(int priority) const;
 
     static constexpr int ITEM_HEIGHT = 100;
     static constexpr int BTN_WIDTH   = 80;
     static constexpr int BTN_HEIGHT  = 35;
     static constexpr int MARGIN      = 10;
+    static constexpr int PRIORITY_BAR_WIDTH = 5;
 };

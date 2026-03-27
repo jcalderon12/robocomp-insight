@@ -378,18 +378,22 @@ void SpecificWorker::initialize()
 		{
 			QString customName = dialog_ui.mission_custom_name->text();
 			QString missionType = dialog_ui.mission_name->currentText();
+			int priority = dialog_ui.mission_priority->currentIndex();  // 0=Critical, 1=High, 2=Normal, 3=Low, 4=Very Low
 			
 			if (customName.isEmpty())
 			{
 				customName = missionType;
 			}
 			
-			Mission newMission{customName, missionType};
+			// Convert priority index to priority value: Critical=5, High=4, Normal=3, Low=2, VeryLow=1
+			int priority_value = 5 - priority;
+			
+			Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};
 			int row = model->rowCount();  // Get future row index
 			model->addMission(newMission);
 			
 			// Insert mission node in episodic graph with status="pending"
-			insert_mission_node_episodic(customName.toStdString(), row);
+			insert_mission_node_episodic(customName.toStdString(), row, priority_value);
 			
 			on_setMission_clicked();
 		}
@@ -874,7 +878,7 @@ void SpecificWorker::load_mission_in_debugger(int row) {
 
 // ===== METHODS FOR MISSION MANAGEMENT IN EPISODIC GRAPH =====
 
-std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::string &mission_name, int row) {
+std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::string &mission_name, int row, int priority) {
 	try {
 		// Generate unique mission name with timestamp and random number
 		auto now = std::chrono::system_clock::now();
@@ -928,15 +932,61 @@ std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::
 		filepath_attr.value(filepath_str);
 		mission_node.attrs()["filepath"] = filepath_attr;
 		
-		// Add priority attribute (default 50)
+		// Add priority attribute (from dialog: 1-5)
 		DSR::Attribute priority_attr;
-		priority_attr.value(50);
+		priority_attr.value(priority);
 		mission_node.attrs()["priority"] = priority_attr;
 		
 		// Add elapsed_time attribute (initially 0.0)
 		DSR::Attribute elapsed_time_attr;
 		elapsed_time_attr.value(0.0f);
 		mission_node.attrs()["elapsed_time"] = elapsed_time_attr;
+		
+		// === Calculate position for visualization ===
+		// Get robot position (default to 0,0 if not found)
+		float robot_pos_x = 0.0f;
+		float robot_pos_y = 0.0f;
+		try {
+			auto robot_opt = mission_graph->get_node("robot");
+			if (robot_opt.has_value()) {
+				auto robot = robot_opt.value();
+				// Try to get pos_x and pos_y attributes
+				auto pos_x_it = robot.attrs().find("pos_x");
+				auto pos_y_it = robot.attrs().find("pos_y");
+				if (pos_x_it != robot.attrs().end()) {
+					if (auto* pf = std::get_if<float>(&pos_x_it->second.value())) {
+						robot_pos_x = *pf;
+					}
+				}
+				if (pos_y_it != robot.attrs().end()) {
+					if (auto* pf = std::get_if<float>(&pos_y_it->second.value())) {
+						robot_pos_y = *pf;
+					}
+				}
+			}
+		} catch (const std::exception& e) {
+			std::cerr << "Error getting robot position: " << e.what() << std::endl;
+		}
+		
+		// Calculate mission position: arrange in rows of 5 missions
+		float mission_pos_x = robot_pos_x + (missions_in_current_row * 150.0f);  // 150 units between missions
+		float mission_pos_y = robot_pos_y + current_y_offset;  // Below robot (positive Y direction)
+		
+		// Add position attributes
+		DSR::Attribute pos_x_attr;
+		pos_x_attr.value(mission_pos_x);
+		mission_node.attrs()["pos_x"] = pos_x_attr;
+		
+		DSR::Attribute pos_y_attr;
+		pos_y_attr.value(mission_pos_y);
+		mission_node.attrs()["pos_y"] = pos_y_attr;
+		
+		// Update layout counters
+		missions_in_current_row++;
+		if (missions_in_current_row >= 5) {
+			missions_in_current_row = 0;
+			current_y_offset += 100.0f;  // Move 100 units down for next row
+		}
 		
 		auto mission_id_opt = mission_graph->insert_node(mission_node);
 		
@@ -946,25 +996,26 @@ std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::
 			std::cout << "Mission node created in episodic graph: " << unique_mission_name << " (id: " << mission_id << ")" << std::endl;
 			std::cout << "  ✓ Unique name: " << unique_mission_name << std::endl;
 			std::cout << "  ✓ Filepath: " << filepath_str << std::endl;
-			std::cout << "  ✓ Priority: 50 (default)" << std::endl;
-			
-			// Add has_intention edge from robot to mission
-			try {
-				auto robot_opt = mission_graph->get_node("robot");
-				if (robot_opt.has_value()) {
-					DSR::Edge has_intention_edge;
-					has_intention_edge.from(robot_opt.value().id());
-					has_intention_edge.to(mission_id);
-					has_intention_edge.type("has_intention");
-					mission_graph->insert_or_assign_edge(has_intention_edge);
-				}
-			} catch (const std::exception& e) {
-				std::cerr << "Exception creating has_intention edge: " << e.what() << std::endl;
+			std::cout << "  ✓ Priority: " << priority << std::endl;
+		std::cout << "  ✓ Position: (" << mission_pos_x << ", " << mission_pos_y << ")" << std::endl;
+		
+		// Add has_intention edge from robot to mission
+		try {
+			auto robot_opt = mission_graph->get_node("robot");
+			if (robot_opt.has_value()) {
+				DSR::Edge has_intention_edge;
+				has_intention_edge.from(robot_opt.value().id());
+				has_intention_edge.to(mission_id);
+				has_intention_edge.type("has_intention");
+				mission_graph->insert_or_assign_edge(has_intention_edge);
 			}
+		} catch (const std::exception& e) {
+			std::cerr << "Exception creating has_intention edge: " << e.what() << std::endl;
+		}
 			
 			// Add mission to scheduler (all new missions are USER-initiated by default)
-			mission_scheduler.addMission(mission_id, 50, MissionType::USER);
-			std::cout << "  ✓ Mission added to scheduler with priority 50" << std::endl;
+			mission_scheduler.addMission(mission_id, priority, MissionType::USER);
+			std::cout << "  ✓ Mission added to scheduler with priority " << priority << std::endl;
 			
 			return mission_id;
 		} else {

@@ -155,6 +155,10 @@ private:
 	
 	// Mission scheduler for priority-based mission management
 	MissionScheduler mission_scheduler;
+	
+	// Mission layout control for episodic graph visualization
+	int missions_in_current_row = 0;  // Counter for missions in current row (max 5)
+	float current_y_offset = 200.0f;   // Y offset from robot position (starts at 200)
 
 	void updateMissionTime();
 
@@ -176,7 +180,7 @@ private:
 	void display_debugger_graph();
 
 	// Methods for mission management in episodic graph
-	std::optional<uint64_t> insert_mission_node_episodic(const std::string &mission_name, int row);
+	std::optional<uint64_t> insert_mission_node_episodic(const std::string &mission_name, int row, int priority);
 	void update_mission_status_episodic(uint64_t mission_id, const std::string &status);
 	void create_mission_target_edge(uint64_t mission_id);
 	void delete_mission_target_edge(uint64_t mission_id);

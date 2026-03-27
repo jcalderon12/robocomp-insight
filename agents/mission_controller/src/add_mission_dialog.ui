@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>350</width>
-    <height>230</height>
+    <height>280</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -74,6 +74,52 @@
        <property name="minimumHeight">
         <number>35</number>
        </property>
+      </widget>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="label_priority">
+       <property name="font">
+        <font>
+         <pointsize>10</pointsize>
+         <weight>75</weight>
+         <bold>true</bold>
+        </font>
+       </property>
+       <property name="text">
+        <string>Priority:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QComboBox" name="mission_priority">
+       <property name="minimumHeight">
+        <number>35</number>
+       </property>
+       <item>
+        <property name="text">
+         <string>Critical</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>High</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>Normal</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>Low</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>Very Low</string>
+        </property>
+       </item>
       </widget>
      </item>
     </layout>
