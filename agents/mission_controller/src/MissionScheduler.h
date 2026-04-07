@@ -8,6 +8,7 @@
 #include <string>
 #include <memory>
 #include <algorithm>
+#include <functional>
 
 /**
  * @brief Mission priority queue comparator. Higher priority missions come first.
@@ -118,6 +119,11 @@ public:
      * @brief Check if a mission should preempt the currently running mission
      * @param mission_id Candidate mission to check
      * @return true if this mission should preempt the current one
+     * 
+     * Priority rules (higher number = higher priority):
+     * - USER missions preempt ANY mission (USER or AUTONOMOUS) if higher priority (larger number)
+     * - AUTONOMOUS missions preempt AUTONOMOUS if higher priority
+     * - AUTONOMOUS missions do NOT preempt USER missions
      */
     bool shouldPreempt(uint64_t mission_id) const {
         auto it_candidate = missions.find(mission_id);
@@ -130,17 +136,22 @@ public:
         const auto& candidate = it_candidate->second;
         const auto& current = it_current->second;
         
-        // USER missions can preempt AUTONOMOUS missions with lower priority (higher number)
+        // USER missions preempt AUTONOMOUS missions if higher priority (larger number)
         if (candidate.type == MissionType::USER && current.type == MissionType::AUTONOMOUS) {
-            return candidate.priority < current.priority;
+            return candidate.priority > current.priority;
         }
         
-        // USER missions can preempt other USER missions if higher priority
+        // USER missions preempt other USER missions if higher priority (larger number)
         if (candidate.type == MissionType::USER && current.type == MissionType::USER) {
-            return candidate.priority < current.priority;
+            return candidate.priority > current.priority;
         }
         
-        // AUTONOMOUS missions do NOT preempt running missions
+        // AUTONOMOUS missions preempt other AUTONOMOUS if higher priority (larger number)
+        if (candidate.type == MissionType::AUTONOMOUS && current.type == MissionType::AUTONOMOUS) {
+            return candidate.priority > current.priority;
+        }
+        
+        // AUTONOMOUS missions do NOT preempt USER missions
         return false;
     }
     
@@ -209,6 +220,100 @@ public:
             }
         }
         return count;
+    }
+    
+    /**
+     * @brief Result of attempting to activate a mission
+     * Contains information about preemption that occurred
+     */
+    struct ActivationResult {
+        bool success = false;
+        bool preempted_existing = false;
+        uint64_t preempted_mission_id = 0;
+        std::string previous_status;
+    };
+    
+    /**
+     * @brief Activate a mission, handling preemption automatically
+     * 
+     * This method:
+     * 1. Checks if a mission currently running should be preempted
+     * 2. Updates its own internal state
+     * 3. Returns result with preemption info for SpecificWorker to handle
+     * 
+     * @param mission_id Mission to activate
+     * @return ActivationResult with preemption details
+     */
+    ActivationResult activateMission(uint64_t mission_id) {
+        ActivationResult result;
+        
+        auto it_candidate = missions.find(mission_id);
+        if (it_candidate == missions.end()) {
+            return result;  // Mission not found
+        }
+        
+        result.success = true;
+        
+        // Check if current mission should be preempted
+        if (current_mission_id != 0 && shouldPreempt(mission_id)) {
+            auto it_current = missions.find(current_mission_id);
+            if (it_current != missions.end()) {
+                result.preempted_existing = true;
+                result.preempted_mission_id = current_mission_id;
+                result.previous_status = it_current->second.status;
+                
+                // Update preempted mission status
+                missions[current_mission_id].status = "stopped";
+            }
+        }
+        
+        // Activate new mission
+        missions[mission_id].status = "running";
+        current_mission_id = mission_id;
+        
+        return result;
+    }
+    
+    /**
+     * @brief Stop a mission gracefully
+     * 
+     * @param mission_id Mission to stop
+     * @return true if mission was found and stopped
+     */
+    bool stopMission(uint64_t mission_id) {
+        auto it = missions.find(mission_id);
+        if (it == missions.end()) {
+            return false;
+        }
+        
+        it->second.status = "stopped";
+        
+        if (current_mission_id == mission_id) {
+            current_mission_id = 0;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * @brief Complete a mission (mark as done)
+     * 
+     * @param mission_id Mission to complete
+     * @return true if mission was found and completed
+     */
+    bool completeMission(uint64_t mission_id) {
+        auto it = missions.find(mission_id);
+        if (it == missions.end()) {
+            return false;
+        }
+        
+        it->second.status = "completed";
+        
+        if (current_mission_id == mission_id) {
+            current_mission_id = 0;
+        }
+        
+        return true;
     }
 };
 

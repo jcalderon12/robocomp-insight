@@ -33,6 +33,83 @@
     <number>10</number>
    </property>
    <item>
+    <layout class="QHBoxLayout" name="autopilot_layout">
+     <property name="spacing">
+      <number>10</number>
+     </property>
+     <item>
+      <spacer name="autopilot_spacer_left">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QLabel" name="autopilot_label">
+       <property name="font">
+        <font>
+         <pointsize>10</pointsize>
+         <weight>75</weight>
+         <bold>true</bold>
+        </font>
+       </property>
+       <property name="text">
+        <string>Autopilot Mode:</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="autopilot_toggle_button">
+       <property name="font">
+        <font>
+         <pointsize>11</pointsize>
+         <weight>75</weight>
+         <bold>true</bold>
+        </font>
+       </property>
+       <property name="styleSheet">
+        <string>QPushButton {
+    background-color: #f44336;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 8px 16px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #da190b;
+}
+QPushButton:pressed {
+    background-color: #c91c00;
+}</string>
+       </property>
+       <property name="text">
+        <string>OFF</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="autopilot_spacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
     <widget class="QPushButton" name="add_mission_button">
      <property name="font">
       <font>
