@@ -160,8 +160,22 @@ private:
 	int missions_in_current_row = 0;  // Counter for missions in current row (max 5)
 	float current_y_offset = 200.0f;   // Y offset from robot position (starts at 200)
 	
+	// ===================== AUTOPILOT STATE MACHINE =====================
+	enum class AutopilotState {
+		IDLE,                   // Autopilot not running
+		SELECTING_NEXT,         // Querying scheduler for next mission
+		WAITING_AFFORDANCE,     // Created TARGET edge, waiting for episodic_memory ready
+		RUNNING,                // Mission active, monitoring aff_interacting
+		COMPLETED               // Mission finished, about to cleanup
+	};
+
 	// Autopilot mode control
 	bool autopilot_enabled = false;  // Autopilot ON/OFF
+	AutopilotState autopilot_state = AutopilotState::IDLE;  // Current state machine state
+	uint64_t current_active_mission_id = 0;  // Mission ID being executed (0 = none)
+	std::string current_active_mission_type = "";  // Type: "Follow Person", "Search Problem Cause", etc
+	int idle_cycles_count = 0;  // Counter: cycles with no pending missions
+	static constexpr int MAX_IDLE_CYCLES = 100;  // ~1 second at 100Hz before creating follow_person
 	
 	// Affordance waiting state: when follow_person mission is waiting for affordance node
 	int waiting_mission_row = -1;  // Row of mission waiting for affordance
@@ -170,6 +184,11 @@ private:
 	// Follow_person mission status tracking
 	bool follow_person_active = false;  // Track if follow_person mission is currently active
 	bool last_aff_interacting_state = false;  // Track previous state of aff_interacting
+
+	// Handshake state for episodic_memory synchronization
+	uint64_t handshake_waiting_mission_id = 0;     // Mission ID awaiting handshake (0 = none)
+	int handshake_timeout_cycles = 0;              // Counter of compute() cycles waiting
+	static constexpr int HANDSHAKE_TIMEOUT_CYCLES = 50;  // ~500ms timeout at 100Hz
 
 	void updateMissionTime();
 
@@ -196,6 +215,50 @@ private:
 	void create_mission_target_edge(uint64_t mission_id);
 	void delete_mission_target_edge(uint64_t mission_id);
 	std::optional<uint64_t> find_mission_node_by_name(const std::string &mission_name);
+	
+	// Handshake helper method
+	void check_recording_handshake();  // Check if episodic_memory set recording=true
+
+	// ===== NEW AUTOPILOT STATE MACHINE METHODS =====
+	
+	/**
+	 * \brief Main autopilot orchestration - runs the state machine.
+	 */
+	void autopilot_step();
+	
+	/**
+	 * \brief Select next mission from scheduler queue or create follow_person fallback.
+	 * Transitions from SELECTING_NEXT to WAITING_AFFORDANCE (or stays SELECTING_NEXT).
+	 */
+	void autopilot_select_next_mission();
+	
+	/**
+	 * \brief Activate a specific mission: create TARGET edge and initiate handshake.
+	 * \param mission_id The ID of the mission to activate.
+	 * \param type The type of mission ("Follow Person", "Search Problem Cause", etc).
+	 */
+	void autopilot_activate_mission(uint64_t mission_id, const std::string& type);
+	
+	/**
+	 * \brief Handle mission completion: mark as complete and cleanup.
+	 * Transitions from RUNNING to SELECTING_NEXT.
+	 */
+	void autopilot_on_mission_complete();
+	
+	/**
+	 * \brief Check if scheduler has pending missions.
+	 * \return true if at least one mission is pending, false otherwise.
+	 */
+	bool has_pending_missions() const;
+	
+	/**
+	 * \brief Get mission type string ("Follow Person", "Search Problem Cause", etc) from mission ID.
+	 * \param mission_id The DSR mission node ID.
+	 * \return Mission type as string, or empty string if not found.
+	 */
+	std::string get_mission_type_from_id(uint64_t mission_id) const;
+
+	// ===== OLD AUTOPILOT HELPER METHODS (to be refactored/removed) =====
 	
 	// Autopilot helper methods - factorized for clarity
 	void create_or_check_follow_person_mission();  // Create follow_person if it doesn't exist

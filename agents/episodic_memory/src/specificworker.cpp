@@ -855,7 +855,6 @@ void SpecificWorker::exit_WAITING_MISSION() {
 }
 
 void SpecificWorker::enter_RECORDING() {
-	current_state = EpisodicState::RECORDING;
 	mission_recording = true;
 	mission_start_time = std::chrono::system_clock::now();
 	changes_map.clear();
@@ -888,9 +887,48 @@ void SpecificWorker::enter_RECORDING() {
 		std::cerr << "  ⚠ WARNING: No valid filepath for mission_id " << current_mission_id << std::endl;
 	}
 	
+	// === SYNCHRONIZATION HANDSHAKE - PHASE 1 ===
+	// Signal mission_controller that we have detected TARGET and are beginning initialization
+	try {
+		auto mission_opt = mission_graph->get_node(current_mission_id);
+		if (mission_opt.has_value()) {
+			auto mission = mission_opt.value();
+			DSR::Attribute init_started_attr;
+			init_started_attr.value(true);
+			mission.attrs()["initialization_started"] = init_started_attr;
+			mission_graph->update_node(mission);
+			std::cout << "[HANDSHAKE-P1] ✓ Set mission.initialization_started=true (mission_id: " 
+			          << current_mission_id << ")" << std::endl;
+		}
+	} catch (const std::exception& e) {
+		std::cerr << "[HANDSHAKE-P1_ERROR] Could not set initialization_started=true: " << e.what() << std::endl;
+	}
+	
+	// FIX: Set current_state=RECORDING BEFORE generate_keyframe() to activate guards immediately
+	// This ensures slots start recording from the very beginning of initialization
+	current_state = EpisodicState::RECORDING;
+	std::cout << "[STATE] ✓ Transitioned to RECORDING state (slots now recording)" << std::endl;
+	
 	// Generate initial keyframe
 	generate_keyframe();
 	std::cout << "Initial keyframe generated" << std::endl;
+	
+	// === SYNCHRONIZATION HANDSHAKE - PHASE 2 ===
+	// Signal mission_controller that initialization is complete and we are ready to record
+	try {
+		auto mission_opt = mission_graph->get_node(current_mission_id);
+		if (mission_opt.has_value()) {
+			auto mission = mission_opt.value();
+			DSR::Attribute recording_attr;
+			recording_attr.value(true);
+			mission.attrs()["recording"] = recording_attr;
+			mission_graph->update_node(mission);
+			std::cout << "[HANDSHAKE-P2] ✓ Set mission.recording=true (mission_id: " 
+			          << current_mission_id << ")" << std::endl;
+		}
+	} catch (const std::exception& e) {
+		std::cerr << "[HANDSHAKE-P2_ERROR] Could not set recording=true: " << e.what() << std::endl;
+	}
 	
 	// Start periodic keyframe timer
 	if (!keyframe_timer) {
@@ -916,6 +954,32 @@ void SpecificWorker::exit_RECORDING() {
 	
 	// Generate final keyframe
 	generate_keyframe();
+	
+	// === SYNCHRONIZATION HANDSHAKE CLEANUP ===
+	// Signal mission_controller that episodic_memory is NO LONGER RECORDING
+	try {
+		auto mission_opt = mission_graph->get_node(current_mission_id);
+		if (mission_opt.has_value()) {
+			auto mission = mission_opt.value();
+			
+			// Clean up both handshake attributes
+			DSR::Attribute recording_attr;
+			recording_attr.value(false);
+			mission.attrs()["recording"] = recording_attr;
+			std::cout << "[HANDSHAKE] ✓ Set mission.recording=false (mission_id: " 
+			          << current_mission_id << ")" << std::endl;
+			
+			DSR::Attribute init_started_attr;
+			init_started_attr.value(false);
+			mission.attrs()["initialization_started"] = init_started_attr;
+			std::cout << "[HANDSHAKE] ✓ Set mission.initialization_started=false (mission_id: " 
+			          << current_mission_id << ")" << std::endl;
+			
+			mission_graph->update_node(mission);
+		}
+	} catch (const std::exception& e) {
+		std::cerr << "[HANDSHAKE_ERROR] Could not clean up handshake attributes: " << e.what() << std::endl;
+	}
 	
 	// Stop periodic keyframe timer FIRST
 	if (keyframe_timer) {
