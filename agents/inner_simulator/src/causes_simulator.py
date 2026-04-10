@@ -17,13 +17,19 @@ from causes.cause import Cause
 from pydantic import BaseModel, Field, create_model
 from simulation_scene import SimulationScene
 from engines.engine_pybullet import EnginePybullet
+from rich.console import Console
+from src.logger import Logger
 import os
 import copy
+import traceback
+
+console = Console(highlight=False)
 
 # Keys of the IMU history dictionary
 TIMESTAMP = "timestamp"
 ACCELEROMETER = "accelerometer"
 GYROSCOPE = "gyroscope"
+ADV_SPEED = "adv_speed"
 
 # Keys of the IMU historical dictionary
 HISTORY = "history"
@@ -116,7 +122,9 @@ CauseWrapper = create_cause_model(DynamicUnion)
 
 class CausesSimulator:
 
-    def __init__(self, cause, simulation_scene, pipe, real_time=False):
+    def __init__(self, cause, simulation_scene, pipe, real_time=False, logger=Logger()):
+        
+
         # ================ PYBULLET SIMULATION SETUP  ================
         # ============================================================
         
@@ -124,6 +132,7 @@ class CausesSimulator:
         self.initialze_wheel_simplified_names_map()
         self.initialize_wheels_movement_map()
         self.initialize_bodies_list()
+        self.logger = logger
 
         # Cause-related parameters
         self.initial_cause:Cause = CauseWrapper.model_validate_json(cause).cause
@@ -136,6 +145,7 @@ class CausesSimulator:
         self.angularSpeed = 0.0
         self.historical = []
         self.engine_wrapper = EnginePybullet(self)
+        self.forwardSpeed = 0.0
 
         # Engine parameters
         self.physicsClient = p.connect(p.GUI)
@@ -220,17 +230,15 @@ class CausesSimulator:
     def apply_simulation_params(self):
         """ Applies the currently stored simulation scene parameters to the real scene """
         p.setGravity(0, 0, self.simulation_scene.gravity)
-        self.forwardSpeed = self.simulation_scene.robot_velocity
         self.initial_position = self.simulation_scene.initial_robot_position
         self.initial_orientation = self.simulation_scene.initial_robot_orientation
         self.bottle_position = self.simulation_scene.bottle_position
         self.bottle_orientation = self.simulation_scene.bottle_orientation
-        self.final_position = self.simulation_scene.final_robot_position
-        self.final_orientation = self.simulation_scene.final_robot_orientation
         self.problem_position = self.simulation_scene.problem_position
         self.problem_orientation = self.simulation_scene.problem_orientation
         self.simulation_length = self.simulation_scene.simulation_length
         self.num_of_repetitions = self.simulation_scene.num_of_repetitions
+        self.list_of_target_velocities = self.simulation_scene.list_of_target_velocities
 
     def simulate(self):
         """ Simulates a step of the current iteration. """
@@ -240,7 +248,7 @@ class CausesSimulator:
         while (self.simulationTime) < float(self.simulation_length):
             
             it = time.time()
-            self.do_acceleration_robot()
+            self.do_acceleration_robot(self.simulationTime)
             self.current_cause.apply_compute(self.engine_wrapper)
             p.stepSimulation()
             self.record_imu()
@@ -335,8 +343,8 @@ class CausesSimulator:
     # =============== ROBOT KINEMATICS  ================
     # ==================================================
 
-    def do_acceleration_robot(self):
-        wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.forwardSpeed, self.angularSpeed)
+    def do_acceleration_robot(self, simulationTime):
+        wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.get_target_velocity(simulationTime), self.angularSpeed)
         for motor_name in self.motors:
             if not self.wheel_movement[motor_name]: wheels_velocity[motor_name] = 0
         for motor_name in self.motors:
@@ -344,8 +352,20 @@ class CausesSimulator:
                                     jointIndex=self.joints_name[motor_name],
                                     controlMode=p.VELOCITY_CONTROL,
                                     targetVelocity=wheels_velocity[motor_name],
-                                    force=10)
+                                    force=10
+            )
             
+    def get_target_velocity(self, simulationTime):
+        """ Get the target forward velocity of the robot at a timestamp in seconds. """
+        # Get velocity from closest timestamp in the list BEFORE the given one
+        closest_timestamp = min([h for h in self.list_of_target_velocities[TIMESTAMP] if h <= simulationTime], key=lambda h: abs(h - simulationTime), default=None)
+        # Get index of the closest timestamp
+        if closest_timestamp is not None:
+            index = self.list_of_target_velocities[TIMESTAMP].index(closest_timestamp)
+            return self.list_of_target_velocities[ADV_SPEED][index]
+        else:
+            self.logger.log(f"No target velocity found for simulation time {simulationTime}. Returning default stop (0) speed.", style="yellow")
+            return 0
 
     def get_forward_velocity(self):
         """
@@ -407,7 +427,7 @@ class CausesSimulator:
         joint_name_to_id = {}
         # Get number of joints in the model
         num_joints = p.getNumJoints(robot_id)
-        # print("Num joints:", num_joints)
+        # self.logger.log("Num joints:", num_joints)
 
         # Populate the dictionary with joint nad
         for i in range(num_joints):
@@ -434,7 +454,7 @@ class CausesSimulator:
         link_name_to_id = {}
         # Get number of joints in the model
         num_links = p.getNumJoints(robot_id)
-        # print("Num links:", num_links)
+        # self.logger.log("Num links:", num_links)
 
         # Populate the dictionary with link names and IDs
         for i in range(num_links):
@@ -445,7 +465,10 @@ class CausesSimulator:
 
 
 def main():
-    print("Starting causes simulator...")
+    # Init logger
+    os.path.exists("logs/causes_simulator") or os.makedirs("logs/causes_simulator")
+    logger = Logger(f"logs/causes_simulator/causes_simulator_{time.strftime("%Y%m%d_%H%M%S")}.log")
+    logger.log("Starting causes simulator...")
     parser = argparse.ArgumentParser(
         prog = "Causes simulator",
         description = "Simulates multiple iterations of a scenary and a cause given its data.",
@@ -458,21 +481,26 @@ def main():
     parser.add_argument('-rt', '--real_time', required=False, help="Run simulations at real-time speed. Not recommended outside of debugging.", action='store_true')
     args = parser.parse_args()
 
-    print("Arguments parsed successfully.")
-    simulator = CausesSimulator(args.cause, args.simulation_scene, args.pipe, args.real_time)
-    
-    print("Starting simulations...")
-    simulator.doSimulations()    
-    
-    print(f"""Simulations done.
-    Historical data:
-        Number of historicals: {len(simulator.historical)}
-        Combined number of recordings: {sum(len(h[HISTORY][TIMESTAMP]) for h in simulator.historical)}""")
-    
-    print("Sending historicals to parent process...")
-    simulator.send_history_to_parent()
-    
-    print("Sent. Exiting...")
+    try:
+        logger.log("Arguments parsed successfully.")
+        simulator = CausesSimulator(args.cause, args.simulation_scene, args.pipe, args.real_time, logger)
+        
+        logger.log("Starting simulations...")
+        simulator.doSimulations()    
+        
+        logger.log(f"""Simulations done.
+        Historical data:
+            Number of historicals: {len(simulator.historical)}
+            Combined number of recordings: {sum(len(h[HISTORY][TIMESTAMP]) for h in simulator.historical)}""")
+        
+        logger.log("Sending historicals to parent process...")
+        simulator.send_history_to_parent()
+        
+        logger.log("Sent. Exiting...")
+    except Exception as e:
+        logger.log(f"Fatal exception occurred: {e}", style="bold red")
+        logger.log(traceback.format_exc(), style="red")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

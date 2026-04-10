@@ -19,16 +19,20 @@
 #    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+import threading
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from rich.console import Console
 from genericworker import *
 import interfaces as ifaces
 from src.simulation_scene import SimulationScene
+from src.logger import Logger
 
 
 import json
 import pybullet as p
+import episodic_memory_api as mem
 import numpy as np
 import locale
 import matplotlib.pyplot as plt
@@ -38,27 +42,29 @@ import time
 import os
 import subprocess
 import sys
-import episodic_memory_api as mem
 from concurrent.futures import ProcessPoolExecutor
 from .agent_generator import *
 
 # File constants
 JSON_FILE = "src/causes.json"
 AGENTS_FOLDER = "agents/"
+EM_HISTORY_FILE = "src/mission_Follow Path_25032026_120505.txt"
 
 # Keys of IMU history dictionary
 TIMESTAMP = "timestamp"
 ACCELEROMETER = "accelerometer"
 GYROSCOPE = "gyroscope"
 BOTTLE_POSITION = "bottle_position"
+ADV_SPEED = "adv_speed"
 
 # Keys of IMU historical dictionary (recieved from causes simulator)
 HISTORY = "history"
 GENERATED_INSTANCES = "generated_instances"
 
 # Positions of the bodies in the scene
-ROBOT_POS = [-3.7, -0.7, 0.01]
-BOTTLE_POS = [-3.65, -0.59, 0.7725]
+ROBOT_POS = [-3.7, -0.3, 0.0325]
+PROBLEM_POS = [0.0, 0.04, 0.001]
+BOTTLE_POS = [-3.65, -0.19, 0.795]
 
 
 matplotlib.use("TkAgg")
@@ -80,17 +86,6 @@ class SpecificWorker(GenericWorker):
     def __init__(self, proxy_map, configData, startup_check=False):
         super(SpecificWorker, self).__init__(proxy_map, configData)
         self.Period = configData["Period"]["Compute"]
-
-        try:
-            signals.connect(self.g, signals.UPDATE_NODE_ATTR, self.update_node_att)
-            signals.connect(self.g, signals.UPDATE_NODE, self.update_node)
-            signals.connect(self.g, signals.DELETE_NODE, self.delete_node)
-            signals.connect(self.g, signals.UPDATE_EDGE, self.update_edge)
-            signals.connect(self.g, signals.UPDATE_EDGE_ATTR, self.update_edge_att)
-            signals.connect(self.g, signals.DELETE_EDGE, self.delete_edge)
-            console.print("signals connected")
-        except RuntimeError as e:
-            print(e)
     
         if startup_check:
             self.startup_check()
@@ -100,9 +95,17 @@ class SpecificWorker(GenericWorker):
 
         locale.setlocale(locale.LC_NUMERIC, 'en_US.UTF-8')
 
+        # Init logger
+        os.path.exists("logs/specific_worker") or os.makedirs("logs/specific_worker")
+        self.logger = Logger(f"logs/specific_worker/specific_worker_{time.strftime("%Y%m%d_%H%M%S")}.log")
+
         self.print_dsr_signals = False # PONER A TRUE SI SE QUIERE VER EN CONSOLA LAS SEÑALES DSR
 
         self.state = "IDLE" # Possible states: "IDLE", "INNER_SIMULATOR"
+
+        # Clear terminal
+        os.system('cls' if os.name == 'nt' else 'clear')
+        
 
 
         # ================ PYBULLET SIMULATION SETUP  ================
@@ -166,39 +169,163 @@ class SpecificWorker(GenericWorker):
         self.sim_scene = SimulationScene.model_construct()
         # Set initial pose (Debugging purposes)
         self.sim_scene.gravity = -9.81
-        self.sim_scene.initial_robot_position, self.sim_scene.initial_robot_orientation = p.getBasePositionAndOrientation(self.robot)
-        self.sim_scene.robot_velocity = 0
+        self.sim_scene.initial_robot_position, self.sim_scene.initial_robot_orientation = ROBOT_POS, [0,0,0,1]
 
+        # ================ EPISODIC MEMORY API =================
+        # ======================================================
+        self.mem_api = mem.EpisodicMemoryAPI(EM_HISTORY_FILE)
+        
+    def get_robot_adv_speed_history(self):
+        self.robot_adv_speed_history = {}
+        self.robot_adv_speed_history[TIMESTAMP] = []
+        self.robot_adv_speed_history[ADV_SPEED] = []
+        if self.mem_api.is_ready():
+            robot_events = self.mem_api.get_node_history_by_name("robot")
+            initial_ts = robot_events[0].timestamp
+            
+            # Print statistics of type of events in robot history
+            event_types = {}
+            for event in robot_events:
+                if event.modification_type not in event_types:
+                    event_types[event.modification_type] = 1
+                else:
+                    event_types[event.modification_type] += 1
+            self.logger.log(f"Robot events in episodic memory by modification type:", style="bold green")
+            for mod_type in event_types:
+                self.logger.log(f"    Type {mod_type}: {event_types[mod_type]} events", style="green")
+                      
+            # Filter by modification type "K" (Keyframe)
+            robot_events = [event for event in robot_events if event.modification_type == "K" and "robot_ref_adv_speed" in event.attributes]
+            self.logger.log(f"Found {len(robot_events)} robot events in episodic memory with modification type K related to robot_ref_adv_speed.", style="bold green")
+            for event in robot_events:
+                corrected_ts = event.timestamp - initial_ts
+                event.timestamp = corrected_ts
+                if event.attributes.get("robot_ref_adv_speed") is not None:
+                    self.robot_adv_speed_history[TIMESTAMP].append(corrected_ts * 1e-9)
+                    self.robot_adv_speed_history[ADV_SPEED].append(event.attributes["robot_ref_adv_speed"].value)
+                break
+            
+            # Filter by modification type "MNA" (Modified Node Attribute)
+            robot_events = self.mem_api.get_node_history_by_name("robot")
+            robot_events = [event for event in robot_events if event.modification_type == "MNA" and "robot_ref_adv_speed" in event.attributes]
+            self.logger.log(f"Found {len(robot_events)} robot events in episodic memory with modification type MNA related to robot_ref_adv_speed.", style="bold green")
+            for event in robot_events:
+                corrected_ts = event.timestamp - initial_ts
+                event.timestamp = corrected_ts
+                if event.attributes.get("robot_ref_adv_speed") is not None:
+                    self.robot_adv_speed_history[TIMESTAMP].append(corrected_ts * 1e-9)
+                    self.robot_adv_speed_history[ADV_SPEED].append(event.attributes["robot_ref_adv_speed"].value)
+                    
+            return self.robot_adv_speed_history
+        else:
+            self.logger.log("Episodic Memory API is not ready! Wake up...", style="bold red")
+            return None
 
-    def init_imu_record(self):
-        """ Initialize the real IMU history dictionary for recording sensor data during the mission. """
+    
+    def convert_episodic_to_imu_history(self, list_of_ts):
+        """ Convert the episodic memory mission to the IMU history format given a list of timestamps to fill. """
         self.imu_history = {}
         self.imu_history[TIMESTAMP] = []
         self.imu_history[ACCELEROMETER] = []
         self.imu_history[GYROSCOPE] = []
+        
+        if self.mem_api.is_ready():
+            # Download the event list
+            imu_events = self.mem_api.get_node_history_by_name("imu")
+            initial_ts = imu_events[0].timestamp
+            # Filter by modification type "MNA" (Modified Node Attribute)
+            imu_events = [event for event in imu_events if event.modification_type == "MNA"]
+            initial_acc = [0,0,0]
+            initial_gyro = [0,0,0]
+            
+            self.logger.log(f"Found {len(imu_events)} IMU events in episodic memory with modification type MNA.", style="bold green")
+
+            # Correct each ts of the event list
+            for event in imu_events:
+                corrected_ts = event.timestamp - initial_ts
+                event.timestamp = corrected_ts
 
 
-    def record_imu(self, current_time):
-        """" Record the current real IMU measurements and store it at the IMU history dictionary. """ 
-        # Get real IMU node data from DSR
-        real_imu_node = self.g.get_node("imu")
-        if real_imu_node is not None:
-            acc = real_imu_node.attrs["imu_accelerometer"].value
-            ang = real_imu_node.attrs["imu_gyroscope"].value
-        self.imu_history[TIMESTAMP].append(current_time)
-        self.imu_history[ACCELEROMETER].append(acc.tolist())
-        self.imu_history[GYROSCOPE].append(ang.tolist())
+            # Recreate event history to imy history format
+            for ts in list_of_ts:
+                # Convert ts (seconds) to nanoseconds
+                ts = int(ts * 1e9)
+                # Get the value of acc and gyro from the closest timestamp before ts (using lambda function)
+                candidates = [event for event in imu_events if event.timestamp <= ts]
+                closest_event = min(candidates, key=lambda event: abs(event.timestamp - ts), default=None)
+                if closest_event is not None:
+                    acc = closest_event.attributes["imu_accelerometer"] if "imu_accelerometer" in closest_event.attributes else initial_acc
+                    gyro = closest_event.attributes["imu_gyroscope"] if "imu_gyroscope" in closest_event.attributes else initial_gyro
+                    self.logger.log(f"\n\nacc printed: {acc}, acc printed as value:{acc.value} \n\n", style="cyan")
+                    self.logger.log(f"gyro printed: {gyro}, gyro printed as value: {gyro.value}")
+                    # acc and gyro are float vectors. Convert to tuples.
+                    acc = (acc.get(0), acc.get(1), acc.get(2))
+                    gyro = (gyro.get(0), gyro.get(1), gyro.get(2))
+                    initial_acc = acc
+                    initial_gyro = gyro
+                    self.imu_history[TIMESTAMP].append(ts * 1e-9) # Convert back to seconds for easier handling
+                    self.imu_history[ACCELEROMETER].append(acc)
+                    self.imu_history[GYROSCOPE].append(gyro)
+                    self.logger.log(f"Bonding IMU history ts:{ts} to episodic value at {closest_event.timestamp} with acc {acc} and gyro {gyro} (there were {len(candidates)} candidates).", style="purple")
+                else:
+                    acc = initial_acc
+                    gyro = initial_gyro
+                    self.logger.log(f"No IMU event found in episodic memory for or before timestamp {ts}. Using last known values: acc {acc} and gyro {gyro}.", style="yellow")
+             
+    
+            print(f"Converted {len(imu_events)} imu events to IMU history format ({len(self.imu_history[TIMESTAMP])} frames).")
+        else:
+            self.logger.log("Episodic Memory API is not ready! WTF?", style="bold red")
+            return
+
+    def get_simulation_length_from_episodic_memory(self):
+        """ Get the length of the simulation from the episodic memory, by looking for the last timestamp of the "imu" node history. """
+        if self.mem_api.is_ready():
+            imu_events = self.mem_api.get_node_history_by_name("imu")
+            if len(imu_events) > 0:
+                last_ts = imu_events[-1].timestamp
+                initial_ts = imu_events[0].timestamp
+                simulation_length = (last_ts - initial_ts) * 1e-9 # Convert from nanoseconds to seconds
+                print(f"Simulation length obtained from episodic memory: lts:{last_ts} - its:{initial_ts} = {simulation_length} seconds.")
+                return simulation_length
+            else:
+                print("No IMU events found in episodic memory!")
+                return None
+        else:
+            print("Episodic Memory API is not ready! WTF?")
+            return None    
+
+    # TODO: The robot does not store it's position: Is it relative? In that case, remove this.
+    # def get_robot_pos_ori_from_episodic_memory(self):
+    #     """ Get the initial position and orientation of the robot from the episodic memory, by looking for the first timestamp of the "robot" node history. """
+    #     if self.mem_api.is_ready():
+    #         robot_events = self.mem_api.get_node_history_by_name("robot")
+    #         if len(robot_events) > 0:
+    #             for event in robot_events:
+    #                 print(f"Robot event id {event.timestamp} with type {event.modification_type} and attributes {event.attributes}")
+    #                 initial_pos = event.attributes["pos"].value if "pos" in event.attributes else None
+    #                 initial_ori = event.attributes["ori"].value if "ori" in event.attributes else None
+    #                 if initial_pos is not None and initial_ori is not None:
+    #                     return initial_pos, initial_ori
+    #         else:
+    #             print("No robot events found in episodic memory!")
+    #             return None, None
+    #     else:
+    #         print("Episodic Memory API is not ready! WTF?")
+    #         return None, None
 
 
     # DEBUG: Write fake JSON file
     def writeSimulationScene(self):
        """ DEBUG: Write fake JSON file """
        # Fake SIM_SCENE JSON file
-       self.sim_scene.problem_position, self.sim_scene.problem_orientation = p.getBasePositionAndOrientation(self.robot)
-       self.sim_scene.simulation_length = self.actual_time - self.initial_time
+       self.logger.log("Writing simulation scene to sim_scene.json...", style="bold purple")
+       self.sim_scene.problem_position, self.sim_scene.problem_orientation = PROBLEM_POS, [0,0,0,1]
+       self.sim_scene.simulation_length = self.get_simulation_length_from_episodic_memory()
+       self.sim_scene.list_of_target_velocities = self.get_robot_adv_speed_history() if self.get_robot_adv_speed_history() is not None else []
        self.sim_scene.num_of_repetitions = 10
-       self.sim_scene.bottle_position = BOTTLE_POS
-       self.sim_scene.bottle_orientation = [0,0,0,0]
+       self.sim_scene.bottle_position = BOTTLE_POS # TODO: Constant
+       self.sim_scene.bottle_orientation = [0,0,0,0] # TODO: Constant
        self.sim_scene.model_validate(self.sim_scene.__dict__)
        file = open("src/sim_scene.json", "w")
        file.write(self.sim_scene.model_dump_json(indent=4))
@@ -233,149 +360,220 @@ class SpecificWorker(GenericWorker):
             self.publish_imu_to_dsr(actual_imu_measurement[0], actual_imu_measurement[1])
 
         p.stepSimulation()
-        match self.state:
-            case "IDLE":
-                follow_node = self.g.get_node("follow_me")
-                if follow_node is not None and follow_node.attrs["aff_interacting"].value:
-                    self.state = "INNER_SIMULATOR"
-                    self.init_imu_record()
-                    self.initial_time = time.time()
-                    self.actual_time = time.time()
-                pass
+        try:
+            match self.state:
+        
+                case "IDLE":
+                    
+                    follow_node = None
+                    for node in self.graphs["episodic"].get_nodes():
+                        if node.name.startswith("Search Problem Cause"):
+                            follow_node = node
+                            break
+                    
+                    if follow_node is not None and follow_node.attrs["status"].value == "running":
+                        self.state = "SIMULATE_REASON"
+                        self.initial_time = time.time()
+                        self.actual_time = time.time()
+                        self.writeSimulationScene()
+                        # TODO: Cargar archivo desde este nodo en vez de arriba
 
-            case "INNER_SIMULATOR":
-                self.forward_vel, self.angular_vel = self.get_velocities_from_dsr()
-                wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.forward_vel, self.angular_vel)
-                for motor_name in self.motors:
-                    p.setJointMotorControl2(bodyUniqueId=self.robot,
-                                            jointIndex=self.joints_name[motor_name],
-                                            controlMode=p.VELOCITY_CONTROL,
-                                            targetVelocity=wheels_velocity[motor_name],
-                                            force=10)
-                self.sim_scene.final_robot_position, self.sim_scene.final_robot_orientation = p.getBasePositionAndOrientation(self.robot)
-                self.actual_time = time.time()
-                self.sim_scene.robot_velocity = max(self.get_velocities_from_dsr()[0], self.sim_scene.robot_velocity)
-                self.record_imu(self.actual_time - self.initial_time)
-                
-                if self.check_for_problem():
-                    # Stop moving the robot
-                    for motor_name in self.motors:
-                        p.setJointMotorControl2(bodyUniqueId=self.robot,
-                                                jointIndex=self.joints_name[motor_name],
-                                                controlMode=p.VELOCITY_CONTROL,
-                                                targetVelocity=0,
-                                                force=10)
-                        
-                    self.state = "SIMULATE_REASON"
-                
-            case "SIMULATE_REASON":
-                # Read JSON to get causes
-                self.loadCausesJson()
+        
+                    
+                case "SIMULATE_REASON":
+                    # Read JSON to get causes
+                    self.loadCausesJson()
 
-                # Launch subprocesses for simulation
-                print("Launching subprocesses...")                
-                pids = []
-                historicals = {}
-                for cause in self.causes_data:
-                    rpipe, wpipe = os.pipe()
-                    json_data = {"cause": cause}
-                    json_data = json.dumps(json_data)
-                    pids.append([subprocess.Popen([str(sys.executable), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=(wpipe,)), rpipe])
-                    # Close wpipe descriptor to prevent deadlocks
-                    os.close(wpipe)
-                
-                # Wait for subprocesses and collect pipe data
-                print("Waiting for subprocesses...")
-                while (True):
-                    # pid[0] is the Popen class itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
+                    # Launch subprocesses for simulation
+                    print("Launching subprocesses...")                
+                    pids = []
+                    historicals = {}
+                    for cause in self.causes_data:
+                        rpipe, wpipe = os.pipe()
+                        json_data = {"cause": cause}
+                        json_data = json.dumps(json_data)
+                        pids.append([subprocess.Popen([str(sys.executable), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=(wpipe,)), rpipe])
+                        # Close wpipe descriptor to prevent deadlocks
+                        os.close(wpipe)
+                    
+                    # Wait for subprocesses and collect pipe data
+                    print("Waiting for subprocesses...")
+                    while (True):
+                        # pid[0] is the Popen class itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
+                        for pid in pids:
+                            if pid[0] not in historicals:
+                                pipe = os.fdopen(pid[1])
+                                print(f"Now reading pipe of process {pid[0]}...")
+                                historicals[pid[0]] = pipe.read()
+                                pipe.close()
+                                print(f"Pipe for {pid[0]} has been read!")
+                                
+                        if len(historicals) == len(pids): break
+
+                    # Transform pipe data from JSON string to dictionary
                     for pid in pids:
-                        if pid[0] not in historicals:
-                            pipe = os.fdopen(pid[1])
-                            print(f"Now reading pipe of process {pid[0]}...")
-                            historicals[pid[0]] = pipe.read()
-                            pipe.close()
-                            print(f"Pipe for {pid[0]} has been read!")
-                            
-                    if len(historicals) == len(pids): break
-
-                # Transform pipe data from JSON string to dictionary
-                for pid in pids:
-                    historicals[pid[0]] = json.loads(historicals[pid[0]])  
-    
-                print(f"Received historicals from {len(historicals)} simulations.")
-                i = 0
-                for h in historicals:
-                    print(f"    Historical {i} recordings: {len(historicals[h])}")
-                    i += 1
-                print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
-
-                # Check for any possible matches between causes and real IMU's
-                threads = []
-                sim_out = {}
-                sim_out["sim_scene"] = self.sim_scene.model_dump()
-                sim_out["registers"] = []
-                # {cause_definition: "asdasdasdas", top_five:[]}, {cause_definition: "asdas", top_five:[]}
-                with ProcessPoolExecutor(max_workers=2) as executor:
-                    # Launch proccesses
-                    for h in historicals:
-                        threads.append(executor.submit(SpecificWorker.find_matching_imu_recordings, self.imu_history, historicals[h]))
-                    # Wait for processes and check results
+                        historicals[pid[0]] = json.loads(historicals[pid[0]])  
+        
+                    print(f"Received historicals from {len(historicals)} simulations.")
                     i = 0
                     for h in historicals:
-                        res = threads[i].result()
-                        items = []
-                        print("Top 5 best recordings for cause", self.causes_data[i]["name"], ":")
-                        for rec in res:
-                            print("\tRecording", rec[0], "with score", rec[1])
-                            items.append(historicals[h][rec[0]]) #stores the whole recording (ts, acc and gyro) of the historical with id rec[0]
-                        
-                        row = {"cause_definition": self.causes_data[i], "top_five": items}
-                        sim_out["registers"].append(row)
+                        print(f"    Historical {i} recordings: {len(historicals[h])}")
                         i += 1
 
-                # Write results to JSON file
-                
-                # Sim_output structure:
-                # sim_out = {
-                #     "sim_scene": {JSON data from sim_scene.json},
-                #     "registers": [
-                #         {
-                #             "cause_definition": {JSON data from causes.json},
-                #             "top_five": [
-                #                 {
-                #                     "timestamp": [ts1, ts2, ts3, ...],
-                #                     "accelerometer": [[acc_x1, acc_y1, acc_z1
-                #                                      [acc_x2, acc_y2, acc_z2],
-                #                                      [acc_x3, acc_y3, acc_z3],
-                #                                      ...],
-                #                     "gyroscope": [[gyro_x1, gyro_y1, gyro_z1
-                #                                    [gyro_x2, gyro_y2, gyro_z2],
-                #                                    [gyro_x3, gyro_y3, gyro_z3],
-                #                                    ...]
-                #                 },
-                #                 ... (up to 5 recordings)
-                #             ]
-                #         },
-                #         ... (one for each cause)
-                #     ]
-                # }
-                
-                output = open(f"sim_output.json", "w")
-                output.write(json.dumps(sim_out, indent=4))
-                output.close()
-                
-                print("Simulations finished. Results written to sim_output.json!")
-                
-                # Create agent template (CDSL) for each cause
-                for cause in self.causes_data:
-                    if not generate_agent(cause["name"], AGENTS_FOLDER):
-                        print("Error while generating agent template for cause", cause["name"])
+                    # Convert episodic memory history to IMU history given one of the historicals ts list as an example.
+                    list_of_ts = historicals[pids[0][0]][0][HISTORY][TIMESTAMP]
+                    self.convert_episodic_to_imu_history(list_of_ts)
+                    print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
+
+                    # Graph an example of the real IMU history (accelerometer and gyro)
+                    axis_labels = ["X", "Y", "Z"]
+                    axis_colors = ["tab:red", "tab:green", "tab:blue"]
+                    plt.figure(figsize=(12, 5))
+                    plt.suptitle("Real IMU history from Episodic Memory", fontsize=16)
+                    # Accelerometer
+                    plt.subplot(1, 2, 1)
+                    plt.title("Accelerometer")
+                    for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
+                        real_acc = [v[j] for v in self.imu_history[ACCELEROMETER]]
+                        plt.plot(self.imu_history[TIMESTAMP], real_acc, color=color, linestyle="-", label=f"Real {axis}")
+                    plt.xlabel("Time (s)")
+                    plt.ylabel("Acceleration (m/s^2)")
+                    plt.legend()
+                    # Gyroscope
+                    plt.subplot(1, 2, 2)
+                    plt.title("Gyroscope")
+                    for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
+                        real_gyro = [v[j] for v in self.imu_history[GYROSCOPE]]
+                        plt.plot(self.imu_history[TIMESTAMP], real_gyro, color=color, linestyle="-", label=f"Real {axis}")
+                    plt.xlabel("Time (s)")
+                    plt.ylabel("Angular Velocity (rad/s)")
+                    plt.legend()
+                    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                    plt.show()
+
+                    # Check for any possible matches between causes and real IMU's
+                    threads = []
+                    sim_out = {}
+                    sim_out["sim_scene"] = self.sim_scene.model_dump()
+                    sim_out["registers"] = []
+                    # {cause_definition: "asdasdasdas", top_five:[]}, {cause_definition: "asdas", top_five:[]}
+                    with ProcessPoolExecutor(max_workers=2) as executor:
+                        # Launch proccesses
+                        for h in historicals:
+                            threads.append(executor.submit(SpecificWorker.find_matching_imu_recordings, self.imu_history, historicals[h]))
+                        # Wait for processes and check results
+                        i = 0
+                        for h in historicals:
+                            res = threads[i].result()
+                            items = []
+                            print("Top 5 best recordings for cause", self.causes_data[i]["name"], ":")
+                            for rec in res:
+                                print("\tRecording", rec[0], "with score", rec[1])
+                                items.append(historicals[h][rec[0]]) #stores the whole recording (ts, acc and gyro) of the historical with id rec[0]
+                            
+                            row = {"cause_definition": self.causes_data[i], "top_five": items}
+                            sim_out["registers"].append(row)
+                            i += 1
+
+                    # Write results to JSON file
                     
-                print("Agents templated generated at folder", AGENTS_FOLDER)
-            
-                self.state = "IDLE"                
+                    # Sim_output structure:
+                    # sim_out = {
+                    #     "sim_scene": {JSON data from sim_scene.json},
+                    #     "registers": [
+                    #         {
+                    #             "cause_definition": {JSON data from causes.json},
+                    #             "top_five": [
+                    #                 {
+                    #                     "timestamp": [ts1, ts2, ts3, ...],
+                    #                     "accelerometer": [[acc_x1, acc_y1, acc_z1
+                    #                                      [acc_x2, acc_y2, acc_z2],
+                    #                                      [acc_x3, acc_y3, acc_z3],
+                    #                                      ...],
+                    #                     "gyroscope": [[gyro_x1, gyro_y1, gyro_z1
+                    #                                    [gyro_x2, gyro_y2, gyro_z2],
+                    #                                    [gyro_x3, gyro_y3, gyro_z3],
+                    #                                    ...]
+                    #                 },
+                    #                 ... (up to 5 recordings)
+                    #             ]
+                    #         },
+                    #         ... (one for each cause)
+                    #     ]
+                    # }
+                    
+                    # Show a graph comparing the real IMU history with the best recording of the top for each cause (a graph per cause)
+                    axis_labels = ["X", "Y", "Z"]
+                    axis_colors = ["tab:red", "tab:green", "tab:blue"]
+
+                    # debug: make imu_history a flat line to easily compare with the simulated ones
+                    #self.imu_history[ACCELEROMETER] = [[0,0,0] for _ in self.imu_history[ACCELEROMETER]]
+                    #self.imu_history[GYROSCOPE] = [[0,0,0] for _ in self.imu_history[GYROSCOPE]]
+
+                    for i, cause in enumerate(self.causes_data):
+                        best_recording = sim_out["registers"][i]["top_five"][0]  # Best recording for this cause
+
+                        plt.figure(figsize=(12, 5))
+                        plt.suptitle(f"Comparison of real IMU history with best recording of cause: {cause['name']}", fontsize=16)
+
+                        # Accelerometer
+                        plt.subplot(1, 2, 1)
+                        plt.title("Accelerometer")
+                        for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
+                            real_acc = [v[j] for v in self.imu_history[ACCELEROMETER]]
+                            sim_acc = [v[j] for v in best_recording[HISTORY][ACCELEROMETER]]
+                            plt.plot(self.imu_history[TIMESTAMP], real_acc, color=color, linestyle="-", label=f"Real {axis}")
+                            plt.plot(best_recording[HISTORY][TIMESTAMP], sim_acc, color=color, linestyle="--", label=f"Sim {axis}")
+                        plt.xlabel("Time (s)")
+                        plt.ylabel("Acceleration (m/s^2)")
+                        plt.legend()
+
+                        # Gyroscope
+                        plt.subplot(1, 2, 2)
+                        plt.title("Gyroscope")
+                        for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
+                            real_gyro = [v[j] for v in self.imu_history[GYROSCOPE]]
+                            sim_gyro = [v[j] for v in best_recording[HISTORY][GYROSCOPE]]
+                            plt.plot(self.imu_history[TIMESTAMP], real_gyro, color=color, linestyle="-", label=f"Real {axis}")
+                            plt.plot(best_recording[HISTORY][TIMESTAMP], sim_gyro, color=color, linestyle="--", label=f"Sim {axis}")
+                        plt.xlabel("Time (s)")
+                        plt.ylabel("Angular Velocity (rad/s)")
+                        plt.legend()
+
+                        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                        plt.show()
+
+                    output = open(f"sim_output.json", "w")
+                    output.write(json.dumps(sim_out, indent=4))
+                    output.close()
+                    
+                    print("Simulations finished. Results written to sim_output.json!")
+                    
+                    
+                    # Create agent template (CDSL) for each cause
+                    for cause in self.causes_data:
+                        if not generate_agent(cause["name"], AGENTS_FOLDER):
+                            print("Error while generating agent template for cause", cause["name"])
+                        
+                    print("Agents templated generated at folder", AGENTS_FOLDER)
+
+                    # TODO: Usamos terminated porque ahora mismo la misión de buscar causas no se termina.
+                    self.state = "TERMINATED"      
+
+                case "TERMINATED":
+                    pass
                 
+        except Exception as e:            
+            self.logger.log(f"Fatal exception occurred: {e} at line {sys.exc_info()[-1].tb_lineno}", style="bold red")
+            # print traceback
+            import traceback
+            traceback_str = traceback.format_exc()
+            self.logger.log(traceback_str, style="red")
+            exit(1)
+            
         return True
+    
+        
 
     def startup_check(self):
         QTimer.singleShot(200, QApplication.instance().quit)
@@ -383,14 +581,6 @@ class SpecificWorker(GenericWorker):
 
     # =============== SIMULATION HELPERS  ================
     # ====================================================
-
-    def check_for_problem(self):
-        follow_node = self.g.get_node("follow_me")
-        if follow_node is not None:
-                if not follow_node.attrs["aff_interacting"].value:
-                    self.writeSimulationScene()
-                    return True
-        return False
 
     def show_compute_time_step(self):
         """
@@ -401,7 +591,7 @@ class SpecificWorker(GenericWorker):
         self.actual_time = time.time()
         if time.time() - self.print_time > 5:
             self.print_time = time.time()
-            console.print(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
+            self.logger.log(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
             
         return time_step
 
@@ -412,8 +602,7 @@ class SpecificWorker(GenericWorker):
         If there is a match, it means that the cause being simulated could be the reason behind the problem detected in the real robot.
         :param rimu: Dictionary with frames of the real IMU recordings (timestamp, accelerometer and gyroscope)
         :param simu: List of dictioraries, each one with frames of the simulated IMU recordings (timestamp, accelerometer, gyroscope)
-        :param margin: (Default=0.05) Margin of error to consider a match between real and simulated IMU measurements
-        :return: int, the ID of the simulation that matched the real IMU. If no match, return None.
+        :return: list[int], top 5 best matches between real and simulated recordings (sorted by score, lowest first).
         """
         
         # RIMU structure:
@@ -450,13 +639,18 @@ class SpecificWorker(GenericWorker):
         #             ...
         #         }
         #
-        
-        scores = []
+        logger = Logger(f"logs/specific_worker/thread{threading.current_thread().ident}_{time.strftime('%Y%m%d_%H%M%S')}.log")
+
+        # Prepare score list
+        scores = {}
+        for s in range(len(simu)):
+            scores[s] = 0
+
         # for each simu simulation...
         for s in range(len(simu)):
-            print(f"Now sorting {len(simu[s][HISTORY][TIMESTAMP])} simu (id={s}) frames against {len(rimu[TIMESTAMP])} rimu frames.")
+            logger.log(f"Now matching {len(simu[s][HISTORY][TIMESTAMP])} simu (id={s}) frames against {len(rimu[TIMESTAMP])} rimu frames.")
             # for each frame of the simulation...
-            for i in range(len(simu[s][HISTORY])):
+            for i in range(len(simu[s][HISTORY][TIMESTAMP])):
 
                 # Find closest timestamp value of simu to rimu's timestamp
                 ts = min(rimu[TIMESTAMP], key=lambda v: abs(v - simu[s][HISTORY][TIMESTAMP][i]))
@@ -465,11 +659,16 @@ class SpecificWorker(GenericWorker):
                 diff_acc = np.linalg.norm(np.array(simu[s][HISTORY][ACCELEROMETER][i]) - np.array(rimu[ACCELEROMETER][frame_id]))
                 diff_gyro = np.linalg.norm(np.array(simu[s][HISTORY][GYROSCOPE][i]) - np.array(rimu[GYROSCOPE][frame_id]))
                 total_diff = (diff_acc + diff_gyro) / 2
-                scores.append([s, total_diff])
 
-        print(f"Sorting {len(scores)} entries.")
-        scores.sort(key=lambda x: x[1])
-        return scores[:5]
+                logger.log(f"Bonded simu frame {i} (ts={simu[s][HISTORY][TIMESTAMP][i]}) to rimu frame {frame_id} (ts={ts}) with acc diff {diff_acc:.2f} and gyro diff {diff_gyro:.2f} (total diff: {total_diff:.2f}), earning score: {total_diff:.2f}", style="dim")
+
+                scores[s] += total_diff # Update score of this simu frame
+
+            logger.log(f"Finished matching simu (id={s}) frames. Total score was: {scores[s]:.2f}", style="bold green")
+
+        logger.log(f"Finished matching all simu IDs. Now sorting {len(scores)} entries (lowest first).")
+        sorted_scores = sorted(scores.items(), key=lambda item: item[1])
+        return sorted_scores[:5] # Return the top 5 best matches as (simulation_id, score)
     
     
 
@@ -607,7 +806,7 @@ class SpecificWorker(GenericWorker):
 
         robot_node = self.g.get_node("robot")
         if robot_node is None:
-            console.print("Robot node not found in DSR graph", style="bold red")
+            self.logger.log("Robot node not found in DSR graph", style="bold red")
             return
 
         imu_node.attrs["pos_x"] = Attribute(float(robot_node.attrs["pos_x"].value) - 100,
@@ -665,32 +864,3 @@ class SpecificWorker(GenericWorker):
         else:
             self.create_imu_node_in_dsr(acc_measured, angular_vel)
             self.create_edge_in_dsr(self.g.get_node("robot"), self.g.get_node("imu_sintetic"), "has")
-
-
-
-    # =============== DSR SLOTS  ================
-    # =============================================
-
-    def update_node_att(self, id: int, attribute_names: [str]):
-        if self.print_dsr_signals:
-            console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
-
-    def update_node(self, id: int, type: str):
-        if self.print_dsr_signals:
-            console.print(f"UPDATE NODE: {id} {type}", style='green')
-
-    def delete_node(self, id: int):
-        if self.print_dsr_signals:
-            console.print(f"DELETE NODE:: {id} ", style='green')
-
-    def update_edge(self, fr: int, to: int, type: str):
-        if self.print_dsr_signals:
-            console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
-
-    def update_edge_att(self, fr: int, to: int, type: str, attribute_names: [str]):
-        if self.print_dsr_signals:
-            console.print(f"UPDATE EDGE ATT: {fr} to {type} {attribute_names}", style='green')
-
-    def delete_edge(self, fr: int, to: int, type: str):
-        if self.print_dsr_signals:
-            console.print(f"DELETE EDGE: {fr} to {type} {type}", style='green')

@@ -26,7 +26,7 @@ console = Console(highlight=False)
 from pydsr import *
 import numpy as np
 
-CONCEPT_NAME = {{concept_name}}
+CONCEPT_NAME = "{{concept_name}}"
 MODEL_OUTPUT_DIR = "yolo_concept_model"
 META_REPO_DIR = "/home/robolab_practicas/robocomp/components/robocomp-insight/agents/inner_simulator/dino3/"
 
