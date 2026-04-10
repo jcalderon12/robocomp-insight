@@ -4,6 +4,17 @@
 #include <QMouseEvent>
 #include <iostream>
 
+QPair<QColor, QString> MissionDelegate::getPriorityColorAndName(int priority) const {
+    switch (priority) {
+        case 5: return {QColor(200, 0, 0), "Critical"};
+        case 4: return {QColor(255, 100, 0), "High"};
+        case 3: return {QColor(255, 200, 0), "Normal"};
+        case 2: return {QColor(100, 150, 255), "Low"};
+        case 1: return {QColor(150, 150, 150), "Very Low"};
+        default: return {QColor(128, 128, 128), "Unknown"};
+    }
+}
+
 MissionDelegate::MissionDelegate(QObject *parent) : QStyledItemDelegate(parent) {}
 
 QRect MissionDelegate::getToggleButtonRect(const QStyleOptionViewItem &option) const {
@@ -35,6 +46,11 @@ void MissionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     QString name = index.data(Qt::UserRole).toString();
     QString type = index.data(Qt::UserRole + 1).toString();
     auto status  = static_cast<MissionStatus>(index.data(Qt::UserRole + 2).toInt());
+    int priority = index.data(Qt::UserRole + 4).toInt();
+    auto [priorityColor, priorityName] = getPriorityColorAndName(priority);
+
+    // Draw priority color bar on the left
+    painter->fillRect(option.rect.left(), option.rect.top(), PRIORITY_BAR_WIDTH, option.rect.height(), priorityColor);
 
     QFont nameFont = painter->font();
     nameFont.setBold(true);
@@ -42,7 +58,7 @@ void MissionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     nameFont.setItalic(false);
     painter->setFont(nameFont);
     painter->setPen(QColor(50, 50, 50));
-    painter->drawText(option.rect.adjusted(MARGIN, 10, -2*(BTN_WIDTH+MARGIN)-MARGIN, -ITEM_HEIGHT/2 + 5),
+    painter->drawText(option.rect.adjusted(MARGIN + PRIORITY_BAR_WIDTH, 8, -2*(BTN_WIDTH+MARGIN)-MARGIN, -75),
                       Qt::AlignLeft | Qt::AlignTop, name);
 
     QFont typeFont = painter->font();
@@ -51,8 +67,17 @@ void MissionDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     typeFont.setItalic(true);
     painter->setFont(typeFont);
     painter->setPen(QColor(100, 100, 100));
-    painter->drawText(option.rect.adjusted(MARGIN, 32, -2*(BTN_WIDTH+MARGIN)-MARGIN, -ITEM_HEIGHT/2 + 5),
+    painter->drawText(option.rect.adjusted(MARGIN + PRIORITY_BAR_WIDTH, 26, -2*(BTN_WIDTH+MARGIN)-MARGIN, -60),
                       Qt::AlignLeft | Qt::AlignTop, "Type: " + type);
+
+    // Draw priority text
+    QFont priorityFont = painter->font();
+    priorityFont.setBold(false);
+    priorityFont.setPointSize(10);
+    painter->setFont(priorityFont);
+    painter->setPen(priorityColor);
+    painter->drawText(option.rect.adjusted(MARGIN + PRIORITY_BAR_WIDTH, 46, -2*(BTN_WIDTH+MARGIN)-MARGIN, -40),
+                      Qt::AlignLeft | Qt::AlignTop, "Priority: " + priorityName);
 
     QString statusText;
     QColor  statusColor;

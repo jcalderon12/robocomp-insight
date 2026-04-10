@@ -19,6 +19,7 @@ QVariant MissionModel::data(const QModelIndex &index, int role) const {
     if (role == Qt::UserRole + 1) return m.type;
     if (role == Qt::UserRole + 2) return static_cast<int>(missions[index.row()].status);
     if (role == Qt::UserRole + 3) return m.elapsedTime;
+    if (role == Qt::UserRole + 4) return m.priority;
 
     return {};
 }

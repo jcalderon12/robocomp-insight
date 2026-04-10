@@ -155,6 +155,21 @@ private:
 	
 	// Mission scheduler for priority-based mission management
 	MissionScheduler mission_scheduler;
+	
+	// Mission layout control for episodic graph visualization
+	int missions_in_current_row = 0;  // Counter for missions in current row (max 5)
+	float current_y_offset = 200.0f;   // Y offset from robot position (starts at 200)
+	
+	// Autopilot mode control
+	bool autopilot_enabled = false;  // Autopilot ON/OFF
+	
+	// Affordance waiting state: when follow_person mission is waiting for affordance node
+	int waiting_mission_row = -1;  // Row of mission waiting for affordance
+	uint64_t waiting_mission_id = 0;  // ID of mission waiting for affordance
+	
+	// Follow_person mission status tracking
+	bool follow_person_active = false;  // Track if follow_person mission is currently active
+	bool last_aff_interacting_state = false;  // Track previous state of aff_interacting
 
 	void updateMissionTime();
 
@@ -176,11 +191,17 @@ private:
 	void display_debugger_graph();
 
 	// Methods for mission management in episodic graph
-	std::optional<uint64_t> insert_mission_node_episodic(const std::string &mission_name, int row);
+	std::optional<uint64_t> insert_mission_node_episodic(const std::string &mission_name, int row, int priority);
 	void update_mission_status_episodic(uint64_t mission_id, const std::string &status);
 	void create_mission_target_edge(uint64_t mission_id);
 	void delete_mission_target_edge(uint64_t mission_id);
 	std::optional<uint64_t> find_mission_node_by_name(const std::string &mission_name);
+	
+	// Autopilot helper methods - factorized for clarity
+	void create_or_check_follow_person_mission();  // Create follow_person if it doesn't exist
+	void check_affordance_and_activate();  // Check if affordance appeared and activate mission
+	void monitor_aff_interacting_state();  // Monitor aff_interacting attribute changes
+	void on_aff_interacting_false();  // Handle when aff_interacting becomes false
 
 signals:
 	//void customSignal();
