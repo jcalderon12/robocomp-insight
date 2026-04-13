@@ -291,3 +291,5 @@ __marimo__/
 agents/inner_simulator/agents/
 agents/inner_simulator/*.pth
 agents/inner_simulator/*runs/
+agents/inner_simulator/sim_output.json
+agents/mission_controller/recorded_missions/*

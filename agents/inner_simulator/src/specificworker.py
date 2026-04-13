@@ -267,11 +267,9 @@ class SpecificWorker(GenericWorker):
                 if closest_event is not None:
                     acc = closest_event.attributes["imu_accelerometer"] if "imu_accelerometer" in closest_event.attributes else initial_acc
                     gyro = closest_event.attributes["imu_gyroscope"] if "imu_gyroscope" in closest_event.attributes else initial_gyro
-                    self.logger.log(f"\n\nacc printed: {acc}, acc printed as value:{acc.value} \n\n", style="cyan")
-                    self.logger.log(f"gyro printed: {gyro}, gyro printed as value: {gyro.value}")
+                    acc = acc.value
+                    gyro = gyro.value
                     # acc and gyro are float vectors. Convert to tuples.
-                    acc = (acc.get(0), acc.get(1), acc.get(2))
-                    gyro = (gyro.get(0), gyro.get(1), gyro.get(2))
                     initial_acc = acc
                     initial_gyro = gyro
                     self.imu_history[TIMESTAMP].append(ts * 1e-9) # Convert back to seconds for easier handling

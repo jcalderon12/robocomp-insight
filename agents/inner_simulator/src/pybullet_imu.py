@@ -52,7 +52,7 @@ class IMU:
         R_W_IMU = rot_matrix.T
 
         # 4. Aplicar la fórmula sin ruido ni bias (ya desactivados)
-        acc_measured = R_W_IMU @ (acc_linear_world)
+        acc_measured = R_W_IMU @ (acc_linear_world) + self.g_world
         
         # Apply low-pass filter to gyroscope (angular velocity)
         angular_vel = np.array(current_angular_vel)

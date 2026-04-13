@@ -122,7 +122,7 @@ CauseWrapper = create_cause_model(DynamicUnion)
 
 class CausesSimulator:
 
-    def __init__(self, cause, simulation_scene, pipe, real_time=False, logger=Logger()):
+    def __init__(self, cause, simulation_scene, pipe, logger, real_time=False):
         
 
         # ================ PYBULLET SIMULATION SETUP  ================
