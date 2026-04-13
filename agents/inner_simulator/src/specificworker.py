@@ -175,7 +175,12 @@ class SpecificWorker(GenericWorker):
         # ======================================================
         self.mem_api = mem.EpisodicMemoryAPI(EM_HISTORY_FILE)
         
-    def get_robot_adv_speed_history(self):
+    def get_robot_adv_speed_history(self) -> dict | None:
+        """Get a dict of the robot's target speed for each timestamp in the episodic memory, by looking for the "robot_ref_adv_speed" attribute in the "robot" node history.
+            Returns:
+                - dict: with keys "timestamp" and "adv_speed", each one with a list of values for each timestamp found in the episodic memory.
+                - None: if episodic memory is not ready.
+        """
         self.robot_adv_speed_history = {}
         self.robot_adv_speed_history[TIMESTAMP] = []
         self.robot_adv_speed_history[ADV_SPEED] = []
@@ -222,8 +227,14 @@ class SpecificWorker(GenericWorker):
             return None
 
     
-    def convert_episodic_to_imu_history(self, list_of_ts):
-        """ Convert the episodic memory mission to the IMU history format given a list of timestamps to fill. """
+    def convert_episodic_to_imu_history(self, list_of_ts: list) -> dict | None:
+        """Convert the episodic memory mission to the IMU history format given a list of timestamps to fill.
+            Parameters:
+                - list_of_ts (list): List of timestamps in seconds to convert from episodic memory.
+            Returns:
+                - dict: with keys "timestamp", "accelerometer" and "gyroscope", each one with a list of values for each timestamp in the list_of_ts.
+                - None: if episodic memory is not ready.
+        """
         self.imu_history = {}
         self.imu_history[TIMESTAMP] = []
         self.imu_history[ACCELEROMETER] = []
@@ -278,8 +289,13 @@ class SpecificWorker(GenericWorker):
             self.logger.log("Episodic Memory API is not ready! WTF?", style="bold red")
             return
 
-    def get_simulation_length_from_episodic_memory(self):
-        """ Get the length of the simulation from the episodic memory, by looking for the last timestamp of the "imu" node history. """
+
+    def get_simulation_length_from_episodic_memory(self) -> float | None:
+        """Get the length of the simulation from the episodic memory, by looking for the last timestamp of the "imu" node history.
+            Returns:
+                - float: length of the simulation in seconds.
+                - None: if not available.
+        """
         if self.mem_api.is_ready():
             imu_events = self.mem_api.get_node_history_by_name("imu")
             if len(imu_events) > 0:
@@ -295,29 +311,9 @@ class SpecificWorker(GenericWorker):
             print("Episodic Memory API is not ready! WTF?")
             return None    
 
-    # TODO: The robot does not store it's position: Is it relative? In that case, remove this.
-    # def get_robot_pos_ori_from_episodic_memory(self):
-    #     """ Get the initial position and orientation of the robot from the episodic memory, by looking for the first timestamp of the "robot" node history. """
-    #     if self.mem_api.is_ready():
-    #         robot_events = self.mem_api.get_node_history_by_name("robot")
-    #         if len(robot_events) > 0:
-    #             for event in robot_events:
-    #                 print(f"Robot event id {event.timestamp} with type {event.modification_type} and attributes {event.attributes}")
-    #                 initial_pos = event.attributes["pos"].value if "pos" in event.attributes else None
-    #                 initial_ori = event.attributes["ori"].value if "ori" in event.attributes else None
-    #                 if initial_pos is not None and initial_ori is not None:
-    #                     return initial_pos, initial_ori
-    #         else:
-    #             print("No robot events found in episodic memory!")
-    #             return None, None
-    #     else:
-    #         print("Episodic Memory API is not ready! WTF?")
-    #         return None, None
-
 
     # DEBUG: Write fake JSON file
-    def writeSimulationScene(self):
-       """ DEBUG: Write fake JSON file """
+    def writeSimulationScene(self) -> None:
        # Fake SIM_SCENE JSON file
        self.logger.log("Writing simulation scene to sim_scene.json...", style="bold purple")
        self.sim_scene.problem_position, self.sim_scene.problem_orientation = PROBLEM_POS, [0,0,0,1]
@@ -332,8 +328,8 @@ class SpecificWorker(GenericWorker):
        file.close()
 
 
-    def loadCausesJson(self):
-        """ Loads the causes JSON file """
+    def loadCausesJson(self) -> None:
+        """Load the causes JSON file and store it in self.causes_data."""
         try:
             file = open(JSON_FILE, "r")
             causes_data = json.loads(file.read())
@@ -344,12 +340,16 @@ class SpecificWorker(GenericWorker):
             print(f"> [loadCausesJson] Error while reading from {JSON_FILE}: " + str(e))
 
 
-    def __del__(self):
-        """Destructor"""
+    def __del__(self) -> None:
+        """Destructor for cleaning up resources."""
 
 
     @QtCore.Slot()
-    def compute(self):
+    def compute(self) -> bool:
+        """Main computation loop that handles state machine and simulation logic.
+            Returns:
+                - bool: True if computation completed successfully, False otherwise.
+        """
         print(flush=True, end="")
         self.show_compute_time_step()
         actual_imu_measurement = self.imu.get_measurement()
@@ -575,17 +575,17 @@ class SpecificWorker(GenericWorker):
     
         
 
-    def startup_check(self):
-        QTimer.singleShot(200, QApplication.instance().quit)
+    def startup_check(self) -> None:
+        """Perform startup checks and quit the application after a short delay."""
         
 
     # =============== SIMULATION HELPERS  ================
     # ====================================================
 
-    def show_compute_time_step(self):
-        """
-        Get the time step between compute calls
-        :return: time
+    def show_compute_time_step(self) -> float:
+        """Get the time step between compute calls.
+            Returns:
+                - float: Time elapsed since last call in seconds.
         """
         time_step = time.time() - self.actual_time
         self.actual_time = time.time()
@@ -596,13 +596,13 @@ class SpecificWorker(GenericWorker):
         return time_step
 
     @staticmethod
-    def find_matching_imu_recordings(rimu, simu):
-        """
-        Find if there is any match between the real IMU recordings and the simulated ones.
-        If there is a match, it means that the cause being simulated could be the reason behind the problem detected in the real robot.
-        :param rimu: Dictionary with frames of the real IMU recordings (timestamp, accelerometer and gyroscope)
-        :param simu: List of dictioraries, each one with frames of the simulated IMU recordings (timestamp, accelerometer, gyroscope)
-        :return: list[int], top 5 best matches between real and simulated recordings (sorted by score, lowest first).
+    def find_matching_imu_recordings(rimu: dict, simu: list) -> list[tuple]:
+        """Find matches between real IMU recordings and simulated ones. If there is a match, it means that the cause being simulated could be the reason behind the problem detected in the real robot.
+            Parameters:
+                - rimu (dict): Dictionary with real IMU recordings containing keys "timestamp", "accelerometer" and "gyroscope".
+                - simu (list): List of dictionaries with simulated IMU recordings.
+            Returns:
+                - list[tuple]: Top 5 best matches as tuples of (simulation_id, score), sorted by score (lowest first).
         """
         
         # RIMU structure:
@@ -675,12 +675,12 @@ class SpecificWorker(GenericWorker):
     # =============== PYBULLET MODELS INFO  ================
     # ======================================================
 
-    def get_joints_info(self, robot_id):
-        """
-        Get joint names and IDs from a robot model
-
-        @param robot_id: ID of the robot model in the simulation
-        @return: Dictionary with joint names as keys and joint IDs as values
+    def get_joints_info(self, robot_id: int) -> dict:
+        """Get joint names and IDs from a robot model.
+            Parameters:
+                - robot_id (int): ID of the robot model in the PyBullet simulation.
+            Returns:
+                - dict: Joint names as keys and joint IDs as values.
         """
         joint_name_to_id = {}
         # Get number of joints in the model
@@ -702,12 +702,12 @@ class SpecificWorker(GenericWorker):
                                         force=0)
         return joint_name_to_id
 
-    def get_link_info(self, robot_id):
-        """
-        Get link names and IDs from a robot model
-
-        @param robot_id: ID of the robot model in the simulation
-        @return: Dictionary with link names as keys and link IDs as values
+    def get_link_info(self, robot_id: int) -> dict:
+        """Get link names and IDs from a robot model.
+            Parameters:
+                - robot_id (int): ID of the robot model in the PyBullet simulation.
+            Returns:
+                - dict: Link names as keys and link IDs as values.
         """
         link_name_to_id = {}
         # Get number of joints in the model
@@ -726,11 +726,10 @@ class SpecificWorker(GenericWorker):
     # =============== ROBOT KINEMATICS  ================
     # ==================================================
 
-    def get_forward_velocity(self):
-        """
-        Get the forward velocity of the robot
-
-        :return: Forward velocity
+    def get_forward_velocity(self) -> float:
+        """Get the forward velocity of the robot.
+            Returns:
+                - float: Forward velocity of the robot in m/s.
         """
         wheel_velocities = {}
         for motor_name in self.motors:
@@ -741,11 +740,10 @@ class SpecificWorker(GenericWorker):
                             wheel_velocities["frame_back_right2motor_back_right"]) * self.wheels_radius / 4
         return forward_velocity
 
-    def get_angular_velocity(self):
-        """
-        Get the angular velocity of the robot
-
-        :return: Angular velocity
+    def get_angular_velocity(self) -> float:
+        """Get the angular velocity of the robot.
+            Returns:
+                - float: Angular velocity of the robot in rad/s.
         """
         wheel_velocities = {}
         for motor_name in self.motors:
@@ -757,13 +755,13 @@ class SpecificWorker(GenericWorker):
                             2 * self.distance_between_wheels)
         return angular_velocity
 
-    def get_wheels_velocity_from_forward_velocity_and_angular_velocity(self, forward_velocity=0, angular_velocity=0):
-        """
-        Get the velocity of each wheel from the forward velocity of the robot
-
-        :param forward_velocity: Forward velocity of the robot
-        :param angular_velocity: Angular velocity of the robot
-        :return: Dictionary with the velocity of each wheel
+    def get_wheels_velocity_from_forward_velocity_and_angular_velocity(self, forward_velocity: float = 0, angular_velocity: float = 0) -> dict:
+        """Get the velocity of each wheel from the forward velocity and angular velocity of the robot.
+            Parameters:
+                - forward_velocity (float): Forward velocity of the robot in m/s (default: 0).
+                - angular_velocity (float): Angular velocity of the robot in rad/s (default: 0).
+            Returns:
+                - dict: Velocity of each wheel indexed by motor names.
         """
         wheels_velocity = {
             "frame_front_left2motor_front_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
@@ -775,11 +773,10 @@ class SpecificWorker(GenericWorker):
     # ================= DSR INTERACTION  ================
     # ==================================================
 
-    def get_velocities_from_dsr(self):
-        """
-        Get the forward and angular velocities from the DSR graph
-
-        :return: Forward and angular velocities
+    def get_velocities_from_dsr(self) -> tuple[float, float]:
+        """Get the forward and angular velocities from the DSR graph.
+            Returns:
+                - tuple[float, float]: Forward velocity and angular velocity from the DSR graph.
         """
         forward_velocity = 0
         angular_velocity = 0
@@ -795,13 +792,11 @@ class SpecificWorker(GenericWorker):
         return forward_velocity, angular_velocity
     
 
-    def create_imu_node_in_dsr(self, acc_measured, angular_vel):
-        """
-        Create the IMU node in the DSR graph
-
-        :param acc_measured: Measured acceleration
-        :param angular_vel: Angular velocity
-        """
+    def create_imu_node_in_dsr(self, acc_measured: np.ndarray, angular_vel: np.ndarray) -> None:
+        """Create the IMU node in the DSR graph.
+            Parameters:
+                - acc_measured (np.ndarray): Measured acceleration vector.
+                - angular_vel (np.ndarray): Measured angular velocity vector."""
         imu_node = Node(agent_id=self.agent_id, name="imu_sintetic", type="imu")
 
         robot_node = self.g.get_node("robot")
@@ -822,14 +817,12 @@ class SpecificWorker(GenericWorker):
         self.g.insert_node(imu_node)
 
 
-    def update_imu_node_in_dsr(self, imu_node, acc_measured, angular_vel):
-        """
-        Update the IMU node in the DSR graph
-
-        :param imu_node: IMU node in the DSR graph
-        :param acc_measured: Measured acceleration
-        :param angular_vel: Angular velocity
-        """
+    def update_imu_node_in_dsr(self, imu_node: Node, acc_measured: np.ndarray, angular_vel: np.ndarray) -> None:
+        """Update the IMU node in the DSR graph.
+            Parameters:
+                - imu_node (Node): The IMU node to update.
+                - acc_measured (np.ndarray): Measured acceleration vector.
+                - angular_vel (np.ndarray): Measured angular velocity vector."""
         if imu_node.attrs["imu_accelerometer"].value is not None:
             imu_node.attrs["imu_accelerometer"].value = acc_measured.tolist()
         if imu_node.attrs["imu_gyroscope"].value is not None:
@@ -837,26 +830,21 @@ class SpecificWorker(GenericWorker):
         self.g.update_node(imu_node)
 
     
-    def create_edge_in_dsr(self, fr_node, to_node, edge_type):
-        """
-        Create an edge in the DSR graph
-
-        :param fr_node: From node
-        :param to_node: To node
-        :param edge_type: Type of the edge
-        """
+    def create_edge_in_dsr(self, fr_node: Node, to_node: Node, edge_type: str) -> None:
+        """Create an edge in the DSR graph.
+            Parameters:
+                - fr_node (Node): The source node of the edge.
+                - to_node (Node): The target node of the edge.
+                - edge_type (str): Type of the edge relationship."""
         edge = Edge(to_node.id, fr_node.id, edge_type, self.agent_id)
         self.g.insert_or_assign_edge(edge)
 
 
-    def publish_imu_to_dsr(self, acc_measured, angular_vel):
-        """
-
-        Publish the IMU measurements to the DSR graph or create the node if it does not exist
-
-        :param acc_measured: Measured acceleration
-        :param angular_vel: Angular velocity
-        """
+    def publish_imu_to_dsr(self, acc_measured: np.ndarray, angular_vel: np.ndarray) -> None:
+        """Publish the IMU measurements to the DSR graph or create the node if it does not exist.
+            Parameters:
+                - acc_measured (np.ndarray): Measured acceleration vector.
+                - angular_vel (np.ndarray): Measured angular velocity vector."""
         
         imu_node = self.g.get_node("imu_sintetic")
         if imu_node is not None:

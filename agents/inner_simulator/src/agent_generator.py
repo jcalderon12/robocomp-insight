@@ -18,13 +18,27 @@ with open("src/agent_generator_config_template") as f:
 
 # Agent generator functions
 
-def generate_cdsl(cause_name:str, agent_path:str) -> bool:
+def generate_cdsl(cause_name: str, agent_path: str) -> bool:
+    """Generate a CDSL file for the given cause.
+            Parameters:
+                - cause_name (str): Name of the cause.
+                - agent_path (str): Path to the agent directory.
+            Returns:
+                - bool: True if generation was successful.
+    """
     ofile = open(os.path.join(agent_path, f"concept_{cause_name}.cdsl"), "w")
     ofile.write(cdsl_template.render(concept_name=cause_name))
     ofile.close()
     return True
 
-def compile_cdsl(cause_name:str, agent_path:str) -> bool:
+def compile_cdsl(cause_name: str, agent_path: str) -> bool:
+    """Compile a CDSL file and build the agent.
+            Parameters:
+                - cause_name (str): Name of the cause.
+                - agent_path (str): Path to the agent directory.
+            Returns:
+                - bool: True if compilation and build were successful, False otherwise.
+    """
     if os.system(f"robocompdsl {agent_path}/concept_{cause_name}.cdsl {agent_path}/") != 0:
         print("Error compiling CDSL")
         return False
@@ -33,19 +47,40 @@ def compile_cdsl(cause_name:str, agent_path:str) -> bool:
         return False
     return True
     
-def generate_specific_worker(cause_name:str, agent_path:str) -> bool:
+def generate_specific_worker(cause_name: str, agent_path: str) -> bool:
+    """Generate a specificworker.py file for the given cause.
+            Parameters:
+                - cause_name (str): Name of the cause.
+                - agent_path (str): Path to the agent directory.
+            Returns:
+                - bool: True if generation was successful.
+    """
     ofile = open(os.path.join(agent_path, "src", f"specificworker.py"), "w")
     ofile.write(specific_worker_template.render(concept_name=cause_name))
     ofile.close()
     return True
 
-def generate_config(cause_name:str, agent_path:str) -> bool:
+def generate_config(cause_name: str, agent_path: str) -> bool:
+    """Generate a config file for the given cause.
+            Parameters:
+                - cause_name (str): Name of the cause.
+                - agent_path (str): Path to the agent directory.
+            Returns:
+                - bool: True if generation was successful.
+    """
     ofile = open(os.path.join(agent_path, "etc", f"config"), "w")
     ofile.write(config_template.render(concept_name=cause_name))
     ofile.close()
     return True
 
-def generate_agent(cause_name:str, output_path:str) -> bool:
+def generate_agent(cause_name: str, output_path: str) -> bool:
+    """Generate a complete agent with CDSL, specificworker, and config.
+            Parameters:
+                - cause_name (str): Name of the cause.
+                - output_path (str): Path to the output directory.
+            Returns:
+                - bool: True if all generation steps were successful, False otherwise.
+    """
     try:
         # Delete whole folder and all files inside using syscalls
         os.system(f"rm -rf {os.path.join(output_path, cause_name)}")
