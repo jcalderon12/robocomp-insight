@@ -506,7 +506,7 @@ def main():
 
     try:
         logger.log("Arguments parsed successfully.")
-        simulator = CausesSimulator(args.cause, args.simulation_scene, args.pipe, args.real_time, logger)
+        simulator = CausesSimulator(args.cause, args.simulation_scene, args.pipe, logger, args.real_time)
         
         logger.log("Starting simulations...")
         simulator.doSimulations()    

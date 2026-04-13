@@ -21,17 +21,14 @@
 
 import threading
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6 import QtCore
 from rich.console import Console
 from genericworker import *
-import interfaces as ifaces
 from src.simulation_scene import SimulationScene
 from src.logger import Logger
 
 
 import json
-import pybullet as p
 import episodic_memory_api as mem
 import numpy as np
 import locale
@@ -39,7 +36,6 @@ import matplotlib.pyplot as plt
 import matplotlib
 import pandas as pd
 import time
-import os
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -54,12 +50,10 @@ EM_HISTORY_FILE = "src/mission_Follow Path_25032026_120505.txt"
 TIMESTAMP = "timestamp"
 ACCELEROMETER = "accelerometer"
 GYROSCOPE = "gyroscope"
-BOTTLE_POSITION = "bottle_position"
 ADV_SPEED = "adv_speed"
 
 # Keys of IMU historical dictionary (recieved from causes simulator)
 HISTORY = "history"
-GENERATED_INSTANCES = "generated_instances"
 
 # Positions of the bodies in the scene
 ROBOT_POS = [-3.7, -0.3, 0.0325]
@@ -76,12 +70,6 @@ parent_dir = os.path.dirname(dir_name)
 sys.path.append(parent_dir + "/src/")
 console = Console(highlight=False)
 
-from pydsr import *
-
-from pybullet_imu import IMU
-
-from causes_simulator import CausesSimulator
-
 class SpecificWorker(GenericWorker):
     def __init__(self, proxy_map, configData, startup_check=False):
         super(SpecificWorker, self).__init__(proxy_map, configData)
@@ -97,71 +85,14 @@ class SpecificWorker(GenericWorker):
 
         # Init logger
         os.path.exists("logs/specific_worker") or os.makedirs("logs/specific_worker")
-        self.logger = Logger(f"logs/specific_worker/specific_worker_{time.strftime("%Y%m%d_%H%M%S")}.log")
+        self.logger = Logger(f"logs/specific_worker/specific_worker_{time.strftime('%Y%m%d_%H%M%S')}.log")
 
-        self.print_dsr_signals = False # PONER A TRUE SI SE QUIERE VER EN CONSOLA LAS SEÑALES DSR
-
-        self.state = "IDLE" # Possible states: "IDLE", "INNER_SIMULATOR"
+        self.state = "IDLE" # Possible states: "IDLE", "SIMULATE_REASON", "TERMINATED"
 
         # Clear terminal
         os.system('cls' if os.name == 'nt' else 'clear')
-        
 
-
-        # ================ PYBULLET SIMULATION SETUP  ================
-        # ============================================================
-
-        self.physicsClient = p.connect(p.GUI)
-        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
-        
-        # p.setRealTimeSimulation(1) # Enable real-time simulation
-        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15,
-                                     cameraTargetPosition=[-1.3, -0.5, 0.2])
-        
-        self.dt = 1./62. # Simulation time step (60 Hz)
-        p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
-        
-        p.setGravity(0, 0, -9.81)
-
-        # ================= PYBULLET MODELS LOADING  ================
-        # ===========================================================
-
-        flags = p.URDF_USE_INERTIA_FROM_FILE
-
-        # LOAD PLANE IN THE SIMULATION
-        self.plane = p.loadURDF("../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0]) 
-
-        # LOAD ROBOT IN THE SIMULATION
-        self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", ROBOT_POS, flags=flags)
-
-        # LOAD BOTTLE IN THE SIMULATION
-        self.bottle = p.loadURDF("../../etc/URDFs/bottle/bottle.urdf", BOTTLE_POS, flags=flags)
-
-        time.sleep(0.5)
-
-
-        # ================ ROBOT PARAMETERS  ===============
-        # ==================================================
-
-        self.wheels_radius = 0.1
-        self.distance_between_wheels = 0.44
-        self.distance_from_center_to_wheels = self.distance_between_wheels / 2
-
-        self.motors = ["frame_back_right2motor_back_right", "frame_back_left2motor_back_left", "frame_front_right2motor_front_right", "frame_front_left2motor_front_left"]
-        self.joints_name = self.get_joints_info(self.robot)
-        self.links_name = self.get_link_info(self.robot)
-
-        self.init_pos, self.init_orn = p.getBasePositionAndOrientation(self.robot)
-        self.forward_vel, self.angular_vel = 0, 0
-
-        self.print_time = self.actual_time = self.initial_time = time.time()
-
-        # ================ IMU SENSOR SETUP  ================
-        # ====================================================
-
-        self.imu = IMU(self.robot, self.dt)
-        self.last_imu_measurement = self.imu.get_measurement()
-        self.publish_imu_to_dsr(self.last_imu_measurement[0], self.last_imu_measurement[1])
+        self.print_time = self.actual_time = time.time()
 
         # ================ CAUSE SIMULATOR  ================
         # ====================================================
@@ -173,7 +104,8 @@ class SpecificWorker(GenericWorker):
 
         # ================ EPISODIC MEMORY API =================
         # ======================================================
-        self.mem_api = mem.EpisodicMemoryAPI(EM_HISTORY_FILE)
+        # Loaded dynamically at runtime from Follow Person filepath.
+
         
     def get_robot_adv_speed_history(self) -> dict | None:
         """Get a dict of the robot's target speed for each timestamp in the episodic memory, by looking for the "robot_ref_adv_speed" attribute in the "robot" node history.
@@ -223,7 +155,7 @@ class SpecificWorker(GenericWorker):
                     
             return self.robot_adv_speed_history
         else:
-            self.logger.log("Episodic Memory API is not ready! Wake up...", style="bold red")
+            self.logger.log("Episodic Memory API is not ready! WTF?", style="bold red")
             return None
 
     
@@ -246,8 +178,8 @@ class SpecificWorker(GenericWorker):
             initial_ts = imu_events[0].timestamp
             # Filter by modification type "MNA" (Modified Node Attribute)
             imu_events = [event for event in imu_events if event.modification_type == "MNA"]
-            initial_acc = [0,0,0]
-            initial_gyro = [0,0,0]
+            initial_acc = [0.0,0.0,0.0]
+            initial_gyro = [0.0,0.0,0.0]
             
             self.logger.log(f"Found {len(imu_events)} IMU events in episodic memory with modification type MNA.", style="bold green")
 
@@ -265,17 +197,14 @@ class SpecificWorker(GenericWorker):
                 candidates = [event for event in imu_events if event.timestamp <= ts]
                 closest_event = min(candidates, key=lambda event: abs(event.timestamp - ts), default=None)
                 if closest_event is not None:
-                    acc = closest_event.attributes["imu_accelerometer"] if "imu_accelerometer" in closest_event.attributes else initial_acc
-                    gyro = closest_event.attributes["imu_gyroscope"] if "imu_gyroscope" in closest_event.attributes else initial_gyro
-                    acc = acc.value
-                    gyro = gyro.value
-                    # acc and gyro are float vectors. Convert to tuples.
+                    acc = closest_event.attributes["imu_accelerometer"].value if "imu_accelerometer" in closest_event.attributes else initial_acc
+                    gyro = closest_event.attributes["imu_gyroscope"].value if "imu_gyroscope" in closest_event.attributes else initial_gyro
+                    self.logger.log(f"Bonding IMU history ts:{ts} <==> episodic event ts:{closest_event.timestamp+initial_ts} USING acc {acc} // gyro {gyro} (there were {len(candidates)} candidates).", style="purple")
                     initial_acc = acc
                     initial_gyro = gyro
                     self.imu_history[TIMESTAMP].append(ts * 1e-9) # Convert back to seconds for easier handling
                     self.imu_history[ACCELEROMETER].append(acc)
                     self.imu_history[GYROSCOPE].append(gyro)
-                    self.logger.log(f"Bonding IMU history ts:{ts} to episodic value at {closest_event.timestamp} with acc {acc} and gyro {gyro} (there were {len(candidates)} candidates).", style="purple")
                 else:
                     acc = initial_acc
                     gyro = initial_gyro
@@ -350,32 +279,36 @@ class SpecificWorker(GenericWorker):
         """
         print(flush=True, end="")
         self.show_compute_time_step()
-        actual_imu_measurement = self.imu.get_measurement()
-
-        if (not np.allclose(self.last_imu_measurement[0], actual_imu_measurement[0], atol=0.001) 
-            and 
-            not np.allclose(self.last_imu_measurement[1], actual_imu_measurement[1], atol=0.001)):
-            self.publish_imu_to_dsr(actual_imu_measurement[0], actual_imu_measurement[1])
-
-        p.stepSimulation()
         try:
             match self.state:
         
                 case "IDLE":
                     
-                    follow_node = None
+                    spc_node = None
+                    fp_node = None
                     for node in self.graphs["episodic"].get_nodes():
-                        if node.name.startswith("Search Problem Cause"):
-                            follow_node = node
-                            break
+                        if node.name.startswith("Search Problem Cause"): # TODO: Should be a better way to identify the correct node.
+                            spc_node = node
+                        if node.name.startswith("Follow Person"): # TODO: Should be a better way to identify the correct node.
+                            fp_node = node
                     
-                    if follow_node is not None and follow_node.attrs["status"].value == "running":
+                    if spc_node is not None and "status" in spc_node.attrs and spc_node.attrs["status"].value == "running" and fp_node is not None and "filepath" in fp_node.attrs and fp_node.attrs["filepath"].value is not None:
+                        console.print(f"Search Problem Cause node found with status 'running' and Follow Person node found with non-empty filepath.", style="bold green")
                         self.state = "SIMULATE_REASON"
-                        self.initial_time = time.time()
                         self.actual_time = time.time()
+                        console.print("MemoryAPI will be initialized with filepath: " + fp_node.attrs["filepath"].value, style="green")
+                        #self.mem_api = mem.EpisodicMemoryAPI(fp_node.attrs["filepath"].value) ---> TODO: Hasta que la memoria episodica esté arreglada usaremos el fichero personalizado
+                        self.mem_api = mem.EpisodicMemoryAPI(EM_HISTORY_FILE)
+                        
+                        # Wait for mem_api.is_ready() to be True, with a timeout of 10 seconds
+                        timeout = 10
+                        start_time = time.time()
+                        while not self.mem_api.is_ready():
+                            if time.time() - start_time > timeout:
+                                console.print(f"Timeout of {timeout} seconds reached while waiting for Episodic Memory API to be ready!", style="bold red")
+                                break
+                            time.sleep(0.1)
                         self.writeSimulationScene()
-                        # TODO: Cargar archivo desde este nodo en vez de arriba
-
         
                     
                 case "SIMULATE_REASON":
@@ -410,7 +343,10 @@ class SpecificWorker(GenericWorker):
 
                     # Transform pipe data from JSON string to dictionary
                     for pid in pids:
-                        historicals[pid[0]] = json.loads(historicals[pid[0]])  
+                        if pid[0] in historicals and historicals[pid[0]] is not None and historicals[pid[0]] != "":
+                            historicals[pid[0]] = json.loads(historicals[pid[0]])
+                        else:
+                            raise ValueError(f"There was no data received from finalized process {pid[0]} or data was empty! Did the process crash?")
         
                     print(f"Received historicals from {len(historicals)} simulations.")
                     i = 0
@@ -667,186 +603,3 @@ class SpecificWorker(GenericWorker):
         logger.log(f"Finished matching all simu IDs. Now sorting {len(scores)} entries (lowest first).")
         sorted_scores = sorted(scores.items(), key=lambda item: item[1])
         return sorted_scores[:5] # Return the top 5 best matches as (simulation_id, score)
-    
-    
-
-    # =============== PYBULLET MODELS INFO  ================
-    # ======================================================
-
-    def get_joints_info(self, robot_id: int) -> dict:
-        """Get joint names and IDs from a robot model.
-            Parameters:
-                - robot_id (int): ID of the robot model in the PyBullet simulation.
-            Returns:
-                - dict: Joint names as keys and joint IDs as values.
-        """
-        joint_name_to_id = {}
-        # Get number of joints in the model
-        num_joints = p.getNumJoints(robot_id)
-        # print("Num joints:", num_joints)
-
-        # Populate the dictionary with joint names and IDs
-        for i in range(num_joints):
-            joint_info = p.getJointInfo(robot_id, i)
-            joint_name = joint_info[1].decode("utf-8")
-            joint_name_to_id[joint_name] = i
-            jid = joint_info[0]
-            jtype = joint_info[2]
-            if jtype == p.JOINT_REVOLUTE:
-                p.setJointMotorControl2(bodyUniqueId=robot_id,
-                                        jointIndex=jid,
-                                        controlMode=p.VELOCITY_CONTROL,
-                                        targetVelocity=0,
-                                        force=0)
-        return joint_name_to_id
-
-    def get_link_info(self, robot_id: int) -> dict:
-        """Get link names and IDs from a robot model.
-            Parameters:
-                - robot_id (int): ID of the robot model in the PyBullet simulation.
-            Returns:
-                - dict: Link names as keys and link IDs as values.
-        """
-        link_name_to_id = {}
-        # Get number of joints in the model
-        num_links = p.getNumJoints(robot_id)
-        # print("Num links:", num_links)
-
-        # Populate the dictionary with link names and IDs
-        for i in range(num_links):
-            link_info = p.getJointInfo(robot_id, i)
-            link_name = link_info[12].decode("utf-8")
-            link_name_to_id[link_name] = i
-        return link_name_to_id
-    
-    
-    
-    # =============== ROBOT KINEMATICS  ================
-    # ==================================================
-
-    def get_forward_velocity(self) -> float:
-        """Get the forward velocity of the robot.
-            Returns:
-                - float: Forward velocity of the robot in m/s.
-        """
-        wheel_velocities = {}
-        for motor_name in self.motors:
-            wheel_velocities[motor_name] = p.getJointState(self.robot, self.joints_name[motor_name])[1]
-        forward_velocity = (wheel_velocities["frame_front_left2motor_front_left"] +
-                            wheel_velocities["frame_front_right2motor_front_right"] +
-                            wheel_velocities["frame_back_left2motor_back_left"] +
-                            wheel_velocities["frame_back_right2motor_back_right"]) * self.wheels_radius / 4
-        return forward_velocity
-
-    def get_angular_velocity(self) -> float:
-        """Get the angular velocity of the robot.
-            Returns:
-                - float: Angular velocity of the robot in rad/s.
-        """
-        wheel_velocities = {}
-        for motor_name in self.motors:
-            wheel_velocities[motor_name] = p.getJointState(self.robot, self.joints_name[motor_name])[1]
-        angular_velocity = ((wheel_velocities["frame_front_right2motor_front_right"] +
-                            wheel_velocities["frame_back_right2motor_back_right"] -
-                            wheel_velocities["frame_front_left2motor_front_left"] -
-                            wheel_velocities["frame_back_left2motor_back_left"]) * self.wheels_radius /
-                            2 * self.distance_between_wheels)
-        return angular_velocity
-
-    def get_wheels_velocity_from_forward_velocity_and_angular_velocity(self, forward_velocity: float = 0, angular_velocity: float = 0) -> dict:
-        """Get the velocity of each wheel from the forward velocity and angular velocity of the robot.
-            Parameters:
-                - forward_velocity (float): Forward velocity of the robot in m/s (default: 0).
-                - angular_velocity (float): Angular velocity of the robot in rad/s (default: 0).
-            Returns:
-                - dict: Velocity of each wheel indexed by motor names.
-        """
-        wheels_velocity = {
-            "frame_front_left2motor_front_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_front_right2motor_front_right": forward_velocity / self.wheels_radius + self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_back_left2motor_back_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_back_right2motor_back_right": forward_velocity / self.wheels_radius + self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius}
-        return wheels_velocity
-    
-    # ================= DSR INTERACTION  ================
-    # ==================================================
-
-    def get_velocities_from_dsr(self) -> tuple[float, float]:
-        """Get the forward and angular velocities from the DSR graph.
-            Returns:
-                - tuple[float, float]: Forward velocity and angular velocity from the DSR graph.
-        """
-        forward_velocity = 0
-        angular_velocity = 0
-
-        robot_node = self.g.get_node("robot")
-        if robot_node is not None:
-            robot_node = robot_node
-            if robot_node.attrs["robot_ref_adv_speed"].value is not None:
-                forward_velocity = robot_node.attrs["robot_ref_adv_speed"].value
-            if robot_node.attrs["robot_ref_rot_speed"].value is not None:
-                angular_velocity = robot_node.attrs["robot_ref_rot_speed"].value
-
-        return forward_velocity, angular_velocity
-    
-
-    def create_imu_node_in_dsr(self, acc_measured: np.ndarray, angular_vel: np.ndarray) -> None:
-        """Create the IMU node in the DSR graph.
-            Parameters:
-                - acc_measured (np.ndarray): Measured acceleration vector.
-                - angular_vel (np.ndarray): Measured angular velocity vector."""
-        imu_node = Node(agent_id=self.agent_id, name="imu_sintetic", type="imu")
-
-        robot_node = self.g.get_node("robot")
-        if robot_node is None:
-            self.logger.log("Robot node not found in DSR graph", style="bold red")
-            return
-
-        imu_node.attrs["pos_x"] = Attribute(float(robot_node.attrs["pos_x"].value) - 100,
-                                                         self.agent_id)
-        imu_node.attrs["pos_y"] = Attribute(float(robot_node.attrs["pos_y"].value) + 100,
-                                                         self.agent_id)
-        imu_node.attrs["level"] = Attribute(robot_node.attrs['level'].value + 1,
-                                                         self.agent_id)
-        imu_node.attrs["parent"] = Attribute(int(robot_node.id), self.agent_id)
-        imu_node.attrs["imu_accelerometer"] = Attribute(acc_measured, self.agent_id)
-        imu_node.attrs["imu_gyroscope"] = Attribute(angular_vel, self.agent_id)
-
-        self.g.insert_node(imu_node)
-
-
-    def update_imu_node_in_dsr(self, imu_node: Node, acc_measured: np.ndarray, angular_vel: np.ndarray) -> None:
-        """Update the IMU node in the DSR graph.
-            Parameters:
-                - imu_node (Node): The IMU node to update.
-                - acc_measured (np.ndarray): Measured acceleration vector.
-                - angular_vel (np.ndarray): Measured angular velocity vector."""
-        if imu_node.attrs["imu_accelerometer"].value is not None:
-            imu_node.attrs["imu_accelerometer"].value = acc_measured.tolist()
-        if imu_node.attrs["imu_gyroscope"].value is not None:
-            imu_node.attrs["imu_gyroscope"].value = angular_vel.tolist()
-        self.g.update_node(imu_node)
-
-    
-    def create_edge_in_dsr(self, fr_node: Node, to_node: Node, edge_type: str) -> None:
-        """Create an edge in the DSR graph.
-            Parameters:
-                - fr_node (Node): The source node of the edge.
-                - to_node (Node): The target node of the edge.
-                - edge_type (str): Type of the edge relationship."""
-        edge = Edge(to_node.id, fr_node.id, edge_type, self.agent_id)
-        self.g.insert_or_assign_edge(edge)
-
-
-    def publish_imu_to_dsr(self, acc_measured: np.ndarray, angular_vel: np.ndarray) -> None:
-        """Publish the IMU measurements to the DSR graph or create the node if it does not exist.
-            Parameters:
-                - acc_measured (np.ndarray): Measured acceleration vector.
-                - angular_vel (np.ndarray): Measured angular velocity vector."""
-        
-        imu_node = self.g.get_node("imu_sintetic")
-        if imu_node is not None:
-            self.update_imu_node_in_dsr(imu_node, acc_measured, angular_vel)
-        else:
-            self.create_imu_node_in_dsr(acc_measured, angular_vel)
-            self.create_edge_in_dsr(self.g.get_node("robot"), self.g.get_node("imu_sintetic"), "has")
