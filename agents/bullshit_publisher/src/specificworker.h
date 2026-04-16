@@ -97,6 +97,7 @@ public slots:
 	void add_node();
 	void delete_node();
 	void modify_node();
+	void test_vector_attribute();
 	
 	// Edges
 	void add_edge();

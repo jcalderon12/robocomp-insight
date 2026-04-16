@@ -380,7 +380,12 @@ void SpecificWorker::on_time_search() {
 
 void SpecificWorker::save_changes_to_file(const std::string &filename) {
 	// Check if change map is empty
-	if (changes_map.empty()) { std::cout << __FUNCTION__ << " - Empty change map. Nothing to save." << std::endl; return; }
+	if (changes_map.empty()) { 
+		std::cout << "[SAVE] ⚠ No changes recorded for mission. File not created." << std::endl;
+		return; 
+	}
+	
+	std::cout << "[SAVE] Saving " << changes_map.size() << " changes to: " << filename << std::endl;
 
 	// Open file in write mode - app: append (add at the end without overwrite)
 	std::ofstream out_file(filename, std::ios::app);
@@ -456,6 +461,8 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
 
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+	
+	std::cout << "[CHANGE] Node attrs modified: id=" << id << " attrs=" << att_names.size() << std::endl;
 
 	if (!string_check_flag) {
 		std::cout << "Modify node attrs slot - id: " << id << " att_names_size: " << att_names.size() << " att_names: ";
@@ -487,7 +494,6 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
 
 void SpecificWorker::modify_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &type) {
 	if (current_state != EpisodicState::RECORDING) {
-		std::cout << "modify_edge_slot: Not in RECORDING state, ignoring. Current state: " << static_cast<int>(current_state) << std::endl;
 		return;
 	}
 
@@ -702,6 +708,8 @@ std::optional<std::string> SpecificWorker::assemble_string(const auto &timestamp
 }
 
 void SpecificWorker::generate_keyframe() {
+	std::cout << "[KEYFRAME] Generating keyframe for mission " << current_mission_name << std::endl;
+	
 	std::vector<std::string> nodes_str_v;
 	std::vector<std::string> edges_str_v;
 	std::string dsr_kdata = "";
@@ -855,6 +863,8 @@ void SpecificWorker::exit_WAITING_MISSION() {
 }
 
 void SpecificWorker::enter_RECORDING() {
+	std::cout << "[STATE] Entering RECORDING state for mission: " << current_mission_id 
+	          << " (" << current_mission_name << ")" << std::endl;
 	mission_recording = true;
 	mission_start_time = std::chrono::system_clock::now();
 	changes_map.clear();
@@ -871,7 +881,6 @@ void SpecificWorker::enter_RECORDING() {
 			if (filepath_attr != mission.attrs().end()) {
 				try {
 					current_mission_filepath = std::get<std::string>(filepath_attr->second.value());
-					std::cout << "  ✓ Read filepath from mission node: " << current_mission_filepath << std::endl;
 				} catch (const std::bad_variant_access& e) {
 					std::cerr << "Error reading filepath value: " << e.what() << std::endl;
 				}
@@ -897,6 +906,17 @@ void SpecificWorker::enter_RECORDING() {
 			init_started_attr.value(true);
 			mission.attrs()["initialization_started"] = init_started_attr;
 			mission_graph->update_node(mission);
+			
+			// ALSO update in work graph (G) so MC can see it via DSR signals
+			if (G != mission_graph) {
+				auto mission_g_opt = G->get_node(current_mission_id);
+				if (mission_g_opt.has_value()) {
+					auto mission_g = mission_g_opt.value();
+					mission_g.attrs()["initialization_started"] = init_started_attr;
+					G->update_node(mission_g);
+				}
+			}
+			
 			std::cout << "[HANDSHAKE-P1] ✓ Set mission.initialization_started=true (mission_id: " 
 			          << current_mission_id << ")" << std::endl;
 		}
@@ -911,7 +931,6 @@ void SpecificWorker::enter_RECORDING() {
 	
 	// Generate initial keyframe
 	generate_keyframe();
-	std::cout << "Initial keyframe generated" << std::endl;
 	
 	// === SYNCHRONIZATION HANDSHAKE - PHASE 2 ===
 	// Signal mission_controller that initialization is complete and we are ready to record
@@ -923,6 +942,17 @@ void SpecificWorker::enter_RECORDING() {
 			recording_attr.value(true);
 			mission.attrs()["recording"] = recording_attr;
 			mission_graph->update_node(mission);
+			
+			// ALSO update in work graph (G) so MC can see it via DSR signals
+			if (G != mission_graph) {
+				auto mission_g_opt = G->get_node(current_mission_id);
+				if (mission_g_opt.has_value()) {
+					auto mission_g = mission_g_opt.value();
+					mission_g.attrs()["recording"] = recording_attr;
+					G->update_node(mission_g);
+				}
+			}
+			
 			std::cout << "[HANDSHAKE-P2] ✓ Set mission.recording=true (mission_id: " 
 			          << current_mission_id << ")" << std::endl;
 		}
@@ -946,11 +976,11 @@ void SpecificWorker::loop_RECORDING() {
 void SpecificWorker::on_keyframe_timer_timeout() {
 	if (mission_recording) {
 		generate_keyframe();
-		std::cout << "- Periodic keyframe generated" << std::endl << std::flush;
 	}
 }
 
 void SpecificWorker::exit_RECORDING() {
+	std::cout << "[STATE] Exiting RECORDING state for mission: " << current_mission_name << std::endl;
 	
 	// Generate final keyframe
 	generate_keyframe();
@@ -966,16 +996,28 @@ void SpecificWorker::exit_RECORDING() {
 			DSR::Attribute recording_attr;
 			recording_attr.value(false);
 			mission.attrs()["recording"] = recording_attr;
-			std::cout << "[HANDSHAKE] ✓ Set mission.recording=false (mission_id: " 
-			          << current_mission_id << ")" << std::endl;
 			
 			DSR::Attribute init_started_attr;
 			init_started_attr.value(false);
 			mission.attrs()["initialization_started"] = init_started_attr;
+			
+			std::cout << "[HANDSHAKE] ✓ Set mission.recording=false (mission_id: " 
+			          << current_mission_id << ")" << std::endl;
 			std::cout << "[HANDSHAKE] ✓ Set mission.initialization_started=false (mission_id: " 
 			          << current_mission_id << ")" << std::endl;
 			
 			mission_graph->update_node(mission);
+			
+			// ALSO update in work graph (G) so MC can see it via DSR signals
+			if (G != mission_graph) {
+				auto mission_g_opt = G->get_node(current_mission_id);
+				if (mission_g_opt.has_value()) {
+					auto mission_g = mission_g_opt.value();
+					mission_g.attrs()["recording"] = recording_attr;
+					mission_g.attrs()["initialization_started"] = init_started_attr;
+					G->update_node(mission_g);
+				}
+			}
 		}
 	} catch (const std::exception& e) {
 		std::cerr << "[HANDSHAKE_ERROR] Could not clean up handshake attributes: " << e.what() << std::endl;
@@ -990,10 +1032,9 @@ void SpecificWorker::exit_RECORDING() {
 	if (!current_mission_name.empty() && current_mission_id != 0) {
 		if (!current_mission_filepath.empty()) {
 			// Report before saving (because save clears the map)
-			size_t events_count = changes_map.size();
-			
+
 			save_changes_to_file(current_mission_filepath);
-			
+
 			// Add/update filepath attribute to mission node (redundant but ensures consistency)
 			try {
 				auto mission_opt = mission_graph->get_node(current_mission_id);
@@ -1046,15 +1087,12 @@ void SpecificWorker::request_state_transition(EpisodicState new_state) {
 
 void SpecificWorker::evaluate_state_transitions() {
 
-	
-	uint64_t previous_mission_id = current_mission_id;  // Save previous for comparison
+	uint64_t previous_mission_id = current_mission_id;
 	auto mission_opt = find_mission_with_target_edge();
 	
 	if (!mission_opt.has_value()) {
 		// No active mission
-
 		if (current_state != EpisodicState::IDLE) {
-
 			request_state_transition(EpisodicState::IDLE);
 		}
 	} else {
@@ -1062,10 +1100,9 @@ void SpecificWorker::evaluate_state_transitions() {
 		
 		// CHECK IF MISSION CHANGED (preemption/switch scenario)
 		if (previous_mission_id != 0 && detected_mission_id != previous_mission_id) {
-			
 			// If we were recording, force EXIT first to save current mission properly
 			if (current_state == EpisodicState::RECORDING) {
-				request_state_transition(EpisodicState::WAITING_MISSION);  // Will trigger exit_RECORDING()
+				request_state_transition(EpisodicState::WAITING_MISSION);
 			}
 		}
 		
@@ -1076,19 +1113,16 @@ void SpecificWorker::evaluate_state_transitions() {
 			current_mission_name = name_opt.value();
 		}
 		
-		
 		// Check if mission is running
 		bool mission_running = is_mission_active();
 		
 		if (mission_running) {
 			if (current_state != EpisodicState::RECORDING) {
 				request_state_transition(EpisodicState::RECORDING);
-			} else {
 			}
 		} else {
 			if (current_state != EpisodicState::WAITING_MISSION) {
 				request_state_transition(EpisodicState::WAITING_MISSION);
-			} else {
 			}
 		}
 	}
@@ -1105,8 +1139,6 @@ std::optional<uint64_t> SpecificWorker::find_mission_with_target_edge() {
 	uint64_t robot_id = robot_opt.value().id();
 	auto target_edges = mission_graph->get_edges_by_type("TARGET");
 	
-
-	
 	int robot_target_count = 0;
 	uint64_t found_mission_id = 0;
 	
@@ -1114,14 +1146,9 @@ std::optional<uint64_t> SpecificWorker::find_mission_with_target_edge() {
 		if (edge.from() == robot_id) {
 			robot_target_count++;
 			found_mission_id = edge.to();
-			auto mission_status = get_mission_status(found_mission_id);
 		}
 	}
-	
-	
-	if (robot_target_count > 1) {
-	}
-	
+		
 	if (found_mission_id > 0) {
 		return found_mission_id;
 	}
@@ -1164,5 +1191,6 @@ bool SpecificWorker::is_mission_active() {
 	}
 	
 	std::string status = get_mission_status(current_mission_id);
-	return (status == "running");
+	bool active = (status == "running");
+	return active;
 }
