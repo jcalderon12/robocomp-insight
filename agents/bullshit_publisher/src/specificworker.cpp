@@ -117,7 +117,8 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
-
+	// Test vector attribute modification
+	// test_vector_attribute();
 }
 
 
@@ -308,6 +309,48 @@ void SpecificWorker::modify_edge_RT(){
 				(float)std::experimental::randint(-200, 200), 
 				(float)std::experimental::randint(-200, 200)}
 			);
+		}
+	}
+}
+
+void SpecificWorker::test_vector_attribute()
+{
+	// Test: Create/modify a 3-float vector attribute in robot node
+	auto robot_optional = G->get_node("robot");
+	
+	if (robot_optional.has_value()) {
+		DSR::Node robot = robot_optional.value();
+		
+		// Create or modify a vector of 3 floats
+		std::vector<float> test_vector = {
+			(float)std::experimental::randint(0, 100) / 10.0f,  // Random 0.0-10.0
+			(float)std::experimental::randint(0, 100) / 10.0f,  // Random 0.0-10.0
+			(float)std::experimental::randint(0, 100) / 10.0f   // Random 0.0-10.0
+		};
+		
+		std::cout << "[VECTOR_TEST] Creating vector: [" 
+		          << test_vector[0] << ", " 
+		          << test_vector[1] << ", " 
+		          << test_vector[2] << "]" << std::endl;
+		
+		// Add or modify the attribute locally
+		G->add_or_modify_attrib_local<person_velocity_att>(robot, test_vector);
+		
+		// Sync with graph
+		G->update_node(robot);
+		
+		// Read back to verify
+		try {
+			auto read_back = G->get_attrib_by_name<person_velocity_att>(robot);
+			if (read_back.has_value()) {
+				auto read_back_value = read_back.value();
+				std::cout << "[VECTOR_TEST] Read back vector: [" 
+				          << read_back_value[0] << ", " 
+				          << read_back_value[1] << ", " 
+				          << read_back_value[2] << "]" << std::endl;
+			}
+		} catch (const std::exception &e) {
+			std::cout << "[VECTOR_TEST] Error reading back: " << e.what() << std::endl;
 		}
 	}
 }
