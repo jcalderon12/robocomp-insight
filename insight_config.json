@@ -40,6 +40,11 @@
         "command": "bin/concept_bottle etc/config"
     },
     {
+        "name": "zed_component",
+        "directory": "$ROBOCOMP/components/robocomp-shadow/insect/zed_component",
+        "command": "bin/zed_component etc/config"
+    },
+    {
         "name": "concept_person",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_person",
         "command": "bin/concept_person etc/config"
