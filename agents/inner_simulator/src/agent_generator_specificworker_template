@@ -17,8 +17,6 @@ import random
 import multiprocessing as mp
 import signal
 import atexit
-import torch
-import torchvision.transforms.v2 as v2_transforms
 
 
 sys.path.append('/opt/robocomp/lib')
@@ -26,9 +24,8 @@ console = Console(highlight=False)
 from pydsr import *
 import numpy as np
 
-CONCEPT_NAME = {{concept_name}}
+CONCEPT_NAME = "{{concept_name}}"
 MODEL_OUTPUT_DIR = "yolo_concept_model"
-META_REPO_DIR = "/home/robolab_practicas/robocomp/components/robocomp-insight/agents/inner_simulator/dino3/"
 
 
 class SpecificWorker(GenericWorker):
@@ -55,7 +52,6 @@ class SpecificWorker(GenericWorker):
         self.augment_per_image = 0  # number of augmented copies per original image
         self.negative_sample_ratio = 0.2
         self.dataset = YoloDataset(os.getcwd(), "concept_dataset", "concept")
-        self.meta_mode = False
 
         # Concept color change table. A new image will be generated for each color in this table.
         # If any augmentation is set, it will also be applied.
@@ -189,11 +185,6 @@ class SpecificWorker(GenericWorker):
 
 
             case "TRAINING":
-                if self.meta_mode:
-                    console.print("Meta mode enabled. Skipping dataset generation and YOLO training, and going directly to analysis with DINOv3 ConvNeXt Large.", style="bold yellow")
-                    self.stage = "ANALYZE"
-                    return 
-
                 total_positions = len(self.camera_nav_path)
                 console.print(f"Generating dataset of {total_positions} positions ({self.dataset_size} per ring x {self.radius_rings} rings)...", style="bold yellow")
                 
@@ -235,109 +226,6 @@ class SpecificWorker(GenericWorker):
                 
             
             case "ANALYZE":
-                # Load the trained meta model, if enabled.
-                if self.meta_mode:
-                    # Load DINOv3 ConvNeXt Large model
-                    # Reference: https://github.com/facebookresearch/dinov3
-                    dinov3_convnext_large = torch.hub.load(META_REPO_DIR, 'dinov3_convnext_large', 
-                                                            source='local', 
-                                                            weights='../../dinov3_convnext_large_pretrain_lvd1689m-61fa432d.pth')
-                    dinov3_convnext_large.eval()
-                    
-                    # Create image transform following DINOv3 official guidelines for LVD-1689M weights
-                    # Reference: https://github.com/facebookresearch/dinov3#image-transforms
-                    dinov3_transform = self._make_dinov3_transform(resize_size=256)
-
-                    while True:
-                        start_time = time.time()
-                        # Detect if CTRL+C has been pressed to break the loop
-                        if QApplication.instance().closingDown():
-                            break
-                        
-                        # Capture the image
-                        self.robot_img = self.camerargbdsimple_proxy.getImage("zed")
-                        robot_img_array = np.frombuffer(self.robot_img.image, dtype=np.uint8)
-                        robot_img_bgr = robot_img_array.reshape((self.robot_img.height, self.robot_img.width, 3))
-                        
-                        # Convert BGR to RGB for PyTorch (standard color format)
-                        robot_img_rgb = cv2.cvtColor(robot_img_bgr, cv2.COLOR_BGR2RGB)
-                        
-                        # Apply DINOv3 transform (resize, normalize with ImageNet statistics)
-                        # This follows the official transform pipeline from the DINOv3 repo
-                        from PIL import Image
-                        img_pil = Image.fromarray(robot_img_rgb)
-                        image_tensor = dinov3_transform(img_pil).unsqueeze(0)  # Add batch dimension
-                        
-                        # Forward pass using torch.inference_mode for efficiency
-                        # Reference: https://github.com/facebookresearch/dinov3
-                        with torch.inference_mode():
-                            features_dict = dinov3_convnext_large.forward_features(image_tensor)
-                            patch_tokens = features_dict["x_norm_patchtokens"]  # (batch, num_patches, 384)
-
-                        # Extract features and reshape to spatial grid
-                        # patch_tokens shape: (batch, num_patches, features_dim)
-                        features = patch_tokens[0]  # (num_patches, 384)
-                        patch_grid_size = int(np.sqrt(features.shape[0]))
-                        
-                        # Reshape to spatial grid: (16, 16, 384) for 256x256 input
-                        features_spatial = features.reshape(patch_grid_size, patch_grid_size, -1).cpu().numpy()
-                        
-                        # Upsample features to original image resolution
-                        img_h, img_w = robot_img_bgr.shape[:2]
-                        
-                        # Use SIFT/ORB for multi-scale object detection
-                        detections = self._detect_objects_with_dinov3(
-                            features_spatial, robot_img_bgr, img_h, img_w
-                        )
-                        
-                        img_with_detections = robot_img_bgr.copy()
-                        self.has_concept_been_found = False
-                        
-                        # Draw all detected objects with their labels
-                        for detection in detections:
-                            x1, y1, x2, y2 = detection['bbox']
-                            obj_name = detection['name']
-                            confidence = detection['confidence']
-                            
-                            # Draw bounding box
-                            color = (0, 255, 0) if obj_name == "bump" else (255, 165, 0)
-                            cv2.rectangle(img_with_detections, (x1, y1), (x2, y2), color, 2)
-                            
-                            # Draw label with background
-                            label = f"{obj_name}: {confidence:.2f}"
-                            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                            cv2.rectangle(img_with_detections, (x1, max(10, y1 - label_size[1] - 5)),
-                                        (x1 + label_size[0], y1), color, -1)
-                            cv2.putText(img_with_detections, label, (x1, max(10, y1 - 5)),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-                            
-                            # Track if red bump is found
-                            if obj_name == "bump":
-                                self.has_concept_been_found = True
-                        
-                        # If no detections, show red cross
-                        if not detections:
-                            cv2.line(img_with_detections, (10, 10), (30, 30), (0, 0, 255), 2)
-                            cv2.line(img_with_detections, (30, 10), (10, 30), (0, 0, 255), 2)
-                            cv2.rectangle(img_with_detections, (5, 5), (35, 35), (0, 0, 255), 2)
-                        
-                        self.robot_img_image = img_with_detections
-                        
-                        # Publish status to DSR
-                        self.publish_status_to_dsr()
-                        
-                        # Display the image
-                        cv2.imshow("Agent Vision (TM) - DINOv3", self.robot_img_image)
-                        cv2.waitKey(1)
-                        
-                        # Wait for the remaining time to complete 1/60s
-                        elapsed = time.time() - start_time
-                        wait_time = max(0, self.dt - elapsed)
-                        time.sleep(wait_time)
-                    
-                    self.stage = "TERMINATE"
-                    return True
-
                 # Load the trained YOLO model
                 model = YOLO(self.trained_model)
                 while True:
@@ -408,9 +296,9 @@ class SpecificWorker(GenericWorker):
     # ==============================================================
 
     def init_pybullet_sim(self):
-        """
-        Initializes a new PyBullet simulation instance with plane and concept.
-        Configures lighting for dramatic shadows.
+        """Initialize a new PyBullet simulation instance with plane and concept.
+            Returns:
+                - list: [client, concept] containing the PyBullet client and concept body id.
         """
         client = bc.BulletClient(connection_mode=p.DIRECT)
         client.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
@@ -434,10 +322,9 @@ class SpecificWorker(GenericWorker):
         return [client, concept]
 
     def render_images(self, dataset_index_list):
-        """
-        Creates a new Pybullet instance and renders a set of images given the list
-        of indexes of the camera_nav_path list.
-        It's meant to be called in parallel using multiprocessing.
+        """Render and store dataset images for a list of camera path indices.
+            Parameters:
+                - dataset_index_list (list): Indices of positions in camera_nav_path to render.
         """
 
         # Create a new pybullet instance
@@ -552,7 +439,8 @@ class SpecificWorker(GenericWorker):
         self._dataset_workers = []
 
     def publish_status_to_dsr(self):
-        """ Publishes the current status of the concept to DSR."""
+        """Publish the current concept-detection status to DSR.
+        """
         # check if we have found the concept in this compute step. if so, publish the possible_concept object node to DSR. If not, destroy it (if it exists)
         if not self.has_concept_been_found:
             # check if we have to destroy the node in DSR
@@ -576,9 +464,9 @@ class SpecificWorker(GenericWorker):
                 self.g.insert_or_assign_edge(edge)
                 
     def show_compute_time_step(self):
-        """
-        Get the time step between compute calls
-        :return: time
+        """Get the elapsed time between compute calls.
+            Returns:
+                - float: Time step in seconds.
         """
         time_step = time.time() - self.actual_time
         self.actual_time = time.time()
@@ -594,27 +482,27 @@ class SpecificWorker(GenericWorker):
     # ==============================================================
     
     def capture_zed_image(self, cam_pos: list, forward: list, fov_v: float = 70.0) -> np.ndarray:
-        """
-        Renders a perspective image from the ZED camera simulation using PyBullet.
-        
-        :param cam_pos: [x, y, z] world position of the camera
-        :param forward: [fx, fy] normalized 2-D forward direction vector in the XY plane
-        :param fov_v: Vertical field of view in degrees (default: 70° for f/2.0 lens)
-        :return: numpy array (height, width, 4) RGBA image
-        
+        """Render a perspective image from the simulated ZED camera using PyBullet.
+            Parameters:
+                - cam_pos (list): Camera world position as [x, y, z].
+                - forward (list): Normalized 2-D forward direction vector [fx, fy] in the XY plane.
+                - fov_v (float): Vertical field of view in degrees (default: 70.0).
+            Returns:
+                - np.ndarray: RGBA image array with shape (height, width, 4).
+
         ZED Camera Specifications (dual lens configuration):
-        
+
         Lens 1 (f/2.0) - Primary lens used:
         - Focal Length: 2.1mm
         - Aperture: ƒ/2.0
         - Field of View: 110°(H) x 70°(V) x 120°(D) max.
         - Resolution: 1280 x 720 pixels
-        
+
         Lens 2 (f/1.8) - Alternative:
         - Focal Length: 4mm
         - Aperture: ƒ/1.8
         - Field of View: 72°(H) x 44°(V) x 81°(D) max.
-        
+
         Wide-angle 8-element all-glass dual lens with optically corrected distortion
         """
         # Normalize the forward vector
@@ -673,162 +561,12 @@ class SpecificWorker(GenericWorker):
         
         return image
 
-    def _make_dinov3_transform(self, resize_size: int = 256):
-        """
-        Create image transform following DINOv3 official guidelines for LVD-1689M weights.
-        
-        Reference: https://github.com/facebookresearch/dinov3#image-transforms
-        
-        For models using LVD-1689M weights (pretrained on web images), this transform:
-        1. Converts image to tensor
-        2. Resizes to specified size (default: 256x256)
-        3. Converts to float32 and scales to [0, 1]
-        4. Normalizes with ImageNet statistics
-        
-        :param resize_size: Size to resize the image to (default: 256)
-        :return: torchvision transform pipeline
-        """
-        to_tensor = v2_transforms.ToImage()
-        resize = v2_transforms.Resize((resize_size, resize_size), antialias=True)
-        to_float = v2_transforms.ToDtype(torch.float32, scale=True)
-        normalize = v2_transforms.Normalize(
-            mean=(0.485, 0.456, 0.406),
-            std=(0.229, 0.224, 0.225),
-        )
-        return v2_transforms.Compose([to_tensor, resize, to_float, normalize])
-
-    def _detect_objects_with_dinov3(self, features_spatial, image_bgr, img_h, img_w):
-        """
-        Detect multiple objects in the image using DINOv3 features and feature clustering.
-        
-        Uses SIFT keypoints combined with DINOv3 feature descriptors to detect and classify objects.
-        
-        :param features_spatial: Spatial feature map from DINOv3 (patch_grid_size, patch_grid_size, 384)
-        :param image_bgr: Original image in BGR format
-        :param img_h: Image height
-        :param img_w: Image width
-        :return: List of detections with format [{'bbox': (x1, y1, x2, y2), 'name': str, 'confidence': float}]
-        """
-        detections = []
-        
-        # Extract image features using SIFT for keypoint detection
-        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-        sift = cv2.SIFT_create()
-        keypoints, descriptors = sift.detectAndCompute(gray, None)
-        
-        if descriptors is None or len(keypoints) == 0:
-            return detections
-        
-        # Use DINOv3 features to enhance object detection
-        feature_norms = np.linalg.norm(features_spatial, axis=2)  # (patch_grid_size, patch_grid_size)
-        
-        # Upsample to image resolution
-        feature_map_upsampled = cv2.resize(feature_norms, (img_w, img_h), interpolation=cv2.INTER_CUBIC)
-        
-        # Normalize
-        if feature_map_upsampled.max() > feature_map_upsampled.min():
-            feature_map_norm = (feature_map_upsampled - feature_map_upsampled.min()) / \
-                             (feature_map_upsampled.max() - feature_map_upsampled.min())
-        else:
-            feature_map_norm = feature_map_upsampled
-        
-        # Create saliency-weighted mask
-        threshold = np.percentile(feature_map_norm, 60)
-        saliency_mask = (feature_map_norm > threshold).astype(np.uint8) * 255
-        
-        # Morphological operations
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        saliency_mask = cv2.morphologyEx(saliency_mask, cv2.MORPH_OPEN, kernel)
-        saliency_mask = cv2.morphologyEx(saliency_mask, cv2.MORPH_CLOSE, kernel)
-        saliency_mask = cv2.dilate(saliency_mask, kernel, iterations=1)
-        
-        # Find contours
-        contours, _ = cv2.findContours(saliency_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Filter contours by area
-        min_area = (img_h * img_w) * 0.003  # At least 0.3% of image
-        max_area = (img_h * img_w) * 0.8    # At most 80% of image
-        
-        valid_contours = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if min_area < area < max_area:
-                valid_contours.append(contour)
-        
-        # Sort by area (largest first)
-        valid_contours.sort(key=cv2.contourArea, reverse=True)
-        
-        # Process valid contours and create detections
-        for contour in valid_contours:
-            x, y, w, h = cv2.boundingRect(contour)
-            
-            # Skip very small detections
-            if w < 30 or h < 30:
-                continue
-            
-            # Extract region from the image for analysis
-            x1, y1 = max(0, x), max(0, y)
-            x2, y2 = min(img_w, x + w), min(img_h, y + h)
-            
-            # Classify object based on color and features
-            region = image_bgr[y1:y2, x1:x2]
-            obj_name, confidence = self._classify_object_region(region, feature_map_norm[y1:y2, x1:x2])
-            
-            detection = {
-                'bbox': (x1, y1, x2, y2),
-                'name': obj_name,
-                'confidence': confidence
-            }
-            detections.append(detection)
-        
-        return detections
-
-    def _classify_object_region(self, region_bgr, region_features):
-        """
-        Classify an object region using color analysis and feature magnitude.
-        
-        :param region_bgr: Region image in BGR format
-        :param region_features: Feature magnitude values for the region
-        :return: (object_name: str, confidence: float)
-        """
-        # Check for red color (bump indicator)
-        hsv = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2HSV)
-        
-        # Red detection
-        lower_red1 = np.array([0, 70, 50])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 70, 50])
-        upper_red2 = np.array([180, 255, 255])
-        
-        mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
-        
-        red_ratio = np.sum(mask_red > 0) / (mask_red.shape[0] * mask_red.shape[1])
-        
-        # If significant red color, classify as bump
-        if red_ratio > 0.2:
-            confidence = min(0.99, red_ratio)
-            return "bump", confidence
-        
-        # Otherwise, classify as generic object
-        confidence = np.mean(region_features)
-        
-        # Determine generic object name based on size and shape
-        h, w = region_bgr.shape[:2]
-        aspect_ratio = float(w) / h if h > 0 else 1.0
-        
-        if 0.8 < aspect_ratio < 1.2:
-            obj_name = "cube"
-        elif aspect_ratio > 1.2:
-            obj_name = "block"
-        else:
-            obj_name = "object"
-        
-        return obj_name, confidence
-    
     def add_random_objects(self, client, num_objects=5):
-        """Adds random objects to the simulation for visual variety."""
+        """Add random distractor objects to the simulation for visual variety.
+            Parameters:
+                - client: Active PyBullet client.
+                - num_objects (int): Number of objects to spawn (default: 5).
+        """
         self.random_objects_instances = []
         if not self.random_objects:
             return
@@ -882,7 +620,10 @@ class SpecificWorker(GenericWorker):
                 self.random_objects_instances.append(body_id)
 
     def remove_random_objects(self, client):
-        """Removes previously added random objects from the simulation."""
+        """Remove previously added random objects from the simulation.
+            Parameters:
+                - client: Active PyBullet client.
+        """
         for obj in self.random_objects_instances:
             try:
                 client.removeBody(obj)
@@ -896,7 +637,12 @@ class SpecificWorker(GenericWorker):
     # ===============================================================
 
     def _detect_and_label(self, img_bgr: np.ndarray) -> str:
-        """Detect the red concept in a BGR image and return YOLO-format label string"""
+        """Detect the concept in a BGR image and return a YOLO-format label string.
+            Parameters:
+                - img_bgr (np.ndarray): Input image in BGR format.
+            Returns:
+                - str: YOLO label line for the detected concept or an empty-like default label.
+        """
         hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, np.array([0, 70, 50]), np.array([10, 255, 255]))
         contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -908,11 +654,11 @@ class SpecificWorker(GenericWorker):
         return "0 0.5 0.5 0 0"
 
     def _augment_and_add(self, img_bgr: np.ndarray, label: str, is_train: bool) -> None:
-        """
-        Generate augmented copies of an image + label and add them to the dataset.
-        Augmentations:
-          1) Brightness / contrast jitter
-          2) Gaussian noise
+        """Generate augmented image copies and add them to the dataset.
+            Parameters:
+                - img_bgr (np.ndarray): Original image in BGR format.
+                - label (str): YOLO label associated with the image.
+                - is_train (bool): Whether the image belongs to the training split.
         """
         for _ in range(self.augment_per_image):
             aug = img_bgr.copy()

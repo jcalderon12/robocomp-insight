@@ -1,0 +1,11 @@
+Component semantic
+{
+    Communications
+    {
+        
+    };
+    language python;
+    options dsr;
+
+};
+
