@@ -1,3 +1,4 @@
+// Mission Controller
 /*
  *    Copyright (C) 2026 by YOUR NAME HERE
  *
@@ -16,6 +17,8 @@
  *    You should have received a copy of the GNU General Public License
  *    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
  */
+
+
 #include "specificworker.h"
 #include <QTimer>
 #include <QMessageBox>
@@ -510,10 +513,12 @@ void SpecificWorker::compute()
 {
 	// Main orchestration: Let the scheduler handle all state machine logic
 	// This is now a clean, simple loop that delegates to the integrated scheduler
+	
+	// Check for handshake completion (episodic_memory confirmation)
+	check_recording_handshake();
+	
 	if (autopilot_enabled)
 	{
-		// Check for handshake completion (episodic_memory confirmation)
-		check_recording_handshake();
 		
 		// Execute one step of the scheduler's state machine
 		// Events are fired via callback (handle_scheduler_event)
@@ -1359,7 +1364,7 @@ void SpecificWorker::check_affordance_and_complete_handshake()
 		return;
 	
 	// Look for the mission in the WORK GRAPH (G, shared with EM via DSR updates)
-	auto mission_opt = G->get_node(active_id);
+	auto mission_opt = mission_graph->get_node(active_id);
 	if (!mission_opt.has_value()) {
 		return;
 	}
@@ -1412,7 +1417,7 @@ void SpecificWorker::monitor_mission_execution_state()
 	if (active_id == 0 || !follow_person_active)
 		return;
 	
-	auto affordance_opt = G->get_node("follow_me");
+	auto affordance_opt = mission_graph->get_node("follow_me");
 	if (!affordance_opt.has_value())
 		return;
 	
@@ -1449,7 +1454,7 @@ void SpecificWorker::check_recording_handshake()
 	
 	// Try to verify handshake completion by checking mission attributes in work graph
 	try {
-		auto mission_opt = G->get_node(handshake_waiting_mission_id);
+		auto mission_opt = mission_graph->get_node(handshake_waiting_mission_id);
 		if (mission_opt.has_value()) {
 			auto mission = mission_opt.value();
 			
@@ -1488,6 +1493,7 @@ void SpecificWorker::check_recording_handshake()
 				// Note: mission status was already set to "running" in the activation callback
 				// Just activate affordances here - agents will react immediately
 				on_startMission_clicked();
+				// mission_scheduler.setAffordanceReady(handshake_waiting_mission_id, true);
 				
 				// Reset handshake state
 				handshake_waiting_mission_id = 0;

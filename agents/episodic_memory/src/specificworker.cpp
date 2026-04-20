@@ -1,3 +1,4 @@
+// Episodic Memory
 /*
  *    Copyright (C) 2026 by YOUR NAME HERE
  *
@@ -1001,10 +1002,11 @@ void SpecificWorker::exit_RECORDING() {
 			init_started_attr.value(false);
 			mission.attrs()["initialization_started"] = init_started_attr;
 			
+			
 			std::cout << "[HANDSHAKE] ✓ Set mission.recording=false (mission_id: " 
-			          << current_mission_id << ")" << std::endl;
+			<< current_mission_id << ")" << std::endl;
 			std::cout << "[HANDSHAKE] ✓ Set mission.initialization_started=false (mission_id: " 
-			          << current_mission_id << ")" << std::endl;
+			<< current_mission_id << ")" << std::endl;
 			
 			mission_graph->update_node(mission);
 			
