@@ -29,6 +29,11 @@ AGENT_ROBOT = INSIGHT.Agent_Robot
 PHYSICAL_OBJECT_BOTTLE = INSIGHT.PhysicalObject_Bottle
 PHYSICAL_PLACE_ROOM = INSIGHT.PhysicalPlace_Room
 ACTION_FOLLOW = INSIGHT.Action_Follow
+FOLLOW_AFFORDANCE_NAME = "follow_me"
+UNEXPLAINED_INTENTION_NAME = "unexplained"
+INTENTION_UNEXPLAINED = INSIGHT.Intention_Unexplained
+INTENTION_CLASS = INSIGHT.Intention
+HAS_INTENTION = INSIGHT.hasIntention
 
 @dataclass
 class SemanticState:
@@ -61,9 +66,44 @@ class SemanticState:
 class DSRSemanticWrapper:
     def __init__(self) -> None:
         self.state = SemanticState()
+        self._managed_subjects = {
+            str(AGENT_PERSON),
+            str(AGENT_ROBOT),
+            str(PHYSICAL_OBJECT_BOTTLE),
+            str(PHYSICAL_PLACE_ROOM),
+            str(ACTION_FOLLOW),
+            str(INTENTION_UNEXPLAINED),
+        }
+        self._managed_predicates = {
+            str(RDF.type),
+            str(DUL.hasLocation),
+            str(DUL.hasParticipant),
+            str(HAS_INTENTION),
+        }
+        self._managed_objects = self._managed_subjects | {
+            str(DUL.PhysicalAgent),
+            str(DUL.PhysicalObject),
+            str(DUL.PhysicalPlace),
+            str(DUL.Action),
+            str(INTENTION_CLASS),
+        }
 
     def get_state(self) -> SemanticState:
         return self.state
+
+    def filter_managed_triples(
+        self,
+        triples: set[tuple[str, str, str]],
+    ) -> set[tuple[str, str, str]]:
+        return {triple for triple in triples if self.is_managed_triple(triple)}
+
+    def is_managed_triple(self, triple: tuple[str, str, str]) -> bool:
+        subj, pred, obj = triple
+        return (
+            subj in self._managed_subjects
+            and pred in self._managed_predicates
+            and obj in self._managed_objects
+        )
 
     def initialize_from_dsr(self, dsr_graph) -> None:
         self.state.clear()
@@ -72,6 +112,7 @@ class DSRSemanticWrapper:
         self.sync_person(dsr_graph)
         self.sync_bottle(dsr_graph)
         self.sync_follow(dsr_graph)
+        self.sync_unexplained_intention(dsr_graph)
 
 
     def updated_node(self, dsr_graph, node_type: str) -> bool:
@@ -101,6 +142,7 @@ class DSRSemanticWrapper:
             self.sync_robot(dsr_graph)
             self.sync_bottle(dsr_graph)
             self.sync_follow(dsr_graph)
+            self.sync_unexplained_intention(dsr_graph)
             return True
 
         if node_type == "person":
@@ -110,6 +152,14 @@ class DSRSemanticWrapper:
 
         if node_type == "bottle":
             self.sync_bottle(dsr_graph)
+            return True
+
+        if node_type == "affordance":
+            self.sync_follow(dsr_graph)
+            return True
+
+        if node_type == "intention":
+            self.sync_unexplained_intention(dsr_graph)
             return True
 
         return False
@@ -125,6 +175,11 @@ class DSRSemanticWrapper:
         
         if edge_type == "TARGET":
             self.sync_follow(dsr_graph)
+            return True
+
+        if edge_type == "HAS_INTENTION":
+            self.sync_follow(dsr_graph)
+            self.sync_unexplained_intention(dsr_graph)
             return True
         
         return False
@@ -167,11 +222,22 @@ class DSRSemanticWrapper:
     def sync_follow(self, dsr_graph) -> None:
         robot_existe = dsr_graph.get_node("robot") is not None
         person_existe = dsr_graph.get_node("person") is not None
-        follow_existe = (robot_existe and person_existe and self._has_edge(dsr_graph, "robot", "person", "TARGET"))
+        target_existe = self._has_edge(dsr_graph, "robot", "person", "TARGET")
+        affordance_activa = self._is_follow_affordance_active(dsr_graph)
+        follow_existe = robot_existe and person_existe and target_existe and affordance_activa
 
         self.set_fact(follow_existe, str(ACTION_FOLLOW), str(RDF.type), str(DUL.Action))
         self.set_fact(follow_existe and robot_existe, str(ACTION_FOLLOW), str(DUL.hasParticipant), str(AGENT_ROBOT))
         self.set_fact(follow_existe and person_existe, str(ACTION_FOLLOW), str(DUL.hasParticipant), str(AGENT_PERSON))
+
+    def sync_unexplained_intention(self, dsr_graph) -> None:
+        robot_existe = dsr_graph.get_node("robot") is not None
+        unexplained_existe = dsr_graph.get_node(UNEXPLAINED_INTENTION_NAME) is not None
+        linked_to_robot = self._has_edge(dsr_graph, "robot", UNEXPLAINED_INTENTION_NAME, "has_intention")
+        intention_activa = robot_existe and unexplained_existe and linked_to_robot
+
+        self.set_fact(intention_activa, str(INTENTION_UNEXPLAINED), str(RDF.type), str(INTENTION_CLASS))
+        self.set_fact(intention_activa and robot_existe, str(AGENT_ROBOT), str(HAS_INTENTION), str(INTENTION_UNEXPLAINED))
 
 
 
@@ -189,3 +255,18 @@ class DSRSemanticWrapper:
         if from_node is None or to_node is None:
             return False
         return dsr_graph.get_edge(from_node.id, to_node.id, edge_type) is not None
+
+    def _is_follow_affordance_active(self, dsr_graph) -> bool:
+        follow_node = dsr_graph.get_node(FOLLOW_AFFORDANCE_NAME)
+        person_node = dsr_graph.get_node("person")
+        if follow_node is None or person_node is None:
+            return False
+
+        if not self._has_edge(dsr_graph, "person", FOLLOW_AFFORDANCE_NAME, "has_intention"):
+            return False
+
+        attrs = getattr(follow_node, "attrs", {})
+        if "aff_interacting" not in attrs:
+            return False
+
+        return bool(attrs["aff_interacting"].value)

@@ -19,6 +19,8 @@
 #    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+from pathlib import Path
+import time
 from unittest import signals
 import sys
 
@@ -38,6 +40,9 @@ console = Console(highlight=False)
 
 from src.ontology_mapping import DSRSemanticWrapper
 from src.graphdb_client import GraphDBClient, GraphDBConfig
+from src.hypothesis_config import HypothesisGeneratorConfig
+from src.hypothesis_context import build_hypothesis_generation_context
+from src.hypothesis_service import SemanticHypothesisService
 from src.live_causal_validator import LiveCausalValidator
 from pydsr import *
 
@@ -58,13 +63,25 @@ class SpecificWorker(GenericWorker):
         self.unexplained = False
         self.unexplained_reason = ""
         self.stop_inserted = False
+        self.bootstrap_sync = True
+        self.last_added_triples = set()
+        self.last_removed_triples = set()
+        self.hypothesis_generation_done = False
+        self.component_root = Path(__file__).resolve().parent.parent
+        self.hypothesis_config = HypothesisGeneratorConfig.from_config(configData, self.component_root)
+        self.hypothesis_service = (
+            SemanticHypothesisService(self.hypothesis_config, log_hook=self._log_hypothesis_event)
+            if self.hypothesis_config.enabled
+            else None
+        )
 
         self.mapper.initialize_from_dsr(self.g)
         self.initialized=True
+        self._bootstrap_remote_state()
         ##
 
         try:
-            # signals.connect(self.g, signals.UPDATE_NODE_ATTR, self.update_node_att)
+            signals.connect(self.g, signals.UPDATE_NODE_ATTR, self.update_node_att)
             signals.connect(self.g, signals.UPDATE_NODE, self.update_node)
             signals.connect(self.g, signals.DELETE_NODE, self.delete_node)
             signals.connect(self.g, signals.UPDATE_EDGE, self.update_edge)
@@ -115,6 +132,9 @@ class SpecificWorker(GenericWorker):
                     style="red",
                 )
 
+        if self.unexplained and self.hypothesis_service is not None and not self.hypothesis_generation_done:
+            self.generate_hypotheses_json()
+
 
         return True
 
@@ -122,8 +142,16 @@ class SpecificWorker(GenericWorker):
     def startup_check(self):
         QTimer.singleShot(200, QApplication.instance().quit)
 
+    def _log_hypothesis_event(self, level: str, message: str) -> None:
+        styles = {
+            "info": "cyan",
+            "warning": "yellow",
+            "error": "red",
+        }
+        console.print(message, style=styles.get(level, "white"))
+
     def insert_intention_hanging_for_robot(self) -> bool:
-        """Insert an intention node hanging from robot with a HAS edge."""
+        """Insert an unexplained intention node hanging from robot with a has_intention edge."""
         robot_node = self.g.get_node("robot")
         if robot_node is None:
             console.print("Cannot insert intention: robot node not found.", style="red")
@@ -144,10 +172,10 @@ class SpecificWorker(GenericWorker):
             intention_node = existing
             intention_id = intention_node.id
 
-        has_edge = Edge(intention_id, robot_node.id, "has", self.agent_id)
-        edge_ok = self.g.insert_or_assign_edge(has_edge)
+        has_intention_edge = Edge(robot_node.id, intention_id, "has_intention", self.agent_id)
+        edge_ok = self.g.insert_or_assign_edge(has_intention_edge)
         if not edge_ok:
-            console.print("Cannot link intention to robot using HAS edge.", style="red")
+            console.print("Cannot link robot to intention using has_intention edge.", style="red")
             return False
 
         return True
@@ -191,53 +219,148 @@ class SpecificWorker(GenericWorker):
 
     # Semantic
 
+    def _bootstrap_remote_state(self) -> None:
+        if self.graphdb_client is None:
+            return
+
+        try:
+            remote_triples = self.graphdb_client.get_graph_triples()
+            managed_remote_triples = self.mapper.filter_managed_triples(remote_triples)
+            self.last_triples = managed_remote_triples
+            self.last_signature = tuple(sorted(managed_remote_triples))
+            console.print(
+                f"Bootstrap semantic snapshot loaded from GraphDB: "
+                f"{len(managed_remote_triples)} managed triples.",
+                style="cyan",
+            )
+        except Exception as e:
+            console.print(
+                f"Could not bootstrap semantic snapshot from GraphDB: {e}",
+                style="yellow",
+            )
+
     def initialized_semantic_graph(self):
         state = self.mapper.get_state()
         current_triples = set(state.triples)
+        removed_triples = self.last_triples - current_triples
+        added_triples = current_triples - self.last_triples
+        self.last_removed_triples = set(removed_triples)
+        self.last_added_triples = set(added_triples)
 
-        validation = self.causal_validator.validate_delta(
-            removed=self.last_triples - current_triples,
-            added=current_triples - self.last_triples,
-            current=current_triples,
-        )
-        if validation.unexplained:
-            self.unexplained = True
-            self.unexplained_reason = validation.reason
-            console.print(
-                f"[CausalValidator] unexplained=True for retract {validation.retract}. {validation.reason}",
-                style="red",
+        if self.bootstrap_sync:
+            console.print("Skipping causal validation during bootstrap synchronization.", style="yellow")
+        else:
+            validation = self.causal_validator.validate_delta(
+                removed=removed_triples,
+                added=added_triples,
+                current=current_triples,
             )
+            if validation.unexplained:
+                self.unexplained = True
+                self.unexplained_reason = validation.reason
+                console.print(
+                    f"[CausalValidator] unexplained=True for retract {validation.retract}. {validation.reason}",
+                    style="red",
+                )
+                self.hypothesis_generation_done = False
 
         if state.signature == self.last_signature:
             self.initialized = False
+            self.bootstrap_sync = False
             return
         
         if self.graphdb_client is None:
             self.last_signature = state.signature
             self.last_triples = current_triples
             self.initialized = False
+            self.bootstrap_sync = False
             console.print("GraphDB disabled. Semantic state updated locally.", style="yellow")
             return
         
         try:
-            self.graphdb_client.replace_graph(state.to_turtle())
+            self.graphdb_client.apply_delta(
+                added=added_triples,
+                removed=removed_triples,
+            )
             self.last_signature = state.signature
             self.last_triples = current_triples
             self.initialized = False
+            self.bootstrap_sync = False
             console.print(
                 f"Semantic Graph synchronized to {self.graphdb_config.named_graph} "
-                f"with {len(state.triples)} triples.", style="green"
+                f"with +{len(added_triples)} / -{len(removed_triples)} changes "
+                f"({len(state.triples)} current triples).",
+                style="green",
             )
         except Exception as e:
             self.initialized = True
+            self.bootstrap_sync = False
             console.print(f"Failed to update GraphDB: {e}", style="red")
+
+    def generate_hypotheses_json(self) -> None:
+        if self.hypothesis_service is None:
+            return
+
+        current_triples = set(self.mapper.get_state().triples)
+        graph_source = "graphdb_mirror" if self.graphdb_client is not None else "local_semantic_state"
+        graph_endpoint = self.graphdb_config.statements_url if self.graphdb_client is not None else ""
+
+        context = build_hypothesis_generation_context(
+            dsr_graph=self.g,
+            current_triples=current_triples,
+            added_triples=self.last_added_triples,
+            removed_triples=self.last_removed_triples,
+            unexplained_reason=self.unexplained_reason,
+            description_path=self.hypothesis_config.description_path,
+            description_char_limit=self.hypothesis_config.description_char_limit,
+            graph_source=graph_source,
+            graph_endpoint=graph_endpoint,
+        )
+        console.print(
+            f"[HypothesisService] Context built for case_id='{context.get('case_id', '')}' "
+            f"with {len(context.get('current_triples', []))} current triples, "
+            f"+{len(context.get('added_triples', []))} added, "
+            f"-{len(context.get('removed_triples', []))} removed and "
+            f"{len(context.get('dsr_nodes', []))} DSR nodes.",
+            style="cyan",
+        )
+
+        try:
+            generation_started_at = time.perf_counter()
+            result = self.hypothesis_service.generate(context)
+            generation_elapsed = time.perf_counter() - generation_started_at
+            self.hypothesis_generation_done = True
+            if result.ok:
+                console.print(
+                    f"Hypothesis batch generated at {result.output_path}. "
+                    f"{len(result.batch.get('hypotheses', []))} hypotheses exported. "
+                    f"Elapsed: {generation_elapsed:.3f}s.",
+                    style="cyan",
+                )
+            else:
+                console.print(
+                    f"Hypothesis batch generation failed. Error payload stored at {result.output_path}. "
+                    f"Reason: {result.error}. Elapsed: {generation_elapsed:.3f}s.",
+                    style="yellow",
+                )
+        except Exception as exc:
+            generation_elapsed = time.perf_counter() - generation_started_at
+            self.hypothesis_generation_done = True
+            console.print(
+                f"Unexpected error during hypothesis generation: {exc}. "
+                f"Elapsed: {generation_elapsed:.3f}s.",
+                style="red",
+            )
 
     # =============== DSR SLOTS  ================
     # =============================================
 
-    def update_node_att(self, id: int, attribute_names: list[str]):
-        self.mapper.initialize_from_dsr(self.g)
-        self.initialized_semantic_graph()
+    def update_node_att(self, id: int, attribute_names):
+        node = self.g.get_node(id)
+        node_type = getattr(node, "type", None) if node is not None else None
+        semantic_changed = self.mapper.updated_node(self.g, node_type)
+        if semantic_changed:
+            self.initialized_semantic_graph()
         console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
 
     def update_node(self, id: int, type: str):
@@ -261,7 +384,7 @@ class SpecificWorker(GenericWorker):
 
         console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
 
-    def update_edge_att(self, fr: int, to: int, type: str, attribute_names: list[str]):
+    def update_edge_att(self, fr: int, to: int, type: str, attribute_names):
         semantic_changed = self.mapper.updated_edge(self.g, type)
         if semantic_changed:
             self.initialized_semantic_graph()

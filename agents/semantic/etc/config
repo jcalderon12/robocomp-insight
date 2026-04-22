@@ -30,3 +30,16 @@ Ice.Warn.Connections = "0"
 Ice.Trace.Network = "0"
 Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
+
+# --- Hypothesis generation ---
+hypothesisGenerator.Enabled = true
+hypothesisGenerator.OutputDir = "generated_hypotheses"
+hypothesisGenerator.DescriptionPath = "../../description.md"
+hypothesisGenerator.PrimaryModel = "gpt-oss:120b-cloud"
+hypothesisGenerator.FallbackModel = ""
+hypothesisGenerator.OllamaBaseUrl = "http://localhost:11434"
+hypothesisGenerator.RequestTimeoutSeconds = 180
+hypothesisGenerator.InternalCount = 3
+hypothesisGenerator.ExternalCount = 3
+hypothesisGenerator.PreferredClient = "ollama_http"
+hypothesisGenerator.DescriptionCharLimit = 3500
