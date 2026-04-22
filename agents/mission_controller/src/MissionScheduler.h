@@ -9,6 +9,7 @@
 #include <memory>
 #include <algorithm>
 #include <functional>
+#include <chrono>
 
 /**
  * @brief Mission priority queue comparator. Higher priority missions come first.
@@ -45,22 +46,113 @@ struct MissionInfo {
 };
 
 /**
- * @brief MissionScheduler manages mission priorities and scheduling logic
+ * @brief Execution events that SpecificWorker can handle
+ */
+enum class ExecutionEvent {
+    MISSION_SELECTED,      // A new mission was selected for activation
+    MISSION_ACTIVATED,     // Mission activated, waiting for affordance
+    MISSION_RUNNING,       // Mission is running, need to monitor
+    MISSION_COMPLETED,     // Mission marked complete, cleanup needed
+    FALLBACK_CREATED,      // Fallback follow_person mission created
+    HANDSHAKE_TIMEOUT      // Handshake with episodic_memory timed out
+};
+
+/**
+ * @brief Event callback data
+ */
+struct ExecutionEventData {
+    ExecutionEvent event;
+    uint64_t mission_id;
+    std::string mission_type;
+};
+
+/**
+ * @brief MissionScheduler manages mission priorities and scheduling logic integrated with autopilot
  * 
  * Features:
  * - Priority-based mission queue (5=Critical/highest, 1=VeryLow/lowest)
  * - Support for USER and AUTONOMOUS missions
  * - Preemption logic: USER missions can preempt AUTONOMOUS missions of lower priority
- * - Automatic selection of next mission to run
+ * - Built-in orchestration: state machine drives mission lifecycle internally
+ * - Callback mechanism for SpecificWorker to handle DSR operations
+ * 
+ * Usage:
+ * 1. Register callbacks for events
+ * 2. Call executionStep() from compute()
+ * 3. Scheduler handles all state transitions internally
  */
 class MissionScheduler {
+public:
+    /**
+     * @brief Internal execution state machine (not exposed to users)
+     */
+    enum class InternalState {
+        IDLE,                   // No mission active, waiting for next
+        SELECTING_NEXT,         // Searching for next pending mission
+        WAITING_AFFORDANCE,     // Waiting for affordance/handshake
+        RUNNING,                // Mission actively running
+        COMPLETED               // Mission finished, about to cleanup
+    };
+
 private:
     std::map<uint64_t, MissionInfo> missions;  // mission_id -> MissionInfo
     uint64_t current_mission_id = 0;           // Currently executing mission
     
+    // === INTERNAL STATE MACHINE (hidden from users) ===
+    InternalState internal_state = InternalState::IDLE;
+    uint64_t active_mission_id = 0;            // Mission in current execution cycle
+    std::string active_mission_type = "";      // Mission type for callbacks
+    int idle_cycles_count = 0;                 // Cycles with no pending missions
+    static constexpr int MAX_IDLE_CYCLES = 20;  // 20 cycles * 100ms = 2 seconds
+    
+    // Handshake tracking
+    uint64_t handshake_mission_id = 0;
+    int handshake_timeout_cycles = 0;
+    static constexpr int HANDSHAKE_TIMEOUT_CYCLES = 150;  // Sync with SpecificWorker.h (1.5s timeout)
+    int handshake_retry_count = 0;             // Track retry attempts (max 3)
+    static constexpr int MAX_HANDSHAKE_RETRIES = 3;
+    
+    bool was_affordance_ready = false;         // Track affordance state across cycles
+    
+    // === CALLBACKS (for SpecificWorker to implement DSR operations) ===
+    std::function<void(const ExecutionEventData&)> event_callback;
+    
 public:
     MissionScheduler() = default;
     ~MissionScheduler() = default;
+    
+    // === SETUP AND CONFIGURATION ===
+    
+    /**
+     * @brief Register an event callback for execution events
+     * @param callback Function to call when execution events occur
+     */
+    void setEventCallback(std::function<void(const ExecutionEventData&)> callback) {
+        event_callback = callback;
+    }
+    
+    /**
+     * @brief Enable or disable autopilot orchestration
+     * @param enabled If true, scheduler manages mission lifecycle automatically
+     */
+    void setAutopilotEnabled(bool enabled) {
+        if (enabled && internal_state == InternalState::IDLE) {
+            // Initialize state machine on enabling
+            internal_state = InternalState::SELECTING_NEXT;
+        } else if (!enabled) {
+            // Reset on disabling
+            internal_state = InternalState::IDLE;
+            active_mission_id = 0;
+            idle_cycles_count = 0;
+            handshake_mission_id = 0;
+        }
+    }
+    
+    bool isAutopilotEnabled() const {
+        return internal_state != InternalState::IDLE || active_mission_id != 0;
+    }
+    
+    // === MISSION MANAGEMENT (same as before) ===
     
     /**
      * @brief Add or update a mission in the scheduler
@@ -163,11 +255,11 @@ public:
         uint64_t best_mission_id = 0;
         int best_priority = 0;  // Start at minimum priority (will find highest)
         
-        for (const auto& [mission_id, info] : missions) {
+        for (const auto& [id, info] : missions) {
             // Look for PENDING or STOPPED missions (not RUNNING or COMPLETED)
             if ((info.status == "pending" || info.status == "stopped") && 
                 info.priority > best_priority) { 
-                best_mission_id = mission_id;
+                best_mission_id = id;
                 best_priority = info.priority;
             }
         }
@@ -304,16 +396,249 @@ public:
     bool completeMission(uint64_t mission_id) {
         auto it = missions.find(mission_id);
         if (it == missions.end()) {
+            std::cerr << "[SCHEDULER_ERROR] completeMission called but mission_id=" << mission_id << " not found!" << std::endl;
             return false;
         }
         
+
         it->second.status = "completed";
         
         if (current_mission_id == mission_id) {
             current_mission_id = 0;
         }
         
+        // If this is the mission in handshake, reset handshake state
+        if (mission_id == handshake_mission_id) {
+            handshake_mission_id = 0;
+            handshake_timeout_cycles = 0;
+            handshake_retry_count = 0;
+        }
+        
+        // If this mission is currently active, transition to COMPLETED state
+        if (mission_id == active_mission_id) {
+            internal_state = InternalState::COMPLETED;
+        }
+        
         return true;
+    }
+    
+    // === ORCHESTRATION ENGINE (Core refactored autopilot logic) ===
+    
+    /**
+     * @brief Main execution step - run this from compute() loop
+     * 
+     * This orchestrates the entire mission lifecycle. Call it every compute cycle when autopilot is enabled.
+     * Events are fired via callback for SpecificWorker to handle DSR operations.
+     */
+    void executionStep() {
+        // Step 0: Check handshake timeout
+        if (handshake_mission_id != 0) {
+            handshake_timeout_cycles++;
+            if (handshake_timeout_cycles == 1) {
+                // Log on first cycle for this handshake
+            }
+            if (handshake_timeout_cycles > HANDSHAKE_TIMEOUT_CYCLES) {
+                handshake_retry_count++;
+                std::cout << "[SCHEDULER] Handshake timeout attempt " << handshake_retry_count 
+                          << "/" << MAX_HANDSHAKE_RETRIES << " for mission: " << handshake_mission_id << std::endl;
+                
+                if (handshake_retry_count < MAX_HANDSHAKE_RETRIES) {
+                    // Retry: reset cycle counter and try again
+                    std::cout << "[SCHEDULER] Retrying handshake..." << std::endl;
+                    handshake_timeout_cycles = 0;
+                } else {
+                    // All retries failed - remove mission completely and go back to selecting
+                    std::cout << "[SCHEDULER] Handshake failed after " << MAX_HANDSHAKE_RETRIES 
+                              << " attempts. Removing mission from scheduler." << std::endl;
+                    removeMission(handshake_mission_id);
+                    if (event_callback) {
+                        event_callback({ ExecutionEvent::HANDSHAKE_TIMEOUT, handshake_mission_id, active_mission_type });
+                    }
+                    handshake_mission_id = 0;
+                    handshake_retry_count = 0;
+                    handshake_timeout_cycles = 0;
+                    // Return to SELECTING_NEXT to find another mission or go idle
+                    internal_state = InternalState::SELECTING_NEXT;
+                }
+            }
+        }
+        
+        switch (internal_state) {
+            case InternalState::IDLE:
+                // Nothing to do
+                break;
+                
+            case InternalState::SELECTING_NEXT:
+                executeSelectingNext();
+                break;
+                
+            case InternalState::WAITING_AFFORDANCE:
+                executeWaitingAffordance();
+                break;
+                
+            case InternalState::RUNNING:
+                executeRunning();
+                break;
+                
+            case InternalState::COMPLETED:
+                executeCompleted();
+                break;
+        }
+    }
+    
+    /**
+     * @brief Check if mission has affordance ready (should be called from SpecificWorker)
+     * @param mission_id The mission to check
+     * @return true if affordance is ready
+     */
+    void setAffordanceReady(uint64_t mission_id, bool ready) {
+        if (mission_id == handshake_mission_id) {
+            was_affordance_ready = ready;
+            if (ready) {
+                handshake_mission_id = 0;  // Handshake complete
+                handshake_timeout_cycles = 0;
+                handshake_retry_count = 0;  // Reset retry counter on success
+            }
+        }
+    }
+    
+    /**
+     * @brief Signal that mission should be marked complete (can be called from UI or monitors)
+     * @param mission_id Mission to complete
+     */
+    void requestMissionCompletion(uint64_t mission_id) {
+        if (mission_id == active_mission_id) {
+            completeMission(mission_id);
+            internal_state = InternalState::COMPLETED;
+        }
+    }
+    
+    /**
+     * @brief Get currently active mission ID
+     */
+    uint64_t getActiveMissionId() const {
+        return active_mission_id;
+    }
+    
+    /**
+     * @brief Get currently active mission type
+     */
+    std::string getActiveMissionType() const {
+        return active_mission_type;
+    }
+    
+    /**
+     * @brief Get current internal execution state (for debugging)
+     */
+    InternalState getInternalState() const {
+        return internal_state;
+    }
+    
+    /**
+     * @brief Check if currently waiting for EM handshake
+     * @return true if waiting for handshake (SpecificWorker should poll check_affordance_and_complete_handshake)
+     */
+    bool isWaitingForHandshake() const {
+        return handshake_mission_id != 0;
+    }
+    
+private:
+    // === INTERNAL STATE MACHINE METHODS (executed by executionStep) ===
+    
+    void executeSelectingNext() {
+        // Check for pending missions
+        auto next_opt = selectNextMission();
+        
+        if (!next_opt.has_value()) {
+            // No pending missions - increment idle counter
+            idle_cycles_count++;
+            
+            // Only log every 10 cycles to avoid spam
+            if (idle_cycles_count % 10 == 0) {
+
+            }
+            
+            if (idle_cycles_count > MAX_IDLE_CYCLES) {
+                // Timeout: create fallback follow_person mission
+                std::cout << "[SCHEDULER_IDLE_TIMEOUT] Idle timeout reached! Triggering fallback..." << std::endl;
+                if (event_callback) {
+                    event_callback({ ExecutionEvent::FALLBACK_CREATED, 0, "Follow Person" });
+                }
+                idle_cycles_count = 0;
+            }
+            return;
+        }
+        
+        // Found a pending mission
+
+        active_mission_id = next_opt.value();
+        idle_cycles_count = 0;
+        
+        // Get mission type (callback should provide this info)
+        auto info_opt = getMissionInfo(active_mission_id);
+        if (!info_opt.has_value()) {
+            active_mission_id = 0;
+            return;
+        }
+        
+        // For now, assume mission_type comes from external source
+        // This will be set when mission is added or retrieved from model
+        
+        // Signal that mission was selected
+        if (event_callback) {
+            event_callback({ ExecutionEvent::MISSION_SELECTED, active_mission_id, active_mission_type });
+        }
+        
+        // Activate the mission
+        auto result = activateMission(active_mission_id);
+        if (!result.success) {
+            active_mission_id = 0;
+            return;
+        }
+        
+        // Signal activation and transition to waiting for affordance
+        if (event_callback) {
+            event_callback({ ExecutionEvent::MISSION_ACTIVATED, active_mission_id, active_mission_type });
+        }
+        
+        handshake_mission_id = active_mission_id;
+        handshake_timeout_cycles = 0;
+        was_affordance_ready = false;
+        
+        internal_state = InternalState::WAITING_AFFORDANCE;
+    }
+    
+    void executeWaitingAffordance() {
+        // Check if affordance became ready (set via setAffordanceReady())
+        if (was_affordance_ready || handshake_mission_id == 0) {
+            // Handshake complete, transition to RUNNING
+            was_affordance_ready = false;
+            internal_state = InternalState::RUNNING;
+            
+            if (event_callback) {
+                event_callback({ ExecutionEvent::MISSION_RUNNING, active_mission_id, active_mission_type });
+            }
+        }
+    }
+    
+    void executeRunning() {
+        // Mission is actively running
+        // SpecificWorker should call monitor methods from here
+        // No changes to state in this method - state changes via external requests (completion)
+    }
+    
+    void executeCompleted() {
+        // Mission completed, perform cleanup
+        if (event_callback) {
+            event_callback({ ExecutionEvent::MISSION_COMPLETED, active_mission_id, active_mission_type });
+        }
+        
+        active_mission_id = 0;
+        active_mission_type = "";
+        was_affordance_ready = false;
+        
+        // Transition to selecting next mission
+        internal_state = InternalState::SELECTING_NEXT;
     }
 };
 

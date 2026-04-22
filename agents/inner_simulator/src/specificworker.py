@@ -297,8 +297,8 @@ class SpecificWorker(GenericWorker):
                         self.state = "SIMULATE_REASON"
                         self.actual_time = time.time()
                         console.print("MemoryAPI will be initialized with filepath: " + fp_node.attrs["filepath"].value, style="green")
-                        #self.mem_api = mem.EpisodicMemoryAPI(fp_node.attrs["filepath"].value) ---> TODO: Hasta que la memoria episodica esté arreglada usaremos el fichero personalizado
-                        self.mem_api = mem.EpisodicMemoryAPI(EM_HISTORY_FILE)
+                        self.mem_api = mem.EpisodicMemoryAPI(fp_node.attrs["filepath"].value)
+                        #self.mem_api = mem.EpisodicMemoryAPI(EM_HISTORY_FILE)
                         
                         # Wait for mem_api.is_ready() to be True, with a timeout of 10 seconds
                         timeout = 10
