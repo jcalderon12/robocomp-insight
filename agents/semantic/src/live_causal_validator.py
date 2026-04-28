@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Optional, Set, Tuple
 
+from rdflib import RDF
+
 from src.ontology_mapping import (
     ACTION_FOLLOW,
     AGENT_ROBOT,
@@ -18,7 +20,7 @@ Triple = Tuple[str, str, str]
 
 @dataclass(frozen=True)
 class ValidationResult:
-    unexplained: bool # Flag for the compute method in order to stop nodes.
+    unexplained: bool # Flag for the compute method
     reason: str = ""
     retract: Optional[Triple] = None
 
@@ -32,6 +34,7 @@ class LiveCausalValidator:
 
         self._has_location = str(DUL.hasLocation)
         self._has_participant = str(DUL.hasParticipant)
+        self._bottle_type_triple = (self._bottle, str(RDF.type), str(DUL.PhysicalObject))
 
     def validate_delta(
         self,
@@ -47,6 +50,13 @@ class LiveCausalValidator:
         retract = (self._bottle, self._has_location, self._robot)
         if retract not in removed:
             return ValidationResult(unexplained=False)
+
+        # If the bottle entity itself is gone from the ontology, the retraction is explained by entity deletion
+            return ValidationResult(
+                unexplained=False,
+                reason="Bottle entity removed from scene; retraction explained by entity deletion.",
+                retract=retract,
+            )
 
         moved_to_room = (self._bottle, self._has_location, self._room) in added or (
             self._bottle,
