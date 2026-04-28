@@ -79,20 +79,24 @@ class GraphDBClient:
         graph.parse(data=payload, format="nt")
         return {(str(subj), str(pred), str(obj)) for subj, pred, obj in graph}
 
-    def apply_delta(
-        self,
-        *,
-        added: Iterable[tuple[str, str, str]],
-        removed: Iterable[tuple[str, str, str]],
-    ) -> None:
+    def apply_delta(self, *, added, removed) -> None:
         removed = tuple(sorted(removed))
         added = tuple(sorted(added))
 
+        if not removed and not added:
+            return
+        
+        parts = []
+
         if removed:
-            self._execute_update(self._build_data_update("DELETE DATA", removed))
+            parts.append(self._build_data_update("DELETE DATA", removed))
 
         if added:
-            self._execute_update(self._build_data_update("INSERT DATA", added))
+            parts.append(self._build_data_update("INSERT DATA", added))
+
+        combined_update = ";\n".join(parts)
+        self._execute_update(combined_update)
+
 
     def replace_graph(self, turtle_payload: str) -> None:
         response = self.session.put(
@@ -132,7 +136,13 @@ class GraphDBClient:
     @staticmethod
     def _triple_to_ntriple(triple: tuple[str, str, str]) -> str:
         subj, pred, obj = triple
-        return f"    <{subj}> <{pred}> <{obj}> ."
+        if obj.startswith("http://") or obj.startswith("urn:"):
+            obj_str = f"<{obj}>"
+        elif obj.startswith('"'):
+            obj_str = obj
+        else:
+            obj_str = f"<{obj}>"
+        return f"    <{subj}> <{pred}> {obj_str} ."
 
     def _auth(self):
         return (self.config.user, self.config.password) if self.config.user else None
