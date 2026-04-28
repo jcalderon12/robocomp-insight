@@ -20,18 +20,17 @@
 #
 
 from pathlib import Path
+import threading
 import time
-from unittest import signals
 import sys
 
 from PySide6 import QtCore
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal, Qt
 from PySide6.QtWidgets import QApplication
+from pydsr import signals, Node, Edge
 from rich.console import Console
 from genericworker import *
 import interfaces as ifaces
-
-# Javir's imports
 
 
 
@@ -44,13 +43,30 @@ from src.hypothesis_config import HypothesisGeneratorConfig
 from src.hypothesis_context import build_hypothesis_generation_context
 from src.hypothesis_service import SemanticHypothesisService
 from src.live_causal_validator import LiveCausalValidator
-from pydsr import *
+
 
 
 class SpecificWorker(GenericWorker):
+    # Class-level Qt signal: emitted from any thread (DSR slots may not run on the
+    # main Qt thread). The QueuedConnection delivers it to _arm_sync_timer on the
+    # main thread, where touching QTimer is safe.
+    _sync_request = Signal()
+
     def __init__(self, proxy_map, configData, startup_check=False):
         super(SpecificWorker, self).__init__(proxy_map, configData)
         self.Period = configData["Period"]["Compute"]
+
+        # Coalescing infrastructure. Initialized first because everything below may
+        # mutate semantic state, and from this point on slots could (in principle)
+        # observe a partially-built worker.
+        self._sync_lock = threading.Lock()
+        self._sync_needed = False
+        self._sync_pending = False
+        self._sync_timer = QTimer()
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.setInterval(50)
+        self._sync_timer.timeout.connect(self._drain_sync)
+        self._sync_request.connect(self._arm_sync_timer, Qt.QueuedConnection)
 
         ##
         self.mapper = DSRSemanticWrapper()
@@ -58,14 +74,14 @@ class SpecificWorker(GenericWorker):
         self.graphdb_client = GraphDBClient(self.graphdb_config) if self.graphdb_config.enabled else None
         self.last_signature = None
         self.last_triples = set()
-        self.initialized = False
+        self._last_validated_signature = None
         self.causal_validator = LiveCausalValidator()
         self.unexplained = False
         self.unexplained_reason = ""
         self.stop_inserted = False
         self.bootstrap_sync = True
-        self.last_added_triples = set()
-        self.last_removed_triples = set()
+        self.trigger_added: frozenset[tuple[str, str, str]] = frozenset()
+        self.trigger_removed: frozenset[tuple[str, str, str]] = frozenset()
         self.hypothesis_generation_done = False
         self.component_root = Path(__file__).resolve().parent.parent
         self.hypothesis_config = HypothesisGeneratorConfig.from_config(configData, self.component_root)
@@ -76,7 +92,6 @@ class SpecificWorker(GenericWorker):
         )
 
         self.mapper.initialize_from_dsr(self.g)
-        self.initialized=True
         self._bootstrap_remote_state()
         ##
 
@@ -88,15 +103,16 @@ class SpecificWorker(GenericWorker):
             # signals.connect(self.g, signals.UPDATE_EDGE_ATTR, self.update_edge_att)
             signals.connect(self.g, signals.DELETE_EDGE, self.delete_edge)
             console.print("signals connected")
-        except RuntimeError as e:
-            print(e)
+        except Exception as e:
+            console.print(f"Failed to connect DSR signals: {e}. Aborting startup.", style="red")
+            raise
     
         if startup_check:
             self.startup_check()
         else:
 
 
-            self.initialized_semantic_graph()
+            self.sync_semantic_to_graphdb()
 
             # for n in self.g.nodes():
             #     print(n)
@@ -239,63 +255,115 @@ class SpecificWorker(GenericWorker):
                 style="yellow",
             )
 
-    def initialized_semantic_graph(self):
-        state = self.mapper.get_state()
-        current_triples = set(state.triples)
-        removed_triples = self.last_triples - current_triples
-        added_triples = current_triples - self.last_triples
-        self.last_removed_triples = set(removed_triples)
-        self.last_added_triples = set(added_triples)
+    def _arm_sync_timer(self) -> None:
+        """Arm the coalescing timer. Runs on the main thread (QueuedConnection)."""
+        if not self._sync_timer.isActive():
+            self._sync_timer.start()
 
-        if self.bootstrap_sync:
-            console.print("Skipping causal validation during bootstrap synchronization.", style="yellow")
-        else:
-            validation = self.causal_validator.validate_delta(
-                removed=removed_triples,
-                added=added_triples,
-                current=current_triples,
-            )
-            if validation.unexplained:
-                self.unexplained = True
-                self.unexplained_reason = validation.reason
-                console.print(
-                    f"[CausalValidator] unexplained=True for retract {validation.retract}. {validation.reason}",
-                    style="red",
-                )
-                self.hypothesis_generation_done = False
+    def _request_sync(self) -> None:
+        """Mark semantic state needed and request a coalesced sync. Thread-safe."""
+        emit = False
+        with self._sync_lock:
+            self._sync_needed = True
+            if not self._sync_pending:
+                self._sync_pending = True
+                emit = True
+        if emit:
+            self._sync_request.emit()
 
-        if state.signature == self.last_signature:
-            self.initialized = False
-            self.bootstrap_sync = False
-            return
-        
-        if self.graphdb_client is None:
-            self.last_signature = state.signature
-            self.last_triples = current_triples
-            self.initialized = False
-            self.bootstrap_sync = False
-            console.print("GraphDB disabled. Semantic state updated locally.", style="yellow")
-            return
-        
+    def _drain_sync(self) -> None:
+        """Coalesced sync entrypoint. Runs on the main thread when the QTimer fires."""
+        with self._sync_lock:
+            if not self._sync_needed:
+                self._sync_pending = False
+                return
+            self._sync_needed = False
+
+        self.sync_semantic_to_graphdb()
+
+        rearm = False
+        with self._sync_lock:
+            if self._sync_needed:
+                # A slot mutated state during the sync; arm another coalescing window.
+                rearm = True
+            else:
+                self._sync_pending = False
+        if rearm:
+            self._sync_timer.start()
+
+    def sync_semantic_to_graphdb(self):
+        # Snapshot all state under the lock; do HTTP outside the lock so a slow
+        # apply_delta does not block DSR slot handlers.
+        with self._sync_lock:
+            state = self.mapper.get_state()
+            current_triples = set(state.triples)
+            signature = state.signature
+            removed_triples = self.last_triples - current_triples
+            added_triples = current_triples - self.last_triples
+
+            # Only validate when the semantic state has actually changed since the last
+            # validation. last_signature tracks "last signature pushed to remote" and gets
+            # held back on apply_delta failure; _last_validated_signature is independent so
+            # transient remote failures don't cause us to re-fire the validator on the same
+            # delta every Compute tick.
+            if signature != self._last_validated_signature:
+                if self.bootstrap_sync:
+                    console.print("Skipping causal validation during bootstrap synchronization.", style="yellow")
+                else:
+                    validation = self.causal_validator.validate_delta(
+                        removed=removed_triples,
+                        added=added_triples,
+                        current=current_triples,
+                    )
+                    if validation.unexplained:
+                        # Snapshot the triggering delta only on the False->True transition,
+                        # so retries / unrelated later syncs don't overwrite the original cause.
+                        if not self.unexplained:
+                            self.trigger_added = frozenset(added_triples)
+                            self.trigger_removed = frozenset(removed_triples)
+                        self.unexplained = True
+                        self.unexplained_reason = validation.reason
+                        console.print(
+                            f"[CausalValidator] unexplained=True for retract {validation.retract}. {validation.reason}",
+                            style="red",
+                        )
+                        self.hypothesis_generation_done = False
+                self._last_validated_signature = signature
+
+            if signature == self.last_signature:
+                self.bootstrap_sync = False
+                return
+
+            if self.graphdb_client is None:
+                self.last_signature = signature
+                self.last_triples = current_triples
+                self.bootstrap_sync = False
+                console.print("GraphDB disabled. Semantic state updated locally.", style="yellow")
+                return
+
+        # HTTP without the lock: apply_delta may take hundreds of ms.
         try:
             self.graphdb_client.apply_delta(
                 added=added_triples,
                 removed=removed_triples,
             )
-            self.last_signature = state.signature
-            self.last_triples = current_triples
-            self.initialized = False
-            self.bootstrap_sync = False
-            console.print(
-                f"Semantic Graph synchronized to {self.graphdb_config.named_graph} "
-                f"with +{len(added_triples)} / -{len(removed_triples)} changes "
-                f"({len(state.triples)} current triples).",
-                style="green",
-            )
         except Exception as e:
-            self.initialized = True
-            self.bootstrap_sync = False
+            with self._sync_lock:
+                self.bootstrap_sync = False
             console.print(f"Failed to update GraphDB: {e}", style="red")
+            return
+
+        with self._sync_lock:
+            self.last_signature = signature
+            self.last_triples = current_triples
+            self.bootstrap_sync = False
+
+        console.print(
+            f"Semantic Graph synchronized to {self.graphdb_config.named_graph} "
+            f"with +{len(added_triples)} / -{len(removed_triples)} changes "
+            f"({len(current_triples)} current triples).",
+            style="green",
+        )
 
     def generate_hypotheses_json(self) -> None:
         if self.hypothesis_service is None:
@@ -308,8 +376,8 @@ class SpecificWorker(GenericWorker):
         context = build_hypothesis_generation_context(
             dsr_graph=self.g,
             current_triples=current_triples,
-            added_triples=self.last_added_triples,
-            removed_triples=self.last_removed_triples,
+            added_triples=self.trigger_added,
+            removed_triples=self.trigger_removed,
             unexplained_reason=self.unexplained_reason,
             description_path=self.hypothesis_config.description_path,
             description_char_limit=self.hypothesis_config.description_char_limit,
@@ -358,41 +426,47 @@ class SpecificWorker(GenericWorker):
     def update_node_att(self, id: int, attribute_names):
         node = self.g.get_node(id)
         node_type = getattr(node, "type", None) if node is not None else None
-        semantic_changed = self.mapper.updated_node(self.g, node_type)
+        with self._sync_lock:
+            semantic_changed = self.mapper.updated_node(self.g, node_type)
         if semantic_changed:
-            self.initialized_semantic_graph()
+            self._request_sync()
         console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
 
     def update_node(self, id: int, type: str):
-        semantic_changed = self.mapper.updated_node(self.g, type)
+        with self._sync_lock:
+            semantic_changed = self.mapper.updated_node(self.g, type)
         if semantic_changed:
-            self.initialized_semantic_graph()
+            self._request_sync()
 
         console.print(f"UPDATE NODE: {id} {type}", style='green')
 
     def delete_node(self, id: int):
-        self.mapper.initialize_from_dsr(self.g)
-        self.initialized_semantic_graph()
-        
+        with self._sync_lock:
+            self.mapper.initialize_from_dsr(self.g)
+        self._request_sync()
+
 
         console.print(f"DELETE NODE:: {id} ", style='green')
 
     def update_edge(self, fr: int, to: int, type: str):
-        semantic_changed = self.mapper.updated_edge(self.g, type)
+        with self._sync_lock:
+            semantic_changed = self.mapper.updated_edge(self.g, type)
         if semantic_changed:
-            self.initialized_semantic_graph()
+            self._request_sync()
 
         console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
 
     def update_edge_att(self, fr: int, to: int, type: str, attribute_names):
-        semantic_changed = self.mapper.updated_edge(self.g, type)
+        with self._sync_lock:
+            semantic_changed = self.mapper.updated_edge(self.g, type)
         if semantic_changed:
-            self.initialized_semantic_graph()
+            self._request_sync()
         console.print(f"UPDATE EDGE ATT: {fr} to {type} {attribute_names}", style='green')
 
     def delete_edge(self, fr: int, to: int, type: str):
-        semantic_changed = self.mapper.deleted_edge(self.g, type)
+        with self._sync_lock:
+            semantic_changed = self.mapper.deleted_edge(self.g, type)
         if semantic_changed:
-            self.initialized_semantic_graph()
+            self._request_sync()
 
         console.print(f"DELETE EDGE: {fr} to {type} {type}", style='green')
