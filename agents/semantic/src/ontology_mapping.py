@@ -37,7 +37,7 @@ HAS_INTENTION = INSIGHT.hasIntention
 
 @dataclass
 class SemanticState:
-    triples: tuple[tuple[str, str, str]] = field(default_factory=set)
+    triples: set[tuple[str, str, str]] = field(default_factory=set)
 
     @property
     def signature(self) -> tuple[tuple[str, str, str], ...]:
@@ -216,8 +216,11 @@ class DSRSemanticWrapper:
         bottle_on_robot = (bottle_existe and robot_existe and self._has_edge(dsr_graph, "robot", "bottle", "RT"))
         bottle_in_room = (bottle_existe and room_existe and self._has_edge(dsr_graph, "room", "bottle", "RT"))
 
-        self.set_fact(bottle_on_robot and robot_existe, str(PHYSICAL_OBJECT_BOTTLE), str(DUL.hasLocation), str(AGENT_ROBOT))
-        self.set_fact(bottle_in_room and room_existe, str(PHYSICAL_OBJECT_BOTTLE), str(DUL.hasLocation), str(PHYSICAL_PLACE_ROOM))
+        location_on_robot = bottle_on_robot
+        location_in_room = bottle_in_room and not bottle_on_robot
+
+        self.set_fact(location_on_robot, str(PHYSICAL_OBJECT_BOTTLE), str(DUL.hasLocation), str(AGENT_ROBOT))
+        self.set_fact(location_in_room, str(PHYSICAL_OBJECT_BOTTLE), str(DUL.hasLocation), str(PHYSICAL_PLACE_ROOM))
 
     def sync_follow(self, dsr_graph) -> None:
         robot_existe = dsr_graph.get_node("robot") is not None
