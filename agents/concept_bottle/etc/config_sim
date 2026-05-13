@@ -43,5 +43,5 @@ Ice.Trace.Network = "0"
 Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
 
-Simulated = false
+Simulated = true
 DisplayPointCloud = true
