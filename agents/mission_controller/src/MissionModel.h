@@ -10,6 +10,7 @@ struct Mission {
     QString type;  
     float elapsedTime = 0.0f;  
     MissionStatus status = MissionStatus::IDLE;
+    int priority = 3;  // 1=Very Low, 2=Low, 3=Normal, 4=High, 5=Critical
 };
 
 class MissionModel : public QAbstractListModel {

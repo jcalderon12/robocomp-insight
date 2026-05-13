@@ -1,4 +1,5 @@
 #include "MissionModel.h"
+#include <iostream>
 
 MissionModel::MissionModel(QObject *parent) : QAbstractListModel(parent) {}
 
@@ -18,6 +19,7 @@ QVariant MissionModel::data(const QModelIndex &index, int role) const {
     if (role == Qt::UserRole + 1) return m.type;
     if (role == Qt::UserRole + 2) return static_cast<int>(missions[index.row()].status);
     if (role == Qt::UserRole + 3) return m.elapsedTime;
+    if (role == Qt::UserRole + 4) return m.priority;
 
     return {};
 }
@@ -33,6 +35,10 @@ Mission MissionModel::getMission(int row) const {
 }
 
 void MissionModel::setMissionStatus(int row, MissionStatus status) {
+    if (row < 0 || row >= static_cast<int>(missions.size())) {
+        return;
+    }
+    
     missions[row].status = status;
     emit dataChanged(index(row), index(row));
 }

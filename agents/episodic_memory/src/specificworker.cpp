@@ -1,0 +1,1198 @@
+// Episodic Memory
+/*
+ *    Copyright (C) 2026 by YOUR NAME HERE
+ *
+ *    This file is part of RoboComp
+ *
+ *    RoboComp is free software: you can redistribute it and/or modify
+ *    it under the terms of the GNU General Public License as published by
+ *    the Free Software Foundation, either version 3 of the License, or
+ *    (at your option) any later version.
+ *
+ *    RoboComp is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU General Public License for more details.
+ *
+ *    You should have received a copy of the GNU General Public License
+ *    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
+ */
+#include "specificworker.h"
+
+SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx, bool startup_check)
+    : GenericWorker(configLoader, tprx) {
+	std::cout << "--- SpecificWorker CONSTRUCTOR START ---" << std::endl;
+	this->startup_check_flag = startup_check;
+	if (this->startup_check_flag) {
+		this->startup_check();
+  	} else {
+#ifdef HIBERNATION_ENABLED
+	hibernationChecker.start(500);
+#endif
+    // Schedule initialize() to run after construction
+    QTimer::singleShot(100, this, &SpecificWorker::initialize);
+  }
+}
+
+SpecificWorker::~SpecificWorker() {
+	std::cout << "Destroying SpecificWorker" << std::endl;
+	// G->write_to_json_file("./"+agent_name+".json");
+	delete historic_window;
+}
+
+void SpecificWorker::initialize() {
+	std::cout << "initialize worker" << std::endl;
+	GenericWorker::initialize();
+	
+	// Assign graphs AFTER GenericWorker::initialize() to avoid being overwritten
+	std::cout << "Available graphs: " << Graphs.size() << std::endl;
+	for (const auto& [name, graph] : Graphs) {
+		std::cout << "  - Graph: " << name << " (ptr: " << graph.get() << ")" << std::endl;
+	}
+	
+	G = Graphs.at("work");
+	mission_graph = Graphs.at("episodic");
+	
+	std::cout << "After assignment: G pointer: " << G.get() << ", mission_graph pointer: " << mission_graph.get() << std::endl;
+	std::cout << "G nodes: ";
+	auto g_nodes = G->get_nodes();
+	for (const auto& n : g_nodes) {
+		std::cout << n.name() << "(" << n.type() << ") ";
+	}
+	std::cout << std::endl;
+
+	// ===== EPISODIC MEMORY STATE MACHINE INITIALIZATION =====
+	current_state = EpisodicState::IDLE;
+	current_mission_id = 0;
+	current_mission_name = "";
+	mission_recording = false;
+	keyframe_period = std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
+	time_check = std::chrono::system_clock::now();
+
+	// dsr update signals
+	std::cout << "Connecting DSR signals from work graph..." << std::endl;
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_signal, this, &SpecificWorker::modify_node_slot);
+	std::cout << "Connected: update_node_signal" << std::endl;
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_signal, this, &SpecificWorker::modify_edge_slot);
+	std::cout << "Connected: update_edge_signal" << std::endl;
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_node_attr_signal, this, &SpecificWorker::modify_node_attrs_slot);
+	std::cout << "Connected: update_node_attr_signal" << std::endl;
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::update_edge_attr_signal, this, &SpecificWorker::modify_edge_attrs_slot);
+	std::cout << "Connected: update_edge_attr_signal" << std::endl;
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::del_edge_signal, this, &SpecificWorker::del_edge_slot);
+	std::cout << "Connected: del_edge_signal" << std::endl;
+	connect(Graphs.at("work").get(), &DSR::DSRGraph::del_node_signal, this, &SpecificWorker::del_node_slot);
+	std::cout << "Connected: del_node_signal" << std::endl;
+	std::cout << "All DSR signals connected successfully" << std::endl;
+
+	/***
+	 Custom Widget
+	In addition to the predefined viewers, Graph Viewer allows you to add various
+	widgets designed by the developer. The add_custom_widget_to_dock method is
+	used. This widget can be defined like any other Qt widget, either with a
+	QtDesigner or directly from scratch in a class of its own. The
+	add_custom_widget_to_dock method receives a name for the widget and a
+	reference to the class instance.
+	***/
+
+	// graph_viewers.at("")->add_custom_widget_to_dock("CustomWidget",
+	// &custom_widget);
+
+	////////////////////////////////////////////////////////////////////////////////////////
+
+	// Historic Debugger -> descomentar esto
+	// historic_debugger_ui.setupUi(&historic_debugger_widget);
+	// connect(historic_debugger_ui.local_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::local_changes_management);
+	// connect(historic_debugger_ui.global_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::global_changes_management);
+	// connect(historic_debugger_ui.time_input, &QLineEdit::returnPressed, this, &SpecificWorker::on_time_search);
+	// graph_viewers.at("episodic")->add_custom_widget_to_dock("Historic debugger", &historic_debugger_widget);
+
+	// // Historic Manager -> descomentar esto
+	// historic_manager = std::make_unique<HistoricManager>(historic_graph, 50);
+
+	// historic_window = new QMainWindow;
+	// historic_viewer = std::make_unique<DSR::DSRViewer>(historic_window,
+	// historic_graph, DSR::DSRViewer::view::graph | DSR::DSRViewer::view::scene,
+	// DSR::DSRViewer::view::graph); historic_window->setWindowTitle("Historic graph"); historic_window->show();
+
+	////////////////////////////////////////////////////////////////////////////////////////
+
+	// -> Initial keyframe
+	// std::string historic_file = "keyframes_and_changes_2.txt";
+	// if (historic_manager->index_file(historic_file)) {
+	// 	std::cout << __FUNCTION__ << " - Historic file indexed successfully" << std::endl;
+
+	// 	// Scrollbars configuration
+	// 	size_t keyframe_count = historic_manager->get_keyframe_count();
+	// 	historic_debugger_ui.global_changes_scroll_bar->setMaximum(keyframe_count - 1);
+
+	// 	// First keyframe
+	// 	if (keyframe_count > 0) {
+	// 	historic_manager->load_keyframe(0);
+	// 	update_local_scrollbar(0);
+
+	// 	// Initialize time_input to t=0 (first keyframe is the time reference)
+	// 	historic_debugger_ui.time_input->setText("0.000");
+	// 	}
+
+	// -> API tests
+	// std::cout << "\n\n";
+	// APITestSuite::run_all_tests(historic_file);
+	// std::cout << "\n\n";
+	// } else {
+	// 	std::cerr << __FUNCTION__ << " - Failed to index historic file" << std::endl;
+	// }
+
+	// Initial keyframe
+	// keyframe_period = std::chrono::milliseconds(configLoader.get<int>("KeyframePeriod"));
+	// time_check = std::chrono::system_clock::now();
+	// generate_keyframe();
+
+	/////////GET PARAMS, OPEND DEVICES....////////
+	// int period = configLoader.get<int>("Period.Compute") //NOTE: If you want
+	// get period of compute use getPeriod("compute") std::string device =
+	// configLoader.get<std::string>("Device.name")
+	
+	// ===== SETUP EPISODIC MEMORY STATE MACHINE =====
+	int state_period = 100; // milliseconds
+
+	// IDLE state
+	states["IDLE"] = std::make_unique<GRAFCETStep>(
+		"IDLE", 
+		state_period,
+		std::bind(&SpecificWorker::loop_IDLE, this),
+		std::bind(&SpecificWorker::enter_IDLE, this),
+		std::bind(&SpecificWorker::exit_IDLE, this)
+	);
+	statemachine.addState(states["IDLE"].get());
+
+	// WAITING_MISSION state
+	states["WAITING_MISSION"] = std::make_unique<GRAFCETStep>(
+		"WAITING_MISSION",
+		state_period,
+		std::bind(&SpecificWorker::loop_WAITING_MISSION, this),
+		std::bind(&SpecificWorker::enter_WAITING_MISSION, this),
+		std::bind(&SpecificWorker::exit_WAITING_MISSION, this)
+	);
+	statemachine.addState(states["WAITING_MISSION"].get());
+
+	// RECORDING state
+	states["RECORDING"] = std::make_unique<GRAFCETStep>(
+		"RECORDING",
+		state_period,
+		std::bind(&SpecificWorker::loop_RECORDING, this),
+		std::bind(&SpecificWorker::enter_RECORDING, this),
+		std::bind(&SpecificWorker::exit_RECORDING, this)
+	);
+	statemachine.addState(states["RECORDING"].get());
+
+	// Set initial state
+	statemachine.setInitialState(states["IDLE"].get());
+	statemachine.start();
+
+	auto error = statemachine.errorString();
+	if (error.length() > 0) {
+		qWarning() << error;
+		throw error;
+	}
+	
+	std::cout << "State machine started successfully" << std::endl;
+}
+
+void SpecificWorker::compute() {
+	// Nothing needed here - state machine and timers handle everything
+}
+
+void SpecificWorker::emergency() {
+	std::cout << "Emergency worker" << std::endl;
+	// emergencyCODE
+	//
+	// if (SUCCESSFUL) //The component is safe for continue
+	//   emmit goToRestore()
+}
+
+// Execute one when exiting to emergencyState
+void SpecificWorker::restore() {
+	std::cout << "Restore worker" << std::endl;
+	// restoreCODE
+	// Restore emergency component
+}
+
+int SpecificWorker::startup_check() {
+	std::cout << "Startup check" << std::endl;
+	QTimer::singleShot(200, QCoreApplication::instance(), SLOT(quit()));
+	return 0;
+}
+
+void SpecificWorker::local_changes_management(int value) {
+	// Get the current global keyframe index from the scrollbar
+	int keyframe_idx = historic_debugger_ui.global_changes_scroll_bar->value();
+	size_t local_count = historic_manager->get_local_changes_count(
+		static_cast<size_t>(keyframe_idx));
+
+	// Reload the base keyframe (without local changes)
+	historic_manager->load_keyframe(static_cast<size_t>(keyframe_idx), false);
+
+	// Apply local changes up to `value`
+	if (value > 0)
+		historic_manager->apply_local_changes_up_to(
+			static_cast<size_t>(keyframe_idx), static_cast<size_t>(value - 1));
+
+	// --- Update local_display_label: "X / Y - TYPE" ---
+	// value=0 means "keyframe base, no local change active"
+	if (value > 0 && local_count > 0) {
+		auto [ts, type] = historic_manager->get_local_change_info(
+			static_cast<size_t>(keyframe_idx), static_cast<size_t>(value - 1));
+		historic_debugger_ui.local_display_label->setText(
+			QString("%1 / %2 - %3").arg(value).arg(local_count).arg(QString::fromStdString(type)));
+		// Update time_input with time in seconds relative to the first keyframe
+		uint64_t t0 = historic_manager->get_keyframe_timestamp(0);
+		double seconds = (ts > t0) ? static_cast<double>(ts - t0) / 1e9 : 0.0;
+		historic_debugger_ui.time_input->setText(QString::number(seconds, 'f', 3));
+	} else {
+		historic_debugger_ui.local_display_label->setText(
+			QString("0 / %1").arg(local_count));
+		// Show keyframe timestamp when at base (no local change)
+		uint64_t t0 = historic_manager->get_keyframe_timestamp(0);
+		uint64_t ts = historic_manager->get_keyframe_timestamp(
+			static_cast<size_t>(keyframe_idx));
+		double seconds = (ts > t0) ? static_cast<double>(ts - t0) / 1e9 : 0.0;
+		historic_debugger_ui.time_input->setText(QString::number(seconds, 'f', 3));
+	}
+}
+
+void SpecificWorker::global_changes_management(int value) {
+	// Load keyframe with value as index (no local changes applied yet)
+	historic_manager->load_keyframe(static_cast<size_t>(value), false);
+
+	// Update local scrollbar range for this keyframe
+	update_local_scrollbar(static_cast<size_t>(value));
+
+	// Reset local scrollbar to 0 (base keyframe state, no changes applied)
+	historic_debugger_ui.local_changes_scroll_bar->blockSignals(true);
+	historic_debugger_ui.local_changes_scroll_bar->setValue(0);
+	historic_debugger_ui.local_changes_scroll_bar->blockSignals(false);
+
+	// --- Update global_display_label: "X / Y" (1-indexed for readability) ---
+	size_t total = historic_manager->get_keyframe_count();
+	historic_debugger_ui.global_display_label->setText(QString("%1 / %2").arg(value + 1).arg(total));
+
+	// Update time_input with keyframe time in seconds relative to first keyframe
+	uint64_t t0 = historic_manager->get_keyframe_timestamp(0);
+	uint64_t ts = historic_manager->get_keyframe_timestamp(static_cast<size_t>(value));
+	double seconds = (ts > t0) ? static_cast<double>(ts - t0) / 1e9 : 0.0;
+	historic_debugger_ui.time_input->setText(QString::number(seconds, 'f', 3));
+}
+
+void SpecificWorker::update_local_scrollbar(size_t keyframe_idx) {
+	size_t local_count = historic_manager->get_local_changes_count(keyframe_idx);
+	size_t total_kf = historic_manager->get_keyframe_count();
+
+	// local slider range: 0 = base keyframe, 1..N = each local change
+	historic_debugger_ui.local_changes_scroll_bar->setMaximum(static_cast<int>(local_count));
+
+	// Reset local label to base state
+	historic_debugger_ui.local_display_label->setText(QString("0 / %1").arg(local_count));
+
+	// Reset global label in case update_local_scrollbar is called directly
+	historic_debugger_ui.global_display_label->setText(QString("%1 / %2").arg(keyframe_idx + 1).arg(total_kf));
+}
+
+void SpecificWorker::on_time_search() {
+	QString time_str = historic_debugger_ui.time_input->text();
+	bool ok = false;
+	double seconds = time_str.toDouble(&ok);
+
+	if (!ok) { std::cerr << __FUNCTION__ << " - Invalid time input: " << time_str.toStdString() << std::endl; return; }
+
+	// Get reference timestamp (first keyframe timestamp)
+	uint64_t t0 = historic_manager->get_keyframe_timestamp(0);
+
+	// Convert seconds to nanoseconds and add to reference
+	uint64_t target_timestamp = t0 + static_cast<uint64_t>(seconds * 1e9);
+
+	std::cout << __FUNCTION__ << " - Searching for time " << seconds << "s (ns: " << target_timestamp << ")" << std::endl;
+
+	// Find keyframe at or before target time
+	auto keyframe_idx_opt = historic_manager->find_keyframe_at_or_before(target_timestamp);
+	if (!keyframe_idx_opt.has_value()) { std::cerr << __FUNCTION__ << " - No keyframe found before target timestamp" << std::endl; return; }
+
+	size_t keyframe_idx = keyframe_idx_opt.value();
+	uint64_t kf_timestamp = historic_manager->get_keyframe_timestamp(keyframe_idx);
+
+	std::cout << __FUNCTION__ << " - Found keyframe " << keyframe_idx << " at timestamp " << kf_timestamp << std::endl;
+
+	// Load the keyframe without local changes
+	historic_manager->load_keyframe(keyframe_idx, false);
+
+	// Update global scrollbar
+	historic_debugger_ui.global_changes_scroll_bar->blockSignals(true);
+	historic_debugger_ui.global_changes_scroll_bar->setValue(static_cast<int>(keyframe_idx));
+	historic_debugger_ui.global_changes_scroll_bar->blockSignals(false);
+
+	// Update global label
+	size_t total_kf = historic_manager->get_keyframe_count();
+	historic_debugger_ui.global_display_label->setText(QString("%1 / %2").arg(keyframe_idx + 1).arg(total_kf));
+
+	// Update local scrollbar range for this keyframe (critical when keyframe changes)
+	size_t local_count = historic_manager->get_local_changes_count(keyframe_idx);
+	historic_debugger_ui.local_changes_scroll_bar->setMaximum(static_cast<int>(local_count));
+
+	// Find closest local change within this keyframe
+	auto local_change_idx_opt = historic_manager->find_local_change_closest(keyframe_idx, target_timestamp);
+
+	uint64_t actual_timestamp = kf_timestamp; // Default to keyframe timestamp
+
+	if (local_change_idx_opt.has_value()) {
+		size_t local_change_idx = local_change_idx_opt.value();
+		auto [ts, type] = historic_manager->get_local_change_info(keyframe_idx, local_change_idx);
+
+		std::cout << __FUNCTION__ << " - Found closest local change " << local_change_idx << " at timestamp " << ts << " (type: " << type << ")" << std::endl;
+
+		// Apply local changes up to the found index
+		historic_manager->apply_local_changes_up_to(keyframe_idx, local_change_idx);
+
+		// Update local scrollbar and label
+		historic_debugger_ui.local_changes_scroll_bar->blockSignals(true);
+		historic_debugger_ui.local_changes_scroll_bar->setValue(static_cast<int>(local_change_idx + 1));
+		historic_debugger_ui.local_changes_scroll_bar->blockSignals(false);
+
+		historic_debugger_ui.local_display_label->setText(QString("%1 / %2 - %3").arg(local_change_idx + 1).arg(local_count).arg(QString::fromStdString(type)));
+
+		actual_timestamp = ts; // Use the actual event timestamp
+	} else {
+		std::cout << __FUNCTION__ << " - No local changes found in this keyframe" << std::endl;
+
+		// Reset local scrollbar to base keyframe state
+		historic_debugger_ui.local_changes_scroll_bar->blockSignals(true);
+		historic_debugger_ui.local_changes_scroll_bar->setValue(0);
+		historic_debugger_ui.local_changes_scroll_bar->blockSignals(false);
+
+		// Update local label to base state
+		historic_debugger_ui.local_display_label->setText(QString("0 / %1").arg(local_count));
+	}
+
+	// Update the time input with the actual found event timestamp
+	double actual_seconds = static_cast<double>(actual_timestamp - t0) / 1e9;
+	historic_debugger_ui.time_input->setText(QString::number(actual_seconds, 'f', 3));
+
+	std::cout << __FUNCTION__ << " - Time search completed" << std::endl;
+}
+
+void SpecificWorker::save_changes_to_file(const std::string &filename) {
+	// Check if change map is empty
+	if (changes_map.empty()) { 
+		std::cout << "[SAVE] ⚠ No changes recorded for mission. File not created." << std::endl;
+		return; 
+	}
+	
+	std::cout << "[SAVE] Saving " << changes_map.size() << " changes to: " << filename << std::endl;
+
+	// Open file in write mode - app: append (add at the end without overwrite)
+	std::ofstream out_file(filename, std::ios::app);
+	if (!out_file.is_open()) { std::cerr << __FUNCTION__ << " - Error: File " << filename << " couldn't be open for writting." << std::endl; return; }
+
+	// Write data
+	for (const auto &[timestamp, dsr_data] : changes_map)
+		out_file << dsr_data << "\n";
+
+	// Close file
+	out_file.close();
+	std::cout << __FUNCTION__ << " - File " << filename << " created with " << changes_map.size() << " changes." << std::endl;
+
+	// Clear changes map
+	changes_map.clear();
+}
+
+void SpecificWorker::load_changes(const std::string filename) {
+	// Open file in read mode
+	std::ifstream in_file(filename);
+	if (!in_file.is_open()) { std::cerr << __FUNCTION__ << " - Error: File " << filename << " couldn't be open for reading." << std::endl; return; }
+
+	std::string line;
+	int line_count = 0;
+	while (std::getline(in_file, line)) {
+		line_count++;
+
+		// Ignore empty lines
+		if (line.empty())
+		continue;
+
+		// Decode line
+		try {
+		if (auto data_ptr = DSRDecoder::decode(line); data_ptr)
+			decoded_data[data_ptr->timestamp] = *data_ptr;
+		} catch (const std::exception &e) {
+		std::cerr << __FUNCTION__ << " - Error decoding line " << line_count << ": " << e.what() << "\nData: " << line << std::endl;
+		}
+	}
+
+	// Close file
+	in_file.close();
+	std::cout << __FUNCTION__ << " - File " << filename << " readed and decoded. Changes loaded: " << decoded_data.size() << std::endl;
+}
+
+void SpecificWorker::display_debugger_graph() {
+	// Check if display data is empty
+	if (decoded_data.empty()) { std::cout << __FUNCTION__ << " - Empty decoded data. Nothing to display." << std::endl; return; }
+}
+
+void SpecificWorker::modify_node_slot(std::uint64_t id, const std::string &type) {
+	if (current_state != EpisodicState::RECORDING) {
+		std::cout << "modify_node_slot: Not in RECORDING state, ignoring. Current state: " << static_cast<int>(current_state) << std::endl;
+		return;
+	}
+
+	const auto time_now = std::chrono::system_clock::now();
+	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+	std::cout << "modify_node_slot - id: " << id << " type: " << type << " timestamp: " << new_timestamp << std::endl;
+
+	auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::MN, id, type, {});
+	if (!dsr_data_optional.has_value()) {
+		std::cerr << "modify_node_slot - Failed to assemble string" << std::endl;
+		return;
+	}
+	auto dsr_data = dsr_data_optional.value();
+	changes_map[new_timestamp] = dsr_data;
+	std::cout << "modify_node_slot - Recorded: " << dsr_data << " (total changes: " << changes_map.size() << ")" << std::endl;
+}
+
+void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string> &att_names) {
+	if (current_state != EpisodicState::RECORDING) return;
+
+	const auto time_now = std::chrono::system_clock::now();
+	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+	
+	std::cout << "[CHANGE] Node attrs modified: id=" << id << " attrs=" << att_names.size() << std::endl;
+
+	if (!string_check_flag) {
+		std::cout << "Modify node attrs slot - id: " << id << " att_names_size: " << att_names.size() << " att_names: ";
+		for (const auto &att : att_names) {
+		std::cout << att << " ";
+		auto node_optional = G->get_node(id);
+		if (node_optional.has_value()) {
+			auto node = node_optional.value();
+			auto timestamp_optional = G->get_attrib_timestamp_by_name(node, att);
+			if (timestamp_optional.has_value()) {
+			auto timestamp = timestamp_optional.value();
+			std::cout << " time: " << timestamp << " ";
+			}
+		}
+		}
+		std::cout << std::endl;
+	} else {
+		auto dsr_data_optional = assemble_string(
+			new_timestamp, DSRSpecialChars::MNA, id, "", att_names); // no type/tag
+		if (!dsr_data_optional.has_value()) {
+		std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl;
+		return;
+		}
+		auto dsr_data = dsr_data_optional.value();
+		changes_map[new_timestamp] = dsr_data;
+		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
+	}
+}
+
+void SpecificWorker::modify_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &type) {
+	if (current_state != EpisodicState::RECORDING) {
+		return;
+	}
+
+	const auto time_now = std::chrono::system_clock::now();
+	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+	std::cout << "modify_edge_slot - from_id: " << from << " to_id: " << to << " type: " << type << " timestamp: " << new_timestamp << std::endl;
+
+	auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::ME, std::make_tuple(from, to), type, {});
+	if (!dsr_data_optional.has_value()) {
+		std::cerr << "modify_edge_slot - Failed to assemble string" << std::endl;
+		return;
+	}
+	auto dsr_data = dsr_data_optional.value();
+	changes_map[new_timestamp] = dsr_data;
+	std::cout << "modify_edge_slot - Recorded: " << dsr_data << " (total changes: " << changes_map.size() << ")" << std::endl;
+}
+
+void SpecificWorker::modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to, const std::string &type, const std::vector<std::string> &att_names) {
+	if (current_state != EpisodicState::RECORDING) return;
+
+	const auto time_now = std::chrono::system_clock::now();
+	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+
+	if (!string_check_flag) {
+		std::cout << "Modify edge attrs slot - from_id: " << from << " to_id: " << to << " type: " << type << "\n att_names_size: " << att_names.size() << " att_names: ";
+		for (const auto &att : att_names)
+		std::cout << att << " ";
+		std::cout << std::endl;
+	} else {
+		auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::MEA, std::make_tuple(from, to), type, att_names);
+		if (!dsr_data_optional.has_value()) {
+		std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl;
+		return;
+		}
+		auto dsr_data = dsr_data_optional.value();
+		changes_map[new_timestamp] = dsr_data;
+		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
+	}
+}
+
+void SpecificWorker::del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag) {
+	if (current_state != EpisodicState::RECORDING) return;
+
+	const auto time_now = std::chrono::system_clock::now();
+	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+
+	if (!string_check_flag)
+		std::cout << "Delete edge slot" << std::endl;
+	else {
+		auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::DE, std::make_tuple(from, to), edge_tag, {});
+		if (!dsr_data_optional.has_value()) {
+		std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl;
+		return;
+		}
+		auto dsr_data = dsr_data_optional.value();
+		changes_map[new_timestamp] = dsr_data;
+		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
+	}
+}
+
+void SpecificWorker::del_node_slot(std::uint64_t from) {
+	if (current_state != EpisodicState::RECORDING) return;
+
+	const auto time_now = std::chrono::system_clock::now();
+	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+
+	if (!string_check_flag)
+		std::cout << "Delete node slot" << std::endl;
+	else {
+		auto dsr_data_optional =
+			assemble_string(new_timestamp, DSRSpecialChars::DN, from, "", {});
+		if (!dsr_data_optional.has_value()) {
+		std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl;
+		return;
+		}
+		auto dsr_data = dsr_data_optional.value();
+		changes_map[new_timestamp] = dsr_data;
+		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
+	}
+}
+
+std::tuple<std::string, std::string> SpecificWorker::attribute_value_and_type_to_string(const auto &att) {
+	  return std::visit(
+		[](const auto &value) -> std::tuple<std::string, std::string> {
+			using T = std::decay_t<decltype(value)>;
+
+			if constexpr (std::is_same_v<T, std::string>)
+			return {value, DSRTypeTrait<T>::code};
+			else if constexpr (std::is_arithmetic_v<T>)
+			return {std::to_string(value), DSRTypeTrait<T>::code};
+			else {
+			std::string out = "[";
+			bool first = true;
+			for (const auto &x : value) {
+				if (!first)
+				out += ",";
+				out += std::to_string(x);
+				first = false;
+			}
+			out += "]";
+			return {out, DSRTypeTrait<T>::code};
+			}
+		}, att.value());
+}
+
+std::optional<std::string> SpecificWorker::assemble_string(const auto &timestamp, const std::string &slot,
+    const std::variant<std::uint64_t, std::tuple<uint64_t, uint64_t>> &variant_id,
+    const std::string &type, const std::vector<std::string> &att_names) {
+	std::optional<DSR::Node> node_optional;
+	std::optional<DSR::Edge> edge_optional;
+	DSR::Node node;
+	DSR::Edge edge;
+
+	// timestamp + slot
+	std::string dsr_data = "";
+	dsr_data += std::to_string(timestamp);
+	dsr_data += DSRSpecialChars::SLOT;
+	dsr_data += slot;
+	dsr_data += DSRSpecialChars::SLOT;
+
+	// Node ID
+	if (std::holds_alternative<uint64_t>(variant_id)) {
+		auto node_id = std::get<uint64_t>(variant_id);
+		node_optional = G->get_node(node_id);
+		if (node_optional.has_value())
+		node = node_optional.value();
+
+		// ID
+		dsr_data += DSRAttributeNames::ID;
+		dsr_data += DSRSpecialChars::ATT_NAME;
+		dsr_data += DSRTypeTrait<uint64_t>::code;
+		dsr_data += DSRSpecialChars::ATT_TYPE;
+		dsr_data += std::to_string(node_id);
+		dsr_data += DSRSpecialChars::ATT_VAL;
+	}
+	// Edge ID
+	else if (std::holds_alternative<std::tuple<uint64_t, uint64_t>>(variant_id)) {
+		auto [from_id, to_id] = std::get<std::tuple<uint64_t, uint64_t>>(variant_id);
+		if (slot != DSRSpecialChars::DE)
+		edge_optional = G->get_edge(from_id, to_id, type);
+		if (edge_optional.has_value())
+		edge = edge_optional.value();
+
+		// from ID
+		dsr_data += DSRAttributeNames::IDF;
+		dsr_data += DSRSpecialChars::ATT_NAME;
+		dsr_data += DSRTypeTrait<uint64_t>::code;
+		dsr_data += DSRSpecialChars::ATT_TYPE;
+		dsr_data += std::to_string(from_id);
+		dsr_data += DSRSpecialChars::ATT_VAL;
+
+		// to ID
+		dsr_data += DSRAttributeNames::IDT;
+		dsr_data += DSRSpecialChars::ATT_NAME;
+		dsr_data += DSRTypeTrait<uint64_t>::code;
+		dsr_data += DSRSpecialChars::ATT_TYPE;
+		dsr_data += std::to_string(to_id);
+		dsr_data += DSRSpecialChars::ATT_VAL;
+	}
+
+	// Node / Edge: type - Edge: tag (when deleted)
+	if (!type.empty()) {
+		dsr_data += DSRAttributeNames::TYPE;
+		dsr_data += DSRSpecialChars::ATT_NAME;
+		dsr_data += DSRTypeTrait<std::string>::code;
+		dsr_data += DSRSpecialChars::ATT_TYPE;
+		dsr_data += type;
+		dsr_data += DSRSpecialChars::ATT_VAL;
+	}
+
+	// Node: name
+	if (slot == DSRSpecialChars::MN && node_optional.has_value()) {
+		dsr_data += DSRAttributeNames::NODE_NAME;
+		dsr_data += DSRSpecialChars::ATT_NAME;
+		dsr_data += DSRTypeTrait<std::string>::code;
+		dsr_data += DSRSpecialChars::ATT_TYPE;
+		dsr_data += node.name();
+		dsr_data += DSRSpecialChars::ATT_VAL;
+	}
+
+	// Attributes
+	if (!att_names.empty()) {
+		for (const auto &att_name : att_names) {
+		if (att_name.empty())
+			continue;
+		std::optional<DSR::Attribute> att_optional;
+		if (std::holds_alternative<std::uint64_t>(variant_id)) { // Node
+			if (node.attrs().count(att_name) > 0)
+			att_optional = node.attrs()[att_name];
+		} else if (std::holds_alternative<std::tuple<uint64_t, uint64_t>>(
+						variant_id)) { // Edge
+			if (edge.attrs().count(att_name) > 0)
+			att_optional = edge.attrs()[att_name];
+		}
+
+		if (att_optional.has_value()) {
+			auto [att_value, att_type] =
+				attribute_value_and_type_to_string(att_optional.value());
+			if (!att_value.empty()) {
+			dsr_data += att_name;
+			dsr_data += DSRSpecialChars::ATT_NAME;
+			dsr_data += att_type;
+			dsr_data += DSRSpecialChars::ATT_TYPE;
+			dsr_data += att_value;
+			dsr_data += DSRSpecialChars::ATT_VAL;
+			}
+		}
+		}
+	}
+	dsr_data += DSRSpecialChars::SLOT;
+	return std::make_optional(std::move(dsr_data));
+}
+
+void SpecificWorker::generate_keyframe() {
+	std::cout << "[KEYFRAME] Generating keyframe for mission " << current_mission_name << std::endl;
+	
+	std::vector<std::string> nodes_str_v;
+	std::vector<std::string> edges_str_v;
+	std::string dsr_kdata = "";
+
+	auto time_now = std::chrono::high_resolution_clock::now();
+	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
+
+	auto nodes = G->get_nodes();
+	for (const auto &node : nodes) {
+		// node info
+		std::string node_data = "";
+
+		// node name
+		node_data += DSRAttributeNames::NODE_NAME;
+		node_data += DSRSpecialChars::ATT_NAME;
+		node_data += DSRTypeTrait<std::string>::code;
+		node_data += DSRSpecialChars::ATT_TYPE;
+		node_data += node.name();
+		node_data += DSRSpecialChars::ATT_VAL;
+
+		// node type
+		node_data += DSRAttributeNames::TYPE;
+		node_data += DSRSpecialChars::ATT_NAME;
+		node_data += DSRTypeTrait<std::string>::code;
+		node_data += DSRSpecialChars::ATT_TYPE;
+		node_data += node.type();
+		node_data += DSRSpecialChars::ATT_VAL;
+
+		// node id
+		node_data += DSRAttributeNames::ID;
+		node_data += DSRSpecialChars::ATT_NAME;
+		node_data += DSRTypeTrait<uint64_t>::code;
+		node_data += DSRSpecialChars::ATT_TYPE;
+		const auto id_optional = G->get_id_from_name(node.name());
+		if (id_optional.has_value()) {
+		node_data += std::to_string(id_optional.value());
+		node_data += DSRSpecialChars::ATT_VAL;
+		}
+
+		// node attrs
+		auto attrs = node.attrs();
+		for (const auto &att : attrs) {
+		auto att_val_type = attribute_value_and_type_to_string(att.second);
+		node_data += att.first;
+		node_data += DSRSpecialChars::ATT_NAME;
+		node_data += std::get<1>(att_val_type);
+		node_data += DSRSpecialChars::ATT_TYPE;
+		node_data += std::get<0>(att_val_type);
+		node_data += DSRSpecialChars::ATT_VAL;
+		}
+		node_data += DSRSpecialChars::SLOT;
+		nodes_str_v.push_back(node_data);
+
+		// edge info
+		std::string edge_data = "";
+		auto node_edges_optional = G->get_edges(node.id());
+		if (node_edges_optional.has_value()) {
+		auto edges_map = node_edges_optional.value();
+		for (const auto &edge_map_element : edges_map) {
+			auto key_idto_type = edge_map_element.first;
+			auto edge = edge_map_element.second;
+
+			// edge type
+			edge_data += DSRAttributeNames::TYPE;
+			edge_data += DSRSpecialChars::ATT_NAME;
+			edge_data += DSRTypeTrait<std::string>::code;
+			edge_data += DSRSpecialChars::ATT_TYPE;
+			edge_data += key_idto_type.second;
+			edge_data += DSRSpecialChars::ATT_VAL;
+
+			// edge id from
+			edge_data += DSRAttributeNames::IDF;
+			edge_data += DSRSpecialChars::ATT_NAME;
+			edge_data += DSRTypeTrait<uint64_t>::code;
+			edge_data += DSRSpecialChars::ATT_TYPE;
+			if (id_optional.has_value()) {
+			edge_data += std::to_string(id_optional.value());
+			edge_data += DSRSpecialChars::ATT_VAL;
+			}
+
+			// edge id to
+			edge_data += DSRAttributeNames::IDT;
+			edge_data += DSRSpecialChars::ATT_NAME;
+			edge_data += DSRTypeTrait<uint64_t>::code;
+			edge_data += DSRSpecialChars::ATT_TYPE;
+			edge_data += std::to_string(key_idto_type.first);
+			edge_data += DSRSpecialChars::ATT_VAL;
+
+			// edge attrs
+			auto attrs = edge.attrs();
+			for (const auto &att : attrs) {
+			auto att_val_type = attribute_value_and_type_to_string(att.second);
+			edge_data += att.first;
+			edge_data += DSRSpecialChars::ATT_NAME;
+			edge_data += std::get<1>(att_val_type);
+			edge_data += DSRSpecialChars::ATT_TYPE;
+			edge_data += std::get<0>(att_val_type);
+			edge_data += DSRSpecialChars::ATT_VAL;
+			}
+
+			edge_data += DSRSpecialChars::SLOT;
+		}
+		edges_str_v.push_back(edge_data);
+		}
+	}
+
+	for (const auto &node_str : nodes_str_v)
+		dsr_kdata += node_str;
+	dsr_kdata += DSRSpecialChars::K_DIV;
+	for (const auto &edge_str : edges_str_v)
+		dsr_kdata += edge_str;
+	dsr_kdata += DSRSpecialChars::K_DIV;
+
+	// Format keyframe: timestamp#K#<data>
+	std::string keyframe_entry = std::to_string(new_timestamp) + "#K#" + dsr_kdata;
+	changes_map[new_timestamp] = keyframe_entry;
+	// std::cout << dsr_kdata << std::endl;
+	// std::cout << std::endl;
+}
+
+// ===== STATE MACHINE METHODS =====
+
+void SpecificWorker::enter_IDLE() {
+	std::cout << "- Entering IDLE state" << std::endl;
+	current_state = EpisodicState::IDLE;
+	current_mission_id = 0;
+	current_mission_name = "";
+	mission_recording = false;
+}
+
+void SpecificWorker::loop_IDLE() {
+	evaluate_state_transitions();
+}
+
+void SpecificWorker::exit_IDLE() {
+	// Nothing to do on exit
+}
+
+void SpecificWorker::enter_WAITING_MISSION() {
+	std::cout << "- Entering WAITING_MISSION state (mission: " << current_mission_name << ")" << std::endl;
+	current_state = EpisodicState::WAITING_MISSION;
+	mission_recording = false;
+}
+
+void SpecificWorker::loop_WAITING_MISSION() {
+	evaluate_state_transitions();
+}
+
+void SpecificWorker::exit_WAITING_MISSION() {
+	// Nothing to do on exit
+}
+
+void SpecificWorker::enter_RECORDING() {
+	std::cout << "[STATE] Entering RECORDING state for mission: " << current_mission_id 
+	          << " (" << current_mission_name << ")" << std::endl;
+	mission_recording = true;
+	mission_start_time = std::chrono::system_clock::now();
+	changes_map.clear();
+	decoded_data.clear();
+	time_check = mission_start_time;
+	
+	// Read filepath from mission node attribute (set by mission_controller)
+	current_mission_filepath = "";
+	try {
+		auto mission_opt = mission_graph->get_node(current_mission_id);
+		if (mission_opt.has_value()) {
+			auto mission = mission_opt.value();
+			auto filepath_attr = mission.attrs().find("filepath");
+			if (filepath_attr != mission.attrs().end()) {
+				try {
+					current_mission_filepath = std::get<std::string>(filepath_attr->second.value());
+				} catch (const std::bad_variant_access& e) {
+					std::cerr << "Error reading filepath value: " << e.what() << std::endl;
+				}
+			} else {
+				std::cerr << "  ⚠ No filepath attribute found in mission node" << std::endl;
+			}
+		}
+	} catch (const std::exception& e) {
+		std::cerr << "Error reading mission node for filepath: " << e.what() << std::endl;
+	}
+	
+	if (current_mission_filepath.empty()) {
+		std::cerr << "  ⚠ WARNING: No valid filepath for mission_id " << current_mission_id << std::endl;
+	}
+	
+	// === SYNCHRONIZATION HANDSHAKE - PHASE 1 ===
+	// Signal mission_controller that we have detected TARGET and are beginning initialization
+	try {
+		auto mission_opt = mission_graph->get_node(current_mission_id);
+		if (mission_opt.has_value()) {
+			auto mission = mission_opt.value();
+			DSR::Attribute init_started_attr;
+			init_started_attr.value(true);
+			mission.attrs()["initialization_started"] = init_started_attr;
+			mission_graph->update_node(mission);
+			
+			// ALSO update in work graph (G) so MC can see it via DSR signals
+			if (G != mission_graph) {
+				auto mission_g_opt = G->get_node(current_mission_id);
+				if (mission_g_opt.has_value()) {
+					auto mission_g = mission_g_opt.value();
+					mission_g.attrs()["initialization_started"] = init_started_attr;
+					G->update_node(mission_g);
+				}
+			}
+			
+			std::cout << "[HANDSHAKE-P1] ✓ Set mission.initialization_started=true (mission_id: " 
+			          << current_mission_id << ")" << std::endl;
+		}
+	} catch (const std::exception& e) {
+		std::cerr << "[HANDSHAKE-P1_ERROR] Could not set initialization_started=true: " << e.what() << std::endl;
+	}
+	
+	// FIX: Set current_state=RECORDING BEFORE generate_keyframe() to activate guards immediately
+	// This ensures slots start recording from the very beginning of initialization
+	current_state = EpisodicState::RECORDING;
+	std::cout << "[STATE] ✓ Transitioned to RECORDING state (slots now recording)" << std::endl;
+	
+	// Generate initial keyframe
+	generate_keyframe();
+	
+	// === SYNCHRONIZATION HANDSHAKE - PHASE 2 ===
+	// Signal mission_controller that initialization is complete and we are ready to record
+	try {
+		auto mission_opt = mission_graph->get_node(current_mission_id);
+		if (mission_opt.has_value()) {
+			auto mission = mission_opt.value();
+			DSR::Attribute recording_attr;
+			recording_attr.value(true);
+			mission.attrs()["recording"] = recording_attr;
+			mission_graph->update_node(mission);
+			
+			// ALSO update in work graph (G) so MC can see it via DSR signals
+			if (G != mission_graph) {
+				auto mission_g_opt = G->get_node(current_mission_id);
+				if (mission_g_opt.has_value()) {
+					auto mission_g = mission_g_opt.value();
+					mission_g.attrs()["recording"] = recording_attr;
+					G->update_node(mission_g);
+				}
+			}
+			
+			std::cout << "[HANDSHAKE-P2] ✓ Set mission.recording=true (mission_id: " 
+			          << current_mission_id << ")" << std::endl;
+		}
+	} catch (const std::exception& e) {
+		std::cerr << "[HANDSHAKE-P2_ERROR] Could not set recording=true: " << e.what() << std::endl;
+	}
+	
+	// Start periodic keyframe timer
+	if (!keyframe_timer) {
+		keyframe_timer = new QTimer(this);
+		connect(keyframe_timer, &QTimer::timeout, this, &SpecificWorker::on_keyframe_timer_timeout);
+	}
+	keyframe_timer->start(keyframe_period.count());
+}
+
+void SpecificWorker::loop_RECORDING() {
+	// Evaluate state transitions
+	evaluate_state_transitions();
+}
+
+void SpecificWorker::on_keyframe_timer_timeout() {
+	if (mission_recording) {
+		generate_keyframe();
+	}
+}
+
+void SpecificWorker::exit_RECORDING() {
+	std::cout << "[STATE] Exiting RECORDING state for mission: " << current_mission_name << std::endl;
+	
+	// Generate final keyframe
+	generate_keyframe();
+	
+	// === SYNCHRONIZATION HANDSHAKE CLEANUP ===
+	// Signal mission_controller that episodic_memory is NO LONGER RECORDING
+	try {
+		auto mission_opt = mission_graph->get_node(current_mission_id);
+		if (mission_opt.has_value()) {
+			auto mission = mission_opt.value();
+			
+			// Clean up both handshake attributes
+			DSR::Attribute recording_attr;
+			recording_attr.value(false);
+			mission.attrs()["recording"] = recording_attr;
+			
+			DSR::Attribute init_started_attr;
+			init_started_attr.value(false);
+			mission.attrs()["initialization_started"] = init_started_attr;
+			
+			
+			std::cout << "[HANDSHAKE] ✓ Set mission.recording=false (mission_id: " 
+			<< current_mission_id << ")" << std::endl;
+			std::cout << "[HANDSHAKE] ✓ Set mission.initialization_started=false (mission_id: " 
+			<< current_mission_id << ")" << std::endl;
+			
+			mission_graph->update_node(mission);
+			
+			// ALSO update in work graph (G) so MC can see it via DSR signals
+			if (G != mission_graph) {
+				auto mission_g_opt = G->get_node(current_mission_id);
+				if (mission_g_opt.has_value()) {
+					auto mission_g = mission_g_opt.value();
+					mission_g.attrs()["recording"] = recording_attr;
+					mission_g.attrs()["initialization_started"] = init_started_attr;
+					G->update_node(mission_g);
+				}
+			}
+		}
+	} catch (const std::exception& e) {
+		std::cerr << "[HANDSHAKE_ERROR] Could not clean up handshake attributes: " << e.what() << std::endl;
+	}
+	
+	// Stop periodic keyframe timer FIRST
+	if (keyframe_timer) {
+		keyframe_timer->stop();
+	}
+	
+	// Persist changes to file using filepath from mission node
+	if (!current_mission_name.empty() && current_mission_id != 0) {
+		if (!current_mission_filepath.empty()) {
+			// Report before saving (because save clears the map)
+
+			save_changes_to_file(current_mission_filepath);
+
+			// Add/update filepath attribute to mission node (redundant but ensures consistency)
+			try {
+				auto mission_opt = mission_graph->get_node(current_mission_id);
+				if (mission_opt.has_value()) {
+					auto mission = mission_opt.value();
+					DSR::Attribute filepath_attr;
+					filepath_attr.value(current_mission_filepath);
+					mission.attrs()["filepath"] = filepath_attr;
+					mission_graph->update_node(mission);
+					std::cout << "  ✓ Mission node updated with filepath" << std::endl;
+				}
+			} catch (const std::exception& e) {
+				std::cerr << "Could not update filepath attribute: " << e.what() << std::endl;
+			}
+		} else {
+		}
+	} else {
+	}
+	
+	// Clean up
+	current_mission_id = 0;
+	current_mission_name = "";
+	current_mission_filepath = "";
+	mission_recording = false;
+	decoded_data.clear();
+	
+}
+
+void SpecificWorker::request_state_transition(EpisodicState new_state) {
+	if (new_state != current_state) {
+		// Exit current state
+		if (current_state == EpisodicState::IDLE) {
+			exit_IDLE();
+		} else if (current_state == EpisodicState::WAITING_MISSION) {
+			exit_WAITING_MISSION();
+		} else if (current_state == EpisodicState::RECORDING) {
+			exit_RECORDING();
+		}
+		
+		// Enter new state
+		if (new_state == EpisodicState::IDLE) {
+			enter_IDLE();
+		} else if (new_state == EpisodicState::WAITING_MISSION) {
+			enter_WAITING_MISSION();
+		} else if (new_state == EpisodicState::RECORDING) {
+			enter_RECORDING();
+		}
+	}
+}
+
+void SpecificWorker::evaluate_state_transitions() {
+
+	uint64_t previous_mission_id = current_mission_id;
+	auto mission_opt = find_mission_with_target_edge();
+	
+	if (!mission_opt.has_value()) {
+		// No active mission
+		if (current_state != EpisodicState::IDLE) {
+			request_state_transition(EpisodicState::IDLE);
+		}
+	} else {
+		uint64_t detected_mission_id = mission_opt.value();
+		
+		// CHECK IF MISSION CHANGED (preemption/switch scenario)
+		if (previous_mission_id != 0 && detected_mission_id != previous_mission_id) {
+			// If we were recording, force EXIT first to save current mission properly
+			if (current_state == EpisodicState::RECORDING) {
+				request_state_transition(EpisodicState::WAITING_MISSION);
+			}
+		}
+		
+		current_mission_id = detected_mission_id;
+		
+		auto name_opt = get_mission_name(current_mission_id);
+		if (name_opt.has_value()) {
+			current_mission_name = name_opt.value();
+		}
+		
+		// Check if mission is running
+		bool mission_running = is_mission_active();
+		
+		if (mission_running) {
+			if (current_state != EpisodicState::RECORDING) {
+				request_state_transition(EpisodicState::RECORDING);
+			}
+		} else {
+			if (current_state != EpisodicState::WAITING_MISSION) {
+				request_state_transition(EpisodicState::WAITING_MISSION);
+			}
+		}
+	}
+}
+
+// ===== MISSION MONITORING HELPERS =====
+
+std::optional<uint64_t> SpecificWorker::find_mission_with_target_edge() {
+	auto robot_opt = mission_graph->get_node("robot");
+	if (!robot_opt.has_value()) {
+		return std::nullopt;
+	}
+	
+	uint64_t robot_id = robot_opt.value().id();
+	auto target_edges = mission_graph->get_edges_by_type("TARGET");
+	
+	int robot_target_count = 0;
+	uint64_t found_mission_id = 0;
+	
+	for (const auto &edge : target_edges) {
+		if (edge.from() == robot_id) {
+			robot_target_count++;
+			found_mission_id = edge.to();
+		}
+	}
+		
+	if (found_mission_id > 0) {
+		return found_mission_id;
+	}
+	
+	return std::nullopt;
+}
+
+std::string SpecificWorker::get_mission_status(uint64_t mission_id) {
+	auto mission_opt = mission_graph->get_node(mission_id);
+	if (!mission_opt.has_value()) {
+		return "unknown";
+	}
+	
+	auto mission = mission_opt.value();
+	auto attrs = mission.attrs();
+	
+	if (attrs.count("status") > 0) {
+		auto status_attr = attrs.at("status");
+		// The attribute is stored as a variant, try to extract it as string
+		if (std::holds_alternative<std::string>(status_attr.value())) {
+			return std::get<std::string>(status_attr.value());
+		}
+	}
+	
+	return "unknown";
+}
+
+std::optional<std::string> SpecificWorker::get_mission_name(uint64_t mission_id) {
+	auto mission_opt = mission_graph->get_node(mission_id);
+	if (!mission_opt.has_value()) {
+		return std::nullopt;
+	}
+	
+	return mission_opt.value().name();
+}
+
+bool SpecificWorker::is_mission_active() {
+	if (current_mission_id == 0) {
+		return false;
+	}
+	
+	std::string status = get_mission_status(current_mission_id);
+	bool active = (status == "running");
+	return active;
+}

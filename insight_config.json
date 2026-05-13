@@ -20,6 +20,11 @@
         "command": "bin/mission_controller etc/config"
     },
     {
+        "name": "episodic_memory",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/episodic_memory",
+        "command": "bin/episodic_memory etc/config"
+    },
+    {
         "name": "inner_simulator",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/inner_simulator",
         "command": "bin/inner_simulator etc/config"
@@ -33,6 +38,11 @@
         "name": "concept_bottle",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_bottle",
         "command": "bin/concept_bottle etc/config"
+    },
+    {
+        "name": "zed_component",
+        "directory": "$ROBOCOMP/components/robocomp-shadow/insect/zed_component",
+        "command": "bin/zed_component etc/config"
     },
     {
         "name": "concept_person",

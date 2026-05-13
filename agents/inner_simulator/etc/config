@@ -1,30 +1,31 @@
-
-
-
-
-
-
 # --- Common Agent Data ---
 Agent.id = 2
 Agent.name = "inner_simulator"
 
 # --- Single Instance Configuration ---
 # Use this if you only have one graph.
-Agent.configFile = ""
-Agent.domain = 0
-Agent.tree = true
-Agent.graph = true
-Agent.2d = true
-Agent.3d = true
+#Agent.configFile = ""
+#Agent.domain = 0
+#Agent.tree = true
+#Agent.graph = true
+#Agent.2d = true
+#Agent.3d = true
 
 # --- Multiple Instance Template ---
 # If you define sub-instances, the single instance config above will be ignored.
 Agent.work.configFile = ""
 Agent.work.domain = 0
-Agent.work.tree = true
-Agent.work.graph = true
-Agent.work.2d = true
-Agent.work.3d = true
+Agent.work.tree = false
+Agent.work.graph = false
+Agent.work.2d = false
+Agent.work.3d = false
+
+Agent.episodic.configFile = ""
+Agent.episodic.domain = 1
+Agent.episodic.tree = false
+Agent.episodic.graph = false
+Agent.episodic.2d = false
+Agent.episodic.3d = false
 
 Period.Compute = 16
 Period.Emergency = 500
@@ -35,3 +36,5 @@ Ice.Warn.Connections = "0"
 Ice.Trace.Network = "0"
 Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
+
+
