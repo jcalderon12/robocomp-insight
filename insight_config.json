@@ -45,6 +45,9 @@
         "command": "bin/zed_component etc/config"
     },
     {
+        "name": "vision
+    },
+    {
         "name": "concept_person",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_person",
         "command": "bin/concept_person etc/config"
@@ -58,5 +61,10 @@
         "name": "fake_malaga",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/fake_malaga",
         "command": "bin/fake_malaga etc/config"
+    },
+    {
+        "name": "semantic",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/semantic",
+        "command": "bin/semantic etc/config"
     }
   ]

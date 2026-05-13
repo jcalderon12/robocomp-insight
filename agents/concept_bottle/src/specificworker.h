@@ -123,9 +123,9 @@ public slots:
 	void update_bottle_pose_in_dsr(const std::optional<BottlePose>& bottle_pose);
 
 	/**
-	 * \brief Changes the reference frame from the robot to the root in the DSR graph.
+	 * \brief Changes the reference frame from the robot to the room in the DSR graph.
 	 */
-	void change_rt_from_robot_to_root();
+	void change_rt_from_robot_to_room();
 
 	/**
 	 * \brief Eliminates the RT edge from the robot to the bottle in the DSR graph.

@@ -117,7 +117,8 @@ void SpecificWorker::compute()
 		}
 		else
 		{
-			eliminate_rt_from_robot_to_bottle();
+			change_rt_from_robot_to_room(); // Here the agent should delete the RT, but for now we only change to 
+			// eliminate_rt_from_robot_to_bottle();
 		}
 	}
 	else
@@ -228,11 +229,12 @@ void SpecificWorker::update_bottle_pose_in_dsr(const std::optional<BottlePose>& 
 	if(bottle_pose.has_value())
 	{
 		auto pose = bottle_pose.value();
-		G->add_or_modify_attrib_local<obj_height_att>(bottle_node, (int)pose.height);
-		G->add_or_modify_attrib_local<obj_width_att>(bottle_node, (int)pose.width);
-		G->add_or_modify_attrib_local<obj_depth_att>(bottle_node, (int)pose.depth);
+		
+		// G->add_or_modify_attrib_local<obj_height_att>(bottle_node, (int)pose.height);
+		// G->add_or_modify_attrib_local<obj_width_att>(bottle_node, (int)pose.width);
+		// G->add_or_modify_attrib_local<obj_depth_att>(bottle_node, (int)pose.depth);
 
-		G->update_node(bottle_node);
+		// G->update_node(bottle_node);
 
 		auto euler_angles = quaternion_to_euler(pose.qx, pose.qy, pose.qz, pose.qw);
 
@@ -240,7 +242,7 @@ void SpecificWorker::update_bottle_pose_in_dsr(const std::optional<BottlePose>& 
 	}
 }
 
-void SpecificWorker::change_rt_from_robot_to_root()
+void SpecificWorker::change_rt_from_robot_to_room()
 {
 	G->delete_edge("robot","bottle","RT");
 
