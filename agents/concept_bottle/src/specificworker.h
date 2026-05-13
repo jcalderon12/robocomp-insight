@@ -133,6 +133,20 @@ public slots:
 	void eliminate_rt_from_robot_to_bottle();
 
 	/**
+	 * \brief Validates if the given segmented object is a bottle.
+	 * \param obj The segmented object to validate.
+	 * \return True if the object is a bottle, false otherwise.
+	 */
+	bool validate_bottle(const RoboCompImageSegmentation::SegmentedObject& obj);
+
+	/**
+	 * \brief Filters the point cloud to keep only points within a specified range.
+	 * \param point_cloud The original point cloud to be filtered.
+	 * \return A filtered point cloud containing only points within the specified range.
+	 */
+	RoboCompImageSegmentation::PointCloud filter_pointcloud(const RoboCompImageSegmentation::PointCloud& point_cloud);
+
+	/**
 	 * \brief Detects the bottle and returns its position as a vector of floats.
 	 * \return A vector of floats representing the position of the detected bottle.
 	 */
@@ -166,6 +180,11 @@ private:
 
 	std::chrono::steady_clock::time_point bottle_dimension_display_timer;
 	std::unique_ptr<DSR::RT_API> rt;
+
+	const short Y_range_max = 350; // Maximum Y range to consider for bottle detection(forward)
+	const short X_range_min = -200; // Minimum X range to consider for bottle detection(left)
+	const short X_range_max = 200; // Maximum X range to consider for bottle(right)
+	const short Z_range_min = -170; // Minimum Z range to consider for bottle detection(height)
 
 	int bottle_lost_count = 0;
 	int bottle_redetected_count = 0;

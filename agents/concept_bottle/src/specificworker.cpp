@@ -480,13 +480,8 @@ SpecificWorker::BottlePose SpecificWorker::compute_bottle_orientation(const Robo
 	return result;
 }
 
-inline bool validate_bottle(const RoboCompImageSegmentation::SegmentedObject& obj)
+bool SpecificWorker::validate_bottle(const RoboCompImageSegmentation::SegmentedObject& obj)
 {
-	short Y_range_max = 300; // Maximum Y range to consider for bottle detection(forward)
-	short X_range_min = -200; // Minimum X range to consider for bottle detection(left)
-	short X_range_max = 200; // Maximum X range to consider for bottle(right)
-	short Z_range_min = -170; // Minimum Z range to consider for bottle detection(height)
-
 	if (obj.label != "bottle")
 		return false;
 
@@ -506,14 +501,9 @@ inline bool validate_bottle(const RoboCompImageSegmentation::SegmentedObject& ob
 	return at_least_one_point_in_range; // Return true if at least one point is in the range, false otherwise
 }
 
-inline RoboCompImageSegmentation::PointCloud filter_pointcloud(const RoboCompImageSegmentation::PointCloud& point_cloud)
+RoboCompImageSegmentation::PointCloud SpecificWorker::filter_pointcloud(const RoboCompImageSegmentation::PointCloud& point_cloud)
 {
-	constexpr short Y_range_max = 300; // Maximum Y range to consider for bottle detection (forward)
-    constexpr short X_range_min = -200; // Minimum X range to consider for bottle detection (left)
-    constexpr short X_range_max = 200; // Maximum X range to consider for bottle detection (right)
-    constexpr short Z_range_min = -170; // Minimum Z range to consider for bottle detection (height)
-
-    const int n = point_cloud.numberPoints;
+	const int n = point_cloud.numberPoints;
 
     RoboCompImageSegmentation::PointCloud filtered_cloud;
 
@@ -523,14 +513,25 @@ inline RoboCompImageSegmentation::PointCloud filter_pointcloud(const RoboCompIma
 	
 	for(int i = 0; i < n; i++)
 	{
-		const float x = point_cloud.X[i];
-		const float y = point_cloud.Y[i];
-		const float z = point_cloud.Z[i];
+		float x, y, z;
+		if (simulated)
+		{
+			x = point_cloud.X[i] * 1000.0f; // Convertir a milímetros
+			y = point_cloud.Y[i] * 1000.0f;
+			z = point_cloud.Z[i] * 1000.0f;
+		}
+		else
+		{
+			x = point_cloud.X[i];
+			y = point_cloud.Y[i];
+			z = point_cloud.Z[i];
+		}
+		
 		if (y >= 0 && y <= Y_range_max && x >= X_range_min && x <= X_range_max && z >= Z_range_min)
 		{
-			filtered_cloud.X.emplace_back(x);
-			filtered_cloud.Y.emplace_back(y);
-			filtered_cloud.Z.emplace_back(z);
+				filtered_cloud.X.emplace_back(x);
+				filtered_cloud.Y.emplace_back(y);
+				filtered_cloud.Z.emplace_back(z);
 		}
 	}
 	filtered_cloud.numberPoints = filtered_cloud.X.size();
@@ -542,21 +543,21 @@ std::optional<SpecificWorker::BottlePose> SpecificWorker::detect_bottle()
 {	
 	SpecificWorker::BottlePose bottle_pose;
 
-	if (simulated)
-	{	
-		RoboCompWebots2Robocomp::ObjectPose webots_bottle_pose = this->webots2robocomp_proxy->getObjectPose("flacon"); //MILLIMETERS
+	// if (simulated)
+	// {	
+	// 	RoboCompWebots2Robocomp::ObjectPose webots_bottle_pose = this->webots2robocomp_proxy->getObjectPose("flacon"); //MILLIMETERS
 		
-		bottle_pose.x = webots_bottle_pose.position.x;
-		bottle_pose.y = webots_bottle_pose.position.y;
-		bottle_pose.z = webots_bottle_pose.position.z;
-		bottle_pose.qx = webots_bottle_pose.orientation.x;
-		bottle_pose.qy = webots_bottle_pose.orientation.y;
-		bottle_pose.qz = webots_bottle_pose.orientation.z;
-		bottle_pose.qw = webots_bottle_pose.orientation.w;
-		bottle_pose.tilt_angle = 0.0f;  
+	// 	bottle_pose.x = webots_bottle_pose.position.x;
+	// 	bottle_pose.y = webots_bottle_pose.position.y;
+	// 	bottle_pose.z = webots_bottle_pose.position.z;
+	// 	bottle_pose.qx = webots_bottle_pose.orientation.x;
+	// 	bottle_pose.qy = webots_bottle_pose.orientation.y;
+	// 	bottle_pose.qz = webots_bottle_pose.orientation.z;
+	// 	bottle_pose.qw = webots_bottle_pose.orientation.w;
+	// 	bottle_pose.tilt_angle = 0.0f;  
 		
-		return std::make_optional(bottle_pose);
-	}
+	// 	return std::make_optional(bottle_pose);
+	// }
 
 	auto objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
 
