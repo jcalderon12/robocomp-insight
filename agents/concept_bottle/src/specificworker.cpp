@@ -62,6 +62,7 @@ SpecificWorker::~SpecificWorker()
 {
 	std::cout << "Destroying SpecificWorker" << std::endl;
 	//G->write_to_json_file("./"+agent_name+".json");
+	delete viewer_3d;
 }
 
 
@@ -78,22 +79,22 @@ void SpecificWorker::initialize()
 	//connect(G.get(), &DSR::DSRGraph::del_edge_signal, this, &SpecificWorker::del_edge_slot);
 	//connect(G.get(), &DSR::DSRGraph::del_node_signal, this, &SpecificWorker::del_node_slot);
 
-	/***
-	Custom Widget
-	In addition to the predefined viewers, Graph Viewer allows you to add various widgets designed by the developer.
-	The add_custom_widget_to_dock method is used. This widget can be defined like any other Qt widget,
-	either with a QtDesigner or directly from scratch in a class of its own.
-	The add_custom_widget_to_dock method receives a name for the widget and a reference to the class instance.
-	***/
+	bottle_dimension_display_timer = std::chrono::steady_clock::now();
 
-	//graph_viewers.at("")->add_custom_widget_to_dock("CustomWidget", &custom_widget);
+	rt = G->get_rt_api();
 
-    //initializeCODE
+	if (display_point_cloud)
+	{
+		points = std::make_shared<std::vector<std::tuple<float, float, float>>>();
+		colors = std::make_shared<std::vector<std::tuple<float, float, float>>>();
 
-    /////////GET PARAMS, OPEND DEVICES....////////
-    //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
-    //std::string device = configLoader.get<std::string>("Device.name") 
+		viewer_widget = new QWidget();
+		viewer_widget->setWindowTitle("Bottle point cloud");
+		viewer_widget->show();
 
+		viewer_3d = new Viewer(viewer_widget, points, colors);
+		viewer_3d->show();
+	}
 }
 
 inline bool hasFallen(const SpecificWorker::BottlePose& pose, float threshold_degrees = 45.0f)
@@ -108,16 +109,32 @@ void SpecificWorker::compute()
 {
 	if(check_bottle_related_robot())
 	{
-		auto bottle_pose = detect_bottle();
-		if (bottle_pose.z < 300 or hasFallen(bottle_pose))
+		std::optional<SpecificWorker::BottlePose> bottle_pose = detect_bottle();
+
+		if(!bottle_has_fallen(bottle_pose))
 		{
-			std::cout << "The bottle is related to the robot and has fallen." << std::endl;
-			change_rt_from_robot_to_root();
+			update_bottle_pose_in_dsr(bottle_pose);
 		}
 		else
 		{
-			std::cout << "The bottle is related to the robot and is upright." << std::endl;
+			eliminate_rt_from_robot_to_bottle();
 		}
+	}
+	else
+	{
+		std::optional<BottlePose> bottle_pose = detect_bottle();
+		if (bottle_pose.has_value())
+		{
+			bottle_redetected_count++;
+			if (bottle_redetected_count >= bottle_redetected_threshold)
+			{
+				bottle_redetected_count = 0; 
+				std::cout << "Bottle related to robot again! Updating RT edge." << std::endl;
+				update_bottle_pose_in_dsr(bottle_pose);
+			}
+		}
+		else
+			bottle_redetected_count = 0; 
 	}
 }
 
@@ -171,6 +188,58 @@ bool SpecificWorker::check_bottle_related_robot()
 	return true;
 }
 
+SpecificWorker::EulerAngles  SpecificWorker::quaternion_to_euler(float qx, float qy, float qz, float qw)
+{
+    EulerAngles angles;
+
+    // Roll (X)
+    double sinr_cosp = 2.0 * (qw * qx + qy * qz);
+    double cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy);
+    angles.roll = std::atan2(sinr_cosp, cosr_cosp);
+
+    // Pitch (Y)
+    double sinp = 2.0 * (qw * qy - qz * qx);
+
+    if (std::abs(sinp) >= 1)
+        angles.pitch = std::copysign(M_PI / 2, sinp); // 90°
+    else
+        angles.pitch = std::asin(sinp);
+
+    // Yaw (Z)
+    double siny_cosp = 2.0 * (qw * qz + qx * qy);
+    double cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz);
+    angles.yaw = std::atan2(siny_cosp, cosy_cosp);
+
+    return angles;
+}
+
+void SpecificWorker::update_bottle_pose_in_dsr(const std::optional<BottlePose>& bottle_pose)
+{
+	auto bottle_node_opt = G->get_node("bottle");
+	if(!bottle_node_opt.has_value())
+		return;
+	auto bottle_node = bottle_node_opt.value();
+
+	auto robot_node_opt = G->get_node("robot");
+	if(!robot_node_opt.has_value())
+		return;
+	auto robot_node = robot_node_opt.value();
+
+	if(bottle_pose.has_value())
+	{
+		auto pose = bottle_pose.value();
+		G->add_or_modify_attrib_local<obj_height_att>(bottle_node, (int)pose.height);
+		G->add_or_modify_attrib_local<obj_width_att>(bottle_node, (int)pose.width);
+		G->add_or_modify_attrib_local<obj_depth_att>(bottle_node, (int)pose.depth);
+
+		G->update_node(bottle_node);
+
+		auto euler_angles = quaternion_to_euler(pose.qx, pose.qy, pose.qz, pose.qw);
+
+		rt->insert_or_assign_edge_RT(robot_node, bottle_node.id(), std::vector<float>{pose.x, pose.y, pose.z}, std::vector<float>{euler_angles.roll, euler_angles.pitch, euler_angles.yaw});
+	}
+}
+
 void SpecificWorker::change_rt_from_robot_to_root()
 {
 	G->delete_edge("robot","bottle","RT");
@@ -192,53 +261,417 @@ void SpecificWorker::change_rt_from_robot_to_root()
 	G->insert_or_assign_edge(loss_edge);
 }
 
+void SpecificWorker::eliminate_rt_from_robot_to_bottle()
+{
+	G->delete_edge("robot","bottle","RT");
+}
+
 
 /**************************************/
 /********* DETECTION METHODS **********/
+SpecificWorker::BottlePose SpecificWorker::compute_bottle_orientation(const RoboCompImageSegmentation::PointCloud& point_cloud)
+{
+	SpecificWorker::BottlePose result{0, 0, 0, 0, 0, 0, 1.0, 0};
+	
+	if (point_cloud.numberPoints < 3)
+		return result;
 
-SpecificWorker::BottlePose SpecificWorker::detect_bottle()
-{	
-	RoboCompWebots2Robocomp::ObjectPose bottle_pose;
+	const int n = point_cloud.numberPoints;
 
-	if (simulated)
-	{	
-		std::cout << "Detecting bottle in simulation..." << std::endl;
-		bottle_pose = this->webots2robocomp_proxy->getObjectPose("flacon"); //MILLIMETERS
+	// ── 1. Calcular centroide ──────────────────────────────────────────────
+	float cx = 0, cy = 0, cz = 0;
+
+	cx = std::accumulate(point_cloud.X.begin(), point_cloud.X.end(), 0.0f);
+	cy = std::accumulate(point_cloud.Y.begin(), point_cloud.Y.end(), 0.0f);
+	cz = std::accumulate(point_cloud.Z.begin(), point_cloud.Z.end(), 0.0f);
+
+	cx /= n;
+	cy /= n;
+	cz /= n;
+	
+	result.x = cx;
+	result.y = cy;
+	result.z = cz;
+
+	// ── 2. Calcular matriz de covarianza ───────────────────────────────────
+	double cxx = 0, cyy = 0, czz = 0, cxy = 0, cxz = 0, cyz = 0;
+	for (int i = 0; i < n; ++i)
+	{
+		float dx = point_cloud.X[i] - cx;
+		float dy = point_cloud.Y[i] - cy;
+		float dz = point_cloud.Z[i] - cz;
+		cxx += dx * dx;
+		cyy += dy * dy;
+		czz += dz * dz;
+		cxy += dx * dy;
+		cxz += dx * dz;
+		cyz += dy * dz;
+	}
+	cxx /= n;
+	cyy /= n;
+	czz /= n;
+	cxy /= n;
+	cxz /= n;
+	cyz /= n;
+
+	// ── 3. Jacobi eigendecomposition (3x3 simétrica) ───────────────────────
+	double A[3][3] = {{cxx, cxy, cxz}, {cxy, cyy, cyz}, {cxz, cyz, czz}};
+	double V[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+	// Iteraciones de Jacobi
+	for (int iter = 0; iter < 50; ++iter)
+	{
+		int p = 0, q = 1;
+		double maxv = std::abs(A[0][1]);
+		if (std::abs(A[0][2]) > maxv)
+		{
+			maxv = std::abs(A[0][2]);
+			p = 0;
+			q = 2;
+		}
+		if (std::abs(A[1][2]) > maxv)
+		{
+			maxv = std::abs(A[1][2]);
+			p = 1;
+			q = 2;
+		}
+		if (maxv < 1e-10)
+			break;
+
+		double theta = 0.5 * std::atan2(2 * A[p][q], A[q][q] - A[p][p]);
+		double c = std::cos(theta), s = std::sin(theta);
+
+		double Anew[3][3];
+		std::memcpy(Anew, A, sizeof(A));
+		Anew[p][p] = c * c * A[p][p] + 2 * s * c * A[p][q] + s * s * A[q][q];
+		Anew[q][q] = s * s * A[p][p] - 2 * s * c * A[p][q] + c * c * A[q][q];
+		Anew[p][q] = Anew[q][p] = 0;
+		for (int r = 0; r < 3; ++r)
+		{
+			if (r == p || r == q)
+				continue;
+			Anew[r][p] = Anew[p][r] = c * A[r][p] + s * A[r][q];
+			Anew[r][q] = Anew[q][r] = -s * A[r][p] + c * A[r][q];
+		}
+		std::memcpy(A, Anew, sizeof(A));
+		for (int r = 0; r < 3; ++r)
+		{
+			double vp = V[r][p], vq = V[r][q];
+			V[r][p] = c * vp + s * vq;
+			V[r][q] = -s * vp + c * vq;
+		}
+	}
+
+	// ── 4. Ordenar por eigenvalues (descendente) ──────────────────────────
+	int order[3] = {0, 1, 2};
+	if (A[order[0]][order[0]] < A[order[1]][order[1]])
+		std::swap(order[0], order[1]);
+	if (A[order[0]][order[0]] < A[order[2]][order[2]])
+		std::swap(order[0], order[2]);
+	if (A[order[1]][order[1]] < A[order[2]][order[2]])
+		std::swap(order[1], order[2]);
+
+	// ── 5. Obtener eje principal (primer eigenvector - altura de la botella) ─
+	float principal_axis[3] = {static_cast<float>(V[0][order[0]]),
+	                            static_cast<float>(V[1][order[0]]),
+	                            static_cast<float>(V[2][order[0]])};
+
+	// Normalizar
+	float norm = std::sqrt(principal_axis[0] * principal_axis[0] +
+	                        principal_axis[1] * principal_axis[1] +
+	                        principal_axis[2] * principal_axis[2]);
+	if (norm > 0.001f)
+	{
+		principal_axis[0] /= norm;
+		principal_axis[1] /= norm;
+		principal_axis[2] /= norm;
+	}
+
+	// ── 6. Calcular ángulo de inclinación respecto a Z (vertical) ──────────
+	float z_axis[3] = {0, 0, 1};
+	float dot_product = principal_axis[0] * z_axis[0] +
+	                     principal_axis[1] * z_axis[1] +
+	                     principal_axis[2] * z_axis[2];
+	
+	// Limitar a [-1, 1] para evitar errores numéricos
+	dot_product = std::max(-1.0f, std::min(1.0f, dot_product));
+	result.tilt_angle = std::acos(std::abs(dot_product)) * 180.0f / M_PI;
+
+	// ── 7. Calcular quaternion de rotación ───────────────────────────────
+	// Vector perpendicular entre principal_axis y z_axis
+	float cross[3] = {principal_axis[1] * z_axis[2] - principal_axis[2] * z_axis[1],
+	                   principal_axis[2] * z_axis[0] - principal_axis[0] * z_axis[2],
+	                   principal_axis[0] * z_axis[1] - principal_axis[1] * z_axis[0]};
+
+	float cross_norm = std::sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]);
+
+	if (cross_norm > 0.001f)
+	{
+		cross[0] /= cross_norm;
+		cross[1] /= cross_norm;
+		cross[2] /= cross_norm;
+
+		float angle = std::acos(dot_product);
+		float sin_half = std::sin(angle / 2.0f);
+		float cos_half = std::cos(angle / 2.0f);
+
+		result.qx = cross[0] * sin_half;
+		result.qy = cross[1] * sin_half;
+		result.qz = cross[2] * sin_half;
+		result.qw = cos_half;
 	}
 	else
 	{
-		// TODO: Implement real detection method here and fill the bottle_pose variable with the obtained values.
-		// Example of filling the bottle_pose variable with dummy values:
-		bottle_pose.position.x = 100.0; // Replace with actual x position
-		bottle_pose.position.y = 200.0; // Replace with actual y position
-		bottle_pose.position.z = 300.0; // Replace with actual z position
-		bottle_pose.orientation.x = 0.0; // Replace with actual qx orientation
-		bottle_pose.orientation.y = 0.0; // Replace with actual qy orientation
-		bottle_pose.orientation.z = 0.0; // Replace with actual qz orientation
-		bottle_pose.orientation.w = 1.0; // Replace with actual qw orientation
+		result.qw = 1.0;
 	}
 
-	SpecificWorker::BottlePose pose;
-	pose.x = bottle_pose.position.x;
-	pose.y = bottle_pose.position.y;
-	pose.z = bottle_pose.position.z;
-	pose.qx = bottle_pose.orientation.x;
-	pose.qy = bottle_pose.orientation.y;
-	pose.qz = bottle_pose.orientation.z;
-	pose.qw = bottle_pose.orientation.w;
+	// ── 8. Calcular ángulos de Euler (aproximado) ─────────────────────────
+	float euler_x = std::atan2(principal_axis[1], principal_axis[2]) * 180.0f / M_PI;
+	float euler_y = std::atan2(-principal_axis[0], 
+	                             std::sqrt(principal_axis[1] * principal_axis[1] + 
+	                                      principal_axis[2] * principal_axis[2])) * 180.0f / M_PI;
 
-	return pose;
+	// ── 9. Calcular dimensiones proyectando puntos sobre ejes principales ──
+	std::array<std::vector<float>, 3> projections;
+	for (auto& proj : projections)
+		proj.reserve(n);
+
+	// Proyectar puntos sobre los 3 ejes principales
+	for (int i = 0; i < n; ++i)
+	{
+		float dx = point_cloud.X[i] - cx;
+		float dy = point_cloud.Y[i] - cy;
+		float dz = point_cloud.Z[i] - cz;
+		
+		for (int a = 0; a < 3; ++a)
+		{
+			float proj_val = dx * V[0][order[a]] + dy * V[1][order[a]] + dz * V[2][order[a]];
+			projections[a].push_back(proj_val);
+		}
+	}
+
+	// Calcular extents usando percentiles (2-98%)
+	auto calculate_percentile_extent = [](std::vector<float> vals) {
+		if (vals.empty()) return 0.0f;
+		std::sort(vals.begin(), vals.end());
+		size_t lo_idx = static_cast<size_t>(0.02f * (vals.size() - 1));
+		size_t hi_idx = static_cast<size_t>(0.98f * (vals.size() - 1));
+		return vals[hi_idx] - vals[lo_idx];
+	};
+
+	// Asignar dimensiones
+	result.height = calculate_percentile_extent(projections[0]); // mm
+	result.width = calculate_percentile_extent(projections[1]);
+	result.depth = calculate_percentile_extent(projections[2]);
+
+	std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+
+	if(now - bottle_dimension_display_timer >= std::chrono::seconds(2))
+	{
+		bottle_dimension_display_timer = now;
+		std::cout << "\n=== Bottle Pose ==="
+				<< "\nPosition: (" << result.x / 10.0f << ", " << result.y / 10.0f 
+				<< ", " << result.z / 10.0f << ") cm"
+				<< "\nDimensions: H=" << result.height / 10.0f << " W=" << result.width / 10.0f
+				<< " D=" << result.depth / 10.0f << " cm"
+				<< "\nTilt: " << result.tilt_angle << "°" << std::endl;
+	}
+
+	return result;
 }
 
-
-//SUBSCRIPTION to setVisualObjects method from VisualElementsPub interface
-void SpecificWorker::VisualElementsPub_setVisualObjects(RoboCompVisualElementsPub::TData data)
+inline bool validate_bottle(const RoboCompImageSegmentation::SegmentedObject& obj)
 {
-//subscribesToCODE
+	short Y_range_max = 300; // Maximum Y range to consider for bottle detection(forward)
+	short X_range_min = -200; // Minimum X range to consider for bottle detection(left)
+	short X_range_max = 200; // Maximum X range to consider for bottle(right)
+	short Z_range_min = -170; // Minimum Z range to consider for bottle detection(height)
 
+	if (obj.label != "bottle")
+		return false;
+
+	bool at_least_one_point_in_range = true; // Flag to check if at least one point is in the specified range
+
+	for(int i = 0; i < obj.points3D.numberPoints; i++)
+	{
+		float x = obj.points3D.X[i];
+		float y = obj.points3D.Y[i];
+		float z = obj.points3D.Z[i];
+		if (y >= 0 && y <= Y_range_max && x >= X_range_min && x <= X_range_max && z >= Z_range_min)
+		{
+			at_least_one_point_in_range = true; // Set the flag to true if at least one point is in the range
+			break; // No need to check further points, we can consider this object as a valid bottle
+		}
+	}
+	return at_least_one_point_in_range; // Return true if at least one point is in the range, false otherwise
 }
 
+inline RoboCompImageSegmentation::PointCloud filter_pointcloud(const RoboCompImageSegmentation::PointCloud& point_cloud)
+{
+	constexpr short Y_range_max = 300; // Maximum Y range to consider for bottle detection (forward)
+    constexpr short X_range_min = -200; // Minimum X range to consider for bottle detection (left)
+    constexpr short X_range_max = 200; // Maximum X range to consider for bottle detection (right)
+    constexpr short Z_range_min = -170; // Minimum Z range to consider for bottle detection (height)
 
+    const int n = point_cloud.numberPoints;
+
+    RoboCompImageSegmentation::PointCloud filtered_cloud;
+
+    filtered_cloud.X.reserve(n);
+    filtered_cloud.Y.reserve(n);
+    filtered_cloud.Z.reserve(n);
+	
+	for(int i = 0; i < n; i++)
+	{
+		const float x = point_cloud.X[i];
+		const float y = point_cloud.Y[i];
+		const float z = point_cloud.Z[i];
+		if (y >= 0 && y <= Y_range_max && x >= X_range_min && x <= X_range_max && z >= Z_range_min)
+		{
+			filtered_cloud.X.emplace_back(x);
+			filtered_cloud.Y.emplace_back(y);
+			filtered_cloud.Z.emplace_back(z);
+		}
+	}
+	filtered_cloud.numberPoints = filtered_cloud.X.size();
+
+	return filtered_cloud;
+}
+
+std::optional<SpecificWorker::BottlePose> SpecificWorker::detect_bottle()
+{	
+	SpecificWorker::BottlePose bottle_pose;
+
+	if (simulated)
+	{	
+		RoboCompWebots2Robocomp::ObjectPose webots_bottle_pose = this->webots2robocomp_proxy->getObjectPose("flacon"); //MILLIMETERS
+		
+		bottle_pose.x = webots_bottle_pose.position.x;
+		bottle_pose.y = webots_bottle_pose.position.y;
+		bottle_pose.z = webots_bottle_pose.position.z;
+		bottle_pose.qx = webots_bottle_pose.orientation.x;
+		bottle_pose.qy = webots_bottle_pose.orientation.y;
+		bottle_pose.qz = webots_bottle_pose.orientation.z;
+		bottle_pose.qw = webots_bottle_pose.orientation.w;
+		bottle_pose.tilt_angle = 0.0f;  
+		
+		return std::make_optional(bottle_pose);
+	}
+
+	auto objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
+
+	RoboCompImageSegmentation::SegmentedObject bottle_obj; 
+	bool bottle_found = false; 
+
+	for (const auto& obj : objects)
+	{
+		if (validate_bottle(obj)) 
+		{
+			bottle_obj = obj; 
+			bottle_found = true; 
+			break; 
+		}
+	}
+
+	if(!bottle_found)
+	{
+		std::cout << "No bottle detected in image segmentation." << std::endl;
+		return std::nullopt;
+	}
+
+	auto point_cloud = bottle_obj.points3D;
+
+	point_cloud = filter_pointcloud(point_cloud);
+
+	if (display_point_cloud)
+	{
+		points->clear(); 
+		colors->clear();
+
+		for (int i = 0; i < point_cloud.numberPoints; i++)
+		{
+			points->emplace_back(std::make_tuple(point_cloud.X[i] / 1000.0, point_cloud.Y[i] / 1000.0, point_cloud.Z[i] / 1000.0));
+			colors->emplace_back(std::make_tuple(0.0f, 1.0f, 0.0f)); // Green points
+		}
+		viewer_3d->update();
+	}
+
+	if (point_cloud.numberPoints < 100) // Threshold for minimum number of points after filtering
+	{
+		std::cout << "Not enough points in the bottle point cloud after filtering." << std::endl;
+		return std::nullopt;
+	}
+
+	// Calcular orientación e inclinación usando PCA
+	bottle_pose = compute_bottle_orientation(point_cloud);
+	
+	return std::make_optional(bottle_pose);
+}
+
+bool SpecificWorker::bottle_has_fallen(const std::optional<BottlePose>& bottle_pose)
+{
+	// Will check for 5 consecutive frames if the bottle has fallen based on its tilt angle and orientation and if the bottle pose is valid
+	if(!bottle_pose.has_value())
+	{
+		bottle_lost_count++;
+		if (bottle_lost_count >= bottle_lost_threshold)
+		{
+			bottle_lost_count = 0; // Reset counter after confirming bottle has fallen
+			std::cout << "Bottle has fallen! No valid pose detected for " << bottle_lost_threshold << " consecutive frames." << std::endl;
+			return true;
+		}
+		return false;
+	}
+
+	if (bottle_pose->tilt_angle > tilt_threshold)
+	{
+		bottle_lost_count++;
+		if (bottle_lost_count >= bottle_lost_threshold)
+		{
+			bottle_lost_count = 0; // Reset counter after confirming bottle has fallen
+			std::cout << "Bottle has fallen! Tilt angle: " << bottle_pose->tilt_angle << "°" << std::endl;
+			return true;
+		}
+		std::cout << "Bottle tilt detected: " << bottle_pose->tilt_angle << "°" << std::endl;
+		return false;
+	}
+
+	bottle_lost_count = 0; // Reset counter if bottle is detected and not tilted
+	return false;
+}
+
+/**************************************/
+// From the RoboCompImageSegmentation you can call this methods:
+// RoboCompImageSegmentation::TData this->imagesegmentation_proxy->getAll(bool points3d)
+// RoboCompImageSegmentation::TDepth this->imagesegmentation_proxy->getDepth()
+// RoboCompImageSegmentation::TImage this->imagesegmentation_proxy->getImage()
+// RoboCompImageSegmentation::ObjectList this->imagesegmentation_proxy->getSegmentedObjects(bool points3d)
+
+/**************************************/
+// From the RoboCompImageSegmentation you can use this types:
+// RoboCompImageSegmentation::Point2D
+// RoboCompImageSegmentation::Point3D
+// RoboCompImageSegmentation::SegmentedObject
+// RoboCompImageSegmentation::TImage
+// RoboCompImageSegmentation::TDepth
+// RoboCompImageSegmentation::TData
+
+/**************************************/
+// From the RoboCompLidar3D you can call this methods:
+// RoboCompLidar3D::TColorCloudData this->lidar3d_proxy->getColorCloudData()
+// RoboCompLidar3D::TData this->lidar3d_proxy->getLidarData(string name, float start, float len, int decimationDegreeFactor)
+// RoboCompLidar3D::TDataImage this->lidar3d_proxy->getLidarDataArrayProyectedInImage(string name)
+// RoboCompLidar3D::TDataCategory this->lidar3d_proxy->getLidarDataByCategory(TCategories categories, long timestamp)
+// RoboCompLidar3D::TData this->lidar3d_proxy->getLidarDataProyectedInImage(string name)
+// RoboCompLidar3D::TData this->lidar3d_proxy->getLidarDataWithThreshold2d(string name, float distance, int decimationDegreeFactor)
+
+/**************************************/
+// From the RoboCompLidar3D you can use this types:
+// RoboCompLidar3D::TPoint
+// RoboCompLidar3D::TDataImage
+// RoboCompLidar3D::TData
+// RoboCompLidar3D::TDataCategory
+// RoboCompLidar3D::TColorCloudData
 
 /**************************************/
 // From the RoboCompWebots2Robocomp you can call this methods:
@@ -252,9 +685,4 @@ void SpecificWorker::VisualElementsPub_setVisualObjects(RoboCompVisualElementsPu
 // RoboCompWebots2Robocomp::Vector3
 // RoboCompWebots2Robocomp::Quaternion
 // RoboCompWebots2Robocomp::ObjectPose
-
-/**************************************/
-// From the RoboCompVisualElementsPub you can use this types:
-// RoboCompVisualElementsPub::TObject
-// RoboCompVisualElementsPub::TData
 

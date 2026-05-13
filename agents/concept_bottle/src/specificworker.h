@@ -29,11 +29,17 @@
 
 #define DEBUG 0
 
-
 // If you want to reduce the period automatically due to lack of use, you must uncomment the following line
 //#define HIBERNATION_ENABLED
 
 #include <genericworker.h>
+#include <nanoflann.hpp>
+#include <opencv2/opencv.hpp>
+#include <chrono>
+
+#include "PointsViewer.h"
+
+
 
 
 /**
@@ -56,16 +62,17 @@ public:
      */
 	~SpecificWorker();
 
-	void VisualElementsPub_setVisualObjects(RoboCompVisualElementsPub::TData data);
-
 	struct BottlePose {
-		float x;
-		float y;
-		float z;
-		float qx;
-		float qy;
-		float qz;
-		float qw;
+		float x, y, z;           // Posición (mm)
+		float qx, qy, qz, qw;    // Orientación (Quaternion)
+		float height, width, depth; // Dimensiones (mm)
+		float tilt_angle;        // Ángulo de inclinación respecto a la vertical (grados)
+	};
+
+	struct EulerAngles {
+		double roll;
+		double pitch;
+		double yaw;
 	};
 
 public slots:
@@ -110,17 +117,39 @@ public slots:
 	bool check_bottle_related_robot();
 
 	/**
+	 * \brief Updates the pose of the bottle in the DSR graph.
+	 * \param bottle_pose The pose of the bottle to be updated in the graph.
+	 */
+	void update_bottle_pose_in_dsr(const std::optional<BottlePose>& bottle_pose);
+
+	/**
 	 * \brief Changes the reference frame from the robot to the root in the DSR graph.
 	 */
 	void change_rt_from_robot_to_root();
 
 	/**
+	 * \brief Eliminates the RT edge from the robot to the bottle in the DSR graph.
+	 */
+	void eliminate_rt_from_robot_to_bottle();
+
+	/**
 	 * \brief Detects the bottle and returns its position as a vector of floats.
 	 * \return A vector of floats representing the position of the detected bottle.
 	 */
-	BottlePose detect_bottle();
+	std::optional<SpecificWorker::BottlePose> detect_bottle();
+
+	/**
+	 * \brief Checks if the bottle has fallen based on its orientation.
+	 * \param pose The pose of the bottle.
+	 * \return True if the bottle has fallen, false otherwise.
+	 */
+	bool bottle_has_fallen(const std::optional<BottlePose>& bottle_pose);
 
 private:
+
+	SpecificWorker::BottlePose compute_bottle_orientation(const RoboCompImageSegmentation::PointCloud& point_cloud);
+
+	SpecificWorker::EulerAngles quaternion_to_euler(float qx, float qy, float qz, float qw);
 
 	/**
      * \brief Flag indicating whether startup checks are enabled.
@@ -128,6 +157,21 @@ private:
 	bool startup_check_flag;
 
 	bool simulated = configLoader.get<bool>("Simulated");
+	bool display_point_cloud = configLoader.get<bool>("DisplayPointCloud");
+
+	QWidget *viewer_widget;
+
+	Viewer *viewer_3d;
+	std::shared_ptr<std::vector<point3f>> points, colors;
+
+	std::chrono::steady_clock::time_point bottle_dimension_display_timer;
+	std::unique_ptr<DSR::RT_API> rt;
+
+	int bottle_lost_count = 0;
+	int bottle_redetected_count = 0;
+	const int bottle_lost_threshold = 5;
+	const int bottle_redetected_threshold = 5;
+	const float tilt_threshold = 45.0f; // Degrees
 
 signals:
 	//void customSignal();
