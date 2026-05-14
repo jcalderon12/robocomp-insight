@@ -5,13 +5,16 @@ if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11)
     message(FATAL_ERROR "Version of g++ is lower than 11, g++ 11 or higher is required.")
 elseif(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 12)
     message(STATUS "Using g++ 11, setting C++20 standard.")
-    set(CXX_STANDARD 20)
+    set(CMAKE_CXX_STANDARD 20)
 elseif(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
     message(STATUS "Using g++ 12, setting C++23 standard.")
-    set(CXX_STANDARD 23)
-else()
+    set(CMAKE_CXX_STANDARD 23)
+elseif(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
     message(STATUS "Using g++ 13 or higher, setting the C++23 standard.")
-    set(CXX_STANDARD 23)
+    set(CMAKE_CXX_STANDARD 23)
+else()
+    message(STATUS "Using g++ 15 or higher, setting the C++26 standard.")
+    set(CMAKE_CXX_STANDARD 26)
 endif()
 
 
@@ -42,19 +45,11 @@ SET (SOURCES
 
 #ROBOCOMP
 ROBOCOMP_INITIALIZE( $ENV{ROBOCOMP}/ )
-ROBOCOMP_IDSL_TO_ICE(Lidar3D Camera360RGB VisualElementsPub Webots2Robocomp Gridder)
-ROBOCOMP_ICE_TO_SRC(Lidar3D Camera360RGB VisualElementsPub Webots2Robocomp Gridder)
+ROBOCOMP_IDSL_TO_ICE(Gridder Lidar3D ImageSegmentation Camera360RGB Webots2Robocomp VisualElementsPub)
+ROBOCOMP_ICE_TO_SRC(Gridder Lidar3D ImageSegmentation Camera360RGB Webots2Robocomp VisualElementsPub)
 SET (EXECUTABLE_OUTPUT_PATH ${RC_COMPONENT_DEVEL_PATH}/bin)
 
 # Specify construction and link process
 ADD_EXECUTABLE( concept_person ${SOURCES} ${MOC_SOURCES} ${RC_SOURCES} ${UI_HEADERS} )
 TARGET_LINK_LIBRARIES( concept_person ${LIBS}  dsr_core dsr_gui dsr_api fastcdr fastdds osgDB OpenThreads Eigen3::Eigen QGLViewer-qt6 Qt6OpenGLWidgets ${STATIC_LIBS} ${SPECIFIC_LIBS} ${QT_LIBRARIES} ${Ice_LIBRARIES} )
-SET_TARGET_PROPERTIES(concept_person
-        PROPERTIES
-        CXX_STANDARD ${CXX_STANDARD}
-        CXX_STANDARD_REQUIRED ON
-        CXX_EXTENSIONS OFF
-        )
-
-
 INSTALL(FILES ${EXECUTABLE_OUTPUT_PATH}/concept_person DESTINATION ${RC_COMPONENT_INSTALL_PATH}/bin/ PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE )
