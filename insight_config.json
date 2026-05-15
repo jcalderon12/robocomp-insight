@@ -1,70 +1,100 @@
 [
     {
-      "name": "webots",
-      "directory": ".",
-      "command": "webots $ROBOCOMP/components/webots-shadow/worlds/SimpleWorld_Bump.wbt"
+        "name": "webots",
+        "directory": ".",
+        "command": "webots $ROBOCOMP/components/webots-shadow/worlds/SimpleWorld_Bump.wbt",
+        "restart": false,
+        "buildable": false
     },
     {
-      "name": "rcnode",
-      "directory": ".",
-      "command": "bash $ROBOCOMP/tools/rcnode/rcnode.sh"
+        "name": "rcnode",
+        "directory": ".",
+        "command": "bash $ROBOCOMP/tools/rcnode/rcnode.sh",
+        "restart": false,
+        "buildable": false
     },
     {
-      "name": "bridge",
-      "directory": "$ROBOCOMP/components/webots-bridge",
-      "command": "bin/Webots2Robocomp etc/config"
+        "name": "bridge",
+        "directory": "$ROBOCOMP/components/webots-bridge",
+        "command": "bin/Webots2Robocomp etc/config",
+        "restart": false,
+        "buildable": false
     },
     {
         "name": "mission_controller",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/mission_controller",
-        "command": "bin/mission_controller etc/config"
+        "command": "bin/mission_controller etc/config",
+        "restart": false,
+        "buildable": true
     },
     {
         "name": "episodic_memory",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/episodic_memory",
-        "command": "bin/episodic_memory etc/config"
+        "command": "bin/episodic_memory etc/config",
+        "restart": false,
+        "buildable": true
     },
     {
         "name": "inner_simulator",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/inner_simulator",
-        "command": "bin/inner_simulator etc/config"
+        "command": "bin/inner_simulator etc/config",
+        "restart": false,
+        "buildable": true
     },
     {
         "name": "concept_robot",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_robot",
-        "command": "bin/concept_robot etc/config"
+        "command": "bin/concept_robot etc/config",
+        "restart": false,
+        "buildable": true
     },
     {
         "name": "concept_bottle",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_bottle",
-        "command": "bin/concept_bottle etc/config"
+        "command": "bin/concept_bottle etc/config",
+        "restart": false,
+        "buildable": true
     },
     {
         "name": "zed_component",
         "directory": "$ROBOCOMP/components/robocomp-shadow/insect/zed_component",
-        "command": "bin/zed_component etc/config"
+        "command": "bin/zed_component etc/config.toml",
+        "restart": false,
+        "buildable": false
     },
     {
-        "name": "vision
+        "name": "vision_segmentation",
+        "directory": "$ROBOCOMP/components/robocomp-robolab/components/detection/vision_segmentation",
+        "command": "bin/vision_segmentation etc/config_shadow",
+        "restart": false,
+        "buildable": false
     },
     {
         "name": "concept_person",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_person",
-        "command": "bin/concept_person etc/config"
+        "command": "bin/concept_person etc/config",
+        "restart": false,
+        "buildable": true
     },
     {
         "name": "fake_castilla_la_mancha",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/fake_castilla_la_mancha",
-        "command": "bin/fake_castilla_la_mancha etc/config"
+        "command": "bin/fake_castilla_la_mancha etc/config",
+        "restart": false,
+        "buildable": true
     },
     {
         "name": "fake_malaga",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/fake_malaga",
-        "command": "bin/fake_malaga etc/config"
+        "command": "bin/fake_malaga etc/config",
+        "restart": false,
+        "buildable": true
     },
     {
         "name": "semantic",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/semantic",
-        "command": "bin/semantic etc/config"
+        "command": "bin/semantic etc/config",
+        "restart": false,
+        "buildable": true
     }
   ]
