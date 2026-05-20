@@ -140,6 +140,12 @@ public slots:
 	bool validate_bottle(const RoboCompImageSegmentation::SegmentedObject& obj);
 
 	/**
+	 * \brief Detects the bottle and returns its pose.
+	 * \return An optional containing the pose of the detected bottle, or std::nullopt if no bottle is detected.
+	 */
+	std::optional<SpecificWorker::BottlePose> get_bottle_pose_from_segmented_mask(const RoboCompImageSegmentation::SegmentedObject& obj);
+
+	/**
 	 * \brief Filters the point cloud to keep only points within a specified range.
 	 * \param point_cloud The original point cloud to be filtered.
 	 * \return A filtered point cloud containing only points within the specified range.
@@ -172,6 +178,7 @@ private:
 
 	bool simulated = configLoader.get<bool>("Simulated");
 	bool display_point_cloud = configLoader.get<bool>("DisplayPointCloud");
+	bool use_point_cloud_segmentation = configLoader.get<bool>("UsePointCloudSegmentation");
 
 	QWidget *viewer_widget;
 

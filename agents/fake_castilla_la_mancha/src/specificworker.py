@@ -34,6 +34,7 @@ sys.path.append(parent_dir + "/src/")
 console = Console(highlight=False)
 
 from pydsr import *
+from pydsr import Node, Edge, rt_api
 
 
 class SpecificWorker(GenericWorker):
@@ -58,6 +59,7 @@ class SpecificWorker(GenericWorker):
             self.timer.timeout.connect(self.compute)
             self.timer.start(self.Period)
 
+            self.rt_api = rt_api(self.g)
             self.print_dsr_signals = False
 
     def __del__(self):
@@ -69,9 +71,10 @@ class SpecificWorker(GenericWorker):
         bottle_over_robot = self.check_bottle_related_robot()
 
         if not bottle_over_robot:
+            self.generate_problem_node()
             self.deactivate_affordance()
         
-        print(flush=True)
+        print(flush=True, end="")
         return True
 
     def startup_check(self):
@@ -93,6 +96,17 @@ class SpecificWorker(GenericWorker):
             return False
         
         return True
+    
+    def generate_problem_node(self):
+        problem_node = self.g.get_node("problem")
+        if problem_node is None:
+            robot_node = self.g.get_node("robot")
+            problem_node = Node(self.agent_id, "intention", name="problem")
+            self.g.insert_node(problem_node)
+            
+            problem_node = self.g.get_node("problem")
+            self.rt_api.insert_or_assign_edge_RT(robot_node, problem_node.id, [0.0,0.0,0.0], [0.0,0.0,0.0])
+
     
     def deactivate_affordance(self):
         follow_me_node = self.g.get_node("follow_me")
