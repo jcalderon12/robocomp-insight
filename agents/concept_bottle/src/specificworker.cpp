@@ -123,8 +123,8 @@ void SpecificWorker::compute()
 	}
 	else
 	{
-		std::optional<BottlePose> bottle_pose = detect_bottle();
-		if (bottle_pose.has_value())
+		std::optional<BottlePose> bottle_pose_opt = detect_bottle();
+		if (bottle_pose_opt.has_value())
 		{
 			BottlePose bottle_pose =  bottle_pose_opt.value();
 			if (bottle_pose.tilt_angle > tilt_threshold)
