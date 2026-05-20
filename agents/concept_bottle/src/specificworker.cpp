@@ -117,8 +117,8 @@ void SpecificWorker::compute()
 		}
 		else
 		{
-			change_rt_from_robot_to_room(); // Here the agent should delete the RT, but for now we only change to 
-			// eliminate_rt_from_robot_to_bottle();
+			// change_rt_from_robot_to_room(); // Here the agent should delete the RT, but for now we only change to 
+			eliminate_rt_from_robot_to_bottle();
 		}
 	}
 	else
@@ -541,25 +541,45 @@ RoboCompImageSegmentation::PointCloud SpecificWorker::filter_pointcloud(const Ro
 	return filtered_cloud;
 }
 
+
+std::optional<SpecificWorker::BottlePose> SpecificWorker::get_bottle_pose_from_segmented_mask(const RoboCompImageSegmentation::SegmentedObject& obj)
+{
+	//Get the mask height and width
+	RoboCompImageSegmentation::Polygon polygon = obj.imagePolygon;
+	BottlePose pose;
+	
+	if (polygon.U.empty() || polygon.V.empty())
+		return std::nullopt;
+
+	// Calculate the bounding box of the polygon
+	int min_x = *std::min_element(polygon.U.begin(), polygon.U.end());
+	int max_x = *std::max_element(polygon.U.begin(), polygon.U.end());
+	int min_y = *std::min_element(polygon.V.begin(), polygon.V.end());
+	int max_y = *std::max_element(polygon.V.begin(), polygon.V.end());
+
+	// Calculate the center of the bounding box
+	int center_x = (min_x + max_x) / 2;
+	int center_y = (min_y + max_y) / 2;
+
+	//Calculate if the object has fallen based on the aspect ratio of the bounding box (if width is greater than height, we can assume it has fallen)
+	int width = pose.height = max_x - min_x;
+	int height = pose.width = max_y - min_y;
+
+	if (height < 0 && width < 0)
+		return std::nullopt;
+
+	if (height > width)
+		pose.tilt_angle = 0.0f; // Bottle is upright
+	else
+		pose.tilt_angle = 90.0f; // Bottle has fallen
+
+	return std::make_optional(pose);
+}
+
+
 std::optional<SpecificWorker::BottlePose> SpecificWorker::detect_bottle()
 {	
 	SpecificWorker::BottlePose bottle_pose;
-
-	// if (simulated)
-	// {	
-	// 	RoboCompWebots2Robocomp::ObjectPose webots_bottle_pose = this->webots2robocomp_proxy->getObjectPose("flacon"); //MILLIMETERS
-		
-	// 	bottle_pose.x = webots_bottle_pose.position.x;
-	// 	bottle_pose.y = webots_bottle_pose.position.y;
-	// 	bottle_pose.z = webots_bottle_pose.position.z;
-	// 	bottle_pose.qx = webots_bottle_pose.orientation.x;
-	// 	bottle_pose.qy = webots_bottle_pose.orientation.y;
-	// 	bottle_pose.qz = webots_bottle_pose.orientation.z;
-	// 	bottle_pose.qw = webots_bottle_pose.orientation.w;
-	// 	bottle_pose.tilt_angle = 0.0f;  
-		
-	// 	return std::make_optional(bottle_pose);
-	// }
 
 	auto objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
 
@@ -581,6 +601,9 @@ std::optional<SpecificWorker::BottlePose> SpecificWorker::detect_bottle()
 		std::cout << "No bottle detected in image segmentation." << std::endl;
 		return std::nullopt;
 	}
+
+	if (!use_point_cloud_segmentation)
+		return get_bottle_pose_from_segmented_mask(bottle_obj);
 
 	auto point_cloud = bottle_obj.points3D;
 
@@ -645,15 +668,15 @@ bool SpecificWorker::bottle_has_fallen(const std::optional<BottlePose>& bottle_p
 
 /**************************************/
 // From the RoboCompImageSegmentation you can call this methods:
-// RoboCompImageSegmentation::TData this->imagesegmentation_proxy->getAll(bool points3d)
+// RoboCompImageSegmentation::TData this->imagesegmentation_proxy->getAll(bool points3d, bool rgb)
 // RoboCompImageSegmentation::TDepth this->imagesegmentation_proxy->getDepth()
 // RoboCompImageSegmentation::TImage this->imagesegmentation_proxy->getImage()
-// RoboCompImageSegmentation::ObjectList this->imagesegmentation_proxy->getSegmentedObjects(bool points3d)
+// RoboCompImageSegmentation::ObjectList this->imagesegmentation_proxy->getSegmentedObjects(bool points3d, bool rgb)
 
 /**************************************/
 // From the RoboCompImageSegmentation you can use this types:
-// RoboCompImageSegmentation::Point2D
-// RoboCompImageSegmentation::Point3D
+// RoboCompImageSegmentation::PointCloud
+// RoboCompImageSegmentation::Polygon
 // RoboCompImageSegmentation::SegmentedObject
 // RoboCompImageSegmentation::TImage
 // RoboCompImageSegmentation::TDepth

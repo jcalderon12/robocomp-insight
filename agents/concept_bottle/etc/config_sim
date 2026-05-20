@@ -44,4 +44,5 @@ Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
 
 Simulated = true
-DisplayPointCloud = true
+UsePointCloudSegmentation = true
+DisplayPointCloud = false

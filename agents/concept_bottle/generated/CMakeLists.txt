@@ -44,8 +44,8 @@ SET (SOURCES
 
 #ROBOCOMP
 ROBOCOMP_INITIALIZE( $ENV{ROBOCOMP}/ )
-ROBOCOMP_IDSL_TO_ICE(Lidar3D ImageSegmentation Gridder Webots2Robocomp)
-ROBOCOMP_ICE_TO_SRC(Lidar3D ImageSegmentation Gridder Webots2Robocomp)
+ROBOCOMP_IDSL_TO_ICE(ImageSegmentation Gridder Webots2Robocomp Lidar3D)
+ROBOCOMP_ICE_TO_SRC(ImageSegmentation Gridder Webots2Robocomp Lidar3D)
 SET (EXECUTABLE_OUTPUT_PATH ${RC_COMPONENT_DEVEL_PATH}/bin)
 
 # Specify construction and link process
