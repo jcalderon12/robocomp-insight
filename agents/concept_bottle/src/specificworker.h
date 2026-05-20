@@ -163,7 +163,7 @@ public slots:
 	 * \param pose The pose of the bottle.
 	 * \return True if the bottle has fallen, false otherwise.
 	 */
-	bool bottle_is_valid(const std::optional<BottlePose>& bottle_pose);
+	bool bottle_has_fallen(const std::optional<BottlePose>& bottle_pose);
 
 private:
 

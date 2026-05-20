@@ -111,7 +111,7 @@ void SpecificWorker::compute()
 	{
 		std::optional<SpecificWorker::BottlePose> bottle_pose = detect_bottle();
 
-		if(!bottle_is_valid(bottle_pose))
+		if(!bottle_has_fallen(bottle_pose))
 		{
 			update_bottle_pose_in_dsr(bottle_pose);
 		}
@@ -126,7 +126,7 @@ void SpecificWorker::compute()
 		std::optional<BottlePose> bottle_pose = detect_bottle();
 		if (bottle_pose.has_value())
 		{
-			if (!bottle_is_valid(bottle_pose))
+			if bottle_pose->tilt_angle > tilt_threshold
 				return;
 
 			bottle_redetected_count++;
@@ -637,7 +637,7 @@ std::optional<SpecificWorker::BottlePose> SpecificWorker::detect_bottle()
 	return std::make_optional(bottle_pose);
 }
 
-bool SpecificWorker::bottle_is_valid(const std::optional<BottlePose>& bottle_pose)
+bool SpecificWorker::bottle_has_fallen(const std::optional<BottlePose>& bottle_pose)
 {
 	// Will check for 5 consecutive frames if the bottle has fallen based on its tilt angle and orientation and if the bottle pose is valid
 	if(!bottle_pose.has_value())
