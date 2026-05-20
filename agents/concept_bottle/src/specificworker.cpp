@@ -491,7 +491,7 @@ bool SpecificWorker::validate_bottle(const RoboCompImageSegmentation::SegmentedO
 	if (obj.label != "bottle")
 		return false;
 
-	bool at_least_one_point_in_range = true; // Flag to check if at least one point is in the specified range
+	bool at_least_one_point_in_range = false; // Flag to check if at least one point is in the specified range
 
 	for(int i = 0; i < obj.points3D.numberPoints; i++)
 	{
