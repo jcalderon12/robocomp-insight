@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import ast
 import pybullet as p
 import json
@@ -18,10 +20,16 @@ from pydantic import BaseModel, Field, create_model
 from simulation_scene import SimulationScene
 from engines.engine_pybullet import EnginePybullet
 from rich.console import Console
-from src.logger import Logger
 import os
 import copy
 import traceback
+
+# Get the path to 'inner_simulator' (one level up from 'src')
+agent_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if agent_root not in sys.path:
+    sys.path.insert(0, agent_root)
+
+from src.logger import Logger
 
 console = Console(highlight=False)
 
