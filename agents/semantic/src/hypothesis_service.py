@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,28 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         if isinstance(obj, dict):
             return obj
     raise ValueError("Could not decode a JSON object from the model response.")
+
+
+_OLLAMA_DURATION_FIELDS = (
+    "total_duration",
+    "load_duration",
+    "prompt_eval_duration",
+    "eval_duration",
+)
+_OLLAMA_COUNT_FIELDS = ("prompt_eval_count", "eval_count")
+
+
+def _ollama_native_metrics(data: dict[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for field in _OLLAMA_DURATION_FIELDS:
+        value = data.get(field)
+        if isinstance(value, (int, float)):
+            metrics[f"{field}_seconds"] = round(value / 1e9, 3)
+    for field in _OLLAMA_COUNT_FIELDS:
+        value = data.get(field)
+        if isinstance(value, int):
+            metrics[field] = value
+    return metrics
 
 
 def _normalize_message_content(content: Any) -> str:
@@ -353,7 +376,7 @@ class SemanticHypothesisService:
         if self.log_hook is not None:
             self.log_hook(level, message)
 
-    def _invoke_chatollama(self, prompt: str, model_name: str) -> str:
+    def _invoke_chatollama(self, prompt: str, model_name: str) -> tuple[str, dict[str, Any]]:
         self._log(
             "info",
             f"[HypothesisService] Invoking ChatOllama with model='{model_name}' "
@@ -369,14 +392,16 @@ class SemanticHypothesisService:
         )
         response = chat.invoke(prompt)
         normalized = _normalize_message_content(getattr(response, "content", response))
+        metadata = getattr(response, "response_metadata", None)
+        native = _ollama_native_metrics(metadata) if isinstance(metadata, dict) else {}
         self._log(
             "info",
             f"[HypothesisService] ChatOllama response received from model='{model_name}' "
             f"({len(normalized)} chars).",
         )
-        return normalized
+        return normalized, native
 
-    def _invoke_ollama_http(self, prompt: str, model_name: str) -> str:
+    def _invoke_ollama_http(self, prompt: str, model_name: str) -> tuple[str, dict[str, Any]]:
         endpoint = self.config.ollama_base_url.rstrip("/") + "/api/chat"
         self._log(
             "info",
@@ -405,44 +430,69 @@ class SemanticHypothesisService:
         data = response.json()
         message = data.get("message", {})
         normalized = _normalize_message_content(message.get("content", ""))
+        native = _ollama_native_metrics(data)
         self._log(
             "info",
             f"[HypothesisService] Ollama HTTP response received from model='{model_name}' "
             f"({len(normalized)} chars).",
         )
-        return normalized
+        return normalized, native
 
-    def _generate_with_model(self, prompt: str, model_name: str) -> tuple[dict[str, Any], str]:
+    def _generate_with_model(
+        self, prompt: str, model_name: str
+    ) -> tuple[Optional[dict[str, Any]], str, list[dict[str, Any]], Optional[str]]:
         errors = []
+        attempts: list[dict[str, Any]] = []
         preferred = (self.config.preferred_client or "").lower()
-        clients = []
         if preferred == "chatollama":
             clients = [self._invoke_chatollama, self._invoke_ollama_http]
         else:
             clients = [self._invoke_ollama_http, self._invoke_chatollama]
 
         for client in clients:
+            self._log(
+                "info",
+                f"[HypothesisService] Trying client='{client.__name__}' with model='{model_name}'.",
+            )
+            start = time.monotonic()
             try:
-                self._log(
-                    "info",
-                    f"[HypothesisService] Trying client='{client.__name__}' with model='{model_name}'.",
-                )
-                raw_text = client(prompt, model_name)
+                raw_text, native = client(prompt, model_name)
                 decoded = _extract_json_object(raw_text)
+                elapsed = round(time.monotonic() - start, 3)
+                attempt = {
+                    "model": model_name,
+                    "client": client.__name__,
+                    "elapsed_seconds": elapsed,
+                    "status": "success",
+                }
+                if native:
+                    attempt["ollama_native"] = native
+                attempts.append(attempt)
                 self._log(
                     "info",
                     f"[HypothesisService] JSON object decoded successfully with client='{client.__name__}' "
-                    f"and model='{model_name}'.",
+                    f"and model='{model_name}' in {elapsed}s.",
                 )
-                return decoded, client.__name__
+                return decoded, client.__name__, attempts, None
             except Exception as exc:
+                elapsed = round(time.monotonic() - start, 3)
+                attempts.append(
+                    {
+                        "model": model_name,
+                        "client": client.__name__,
+                        "elapsed_seconds": elapsed,
+                        "status": "error",
+                        "error": str(exc),
+                    }
+                )
                 errors.append(f"{client.__name__}: {exc}")
                 self._log(
                     "warning",
-                    f"[HypothesisService] Client='{client.__name__}' failed with model='{model_name}': {exc}",
+                    f"[HypothesisService] Client='{client.__name__}' failed with model='{model_name}' "
+                    f"after {elapsed}s: {exc}",
                 )
 
-        raise RuntimeError("; ".join(errors))
+        return None, "", attempts, "; ".join(errors)
 
     def _build_error_payload(
         self,
@@ -451,6 +501,7 @@ class SemanticHypothesisService:
         trace_id: str,
         error_messages: list[str],
         model_name: str = "",
+        generation_metrics: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         return {
             "schema_version": "1.0",
@@ -473,6 +524,7 @@ class SemanticHypothesisService:
             },
             "hypotheses": [],
             "errors": list(error_messages),
+            "generation_metrics": generation_metrics or {"llm_elapsed_seconds": 0.0, "attempts": []},
         }
 
     def generate(self, context: dict[str, Any]) -> HypothesisGenerationResult:
@@ -488,33 +540,45 @@ class SemanticHypothesisService:
         model_used = ""
         generator_used = ""
         errors = []
+        all_attempts: list[dict[str, Any]] = []
+        total_start = time.monotonic()
 
         candidate_models = [self.config.primary_model]
         if self.config.fallback_model and self.config.fallback_model != self.config.primary_model:
             candidate_models.append(self.config.fallback_model)
 
         for model_name in candidate_models:
-            try:
-                self._log(
-                    "info",
-                    f"[HypothesisService] Attempting model='{model_name}' for "
-                    f"{self.config.internal_count} internal and {self.config.external_count} external hypotheses.",
-                )
-                batch, generator_used = self._generate_with_model(prompt=prompt, model_name=model_name)
+            self._log(
+                "info",
+                f"[HypothesisService] Attempting model='{model_name}' for "
+                f"{self.config.internal_count} internal and {self.config.external_count} external hypotheses.",
+            )
+            decoded, gen_used, attempts, model_error = self._generate_with_model(
+                prompt=prompt, model_name=model_name
+            )
+            all_attempts.extend(attempts)
+            if decoded is not None:
+                batch = decoded
+                generator_used = gen_used
                 model_used = model_name
                 break
-            except Exception as exc:
-                errors.append(f"{model_name}: {exc}")
-                self._log(
-                    "warning",
-                    f"[HypothesisService] Model attempt failed for model='{model_name}': {exc}",
-                )
+            errors.append(f"{model_name}: {model_error}")
+            self._log(
+                "warning",
+                f"[HypothesisService] Model attempt failed for model='{model_name}': {model_error}",
+            )
+
+        generation_metrics = {
+            "llm_elapsed_seconds": round(time.monotonic() - total_start, 3),
+            "attempts": all_attempts,
+        }
 
         if batch is None:
             error_payload = self._build_error_payload(
                 context=context,
                 trace_id=trace_id,
                 error_messages=errors,
+                generation_metrics=generation_metrics,
             )
             output_path = self._write_batch(error_payload, context.get("case_id", "semantic_unexplained"))
             self._log(
@@ -535,6 +599,7 @@ class SemanticHypothesisService:
         batch["generated_at"] = context.get("generated_at", batch.get("generated_at", ""))
         batch["generator"] = generator_used
         batch["model"] = model_used
+        batch["generation_metrics"] = generation_metrics
         batch["trigger"] = {
             "unexplained_reason": context.get("unexplained_reason", ""),
             "removed_triples": context.get("removed_triples", []),
@@ -575,6 +640,7 @@ class SemanticHypothesisService:
                 trace_id=trace_id,
                 error_messages=[str(exc)],
                 model_name=model_used,
+                generation_metrics=generation_metrics,
             )
             output_path = self._write_batch(error_payload, context.get("case_id", "semantic_unexplained"))
             self._log(

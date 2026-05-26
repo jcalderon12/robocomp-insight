@@ -35,11 +35,48 @@ Ice.MessageSizeMax = "20004800"
 hypothesisGenerator.Enabled = true
 hypothesisGenerator.OutputDir = "generated_hypotheses"
 hypothesisGenerator.DescriptionPath = "../../description.md"
-hypothesisGenerator.PrimaryModel = "gpt-oss:120b-cloud"
-hypothesisGenerator.FallbackModel = ""
+hypothesisGenerator.PrimaryModel = "gemma4:31b-cloud" #"qwen3.5:397b-cloud
+
+# Local fallback model. Must be downloaded beforehand with: ollama pull qwen3:14b
+hypothesisGenerator.FallbackModel = "qwen3:14b"
+hypothesisGenerator.FallbackModel = "qwen3:14b"
 hypothesisGenerator.OllamaBaseUrl = "http://localhost:11434"
-hypothesisGenerator.RequestTimeoutSeconds = 180
+hypothesisGenerator.RequestTimeoutSeconds = 300
 hypothesisGenerator.InternalCount = 3
 hypothesisGenerator.ExternalCount = 3
 hypothesisGenerator.PreferredClient = "ollama_http"
 hypothesisGenerator.DescriptionCharLimit = 3500
+
+# Available models ollama cloud:
+# gemma4:31b-cloud
+# qwen3.5:cloud
+# qwen3.5:397b-cloud
+# qwen3-coder-next:cloud
+# ministral-3:3b-cloud
+# ministral-3:8b-cloud
+# ministral-3:14b-cloud
+# devstral-small-2:24b-cloud
+# nemotron-3-super:cloud
+# qwen3-next:80b-cloud
+# rnj-1:8b-cloud
+# minimax-m2.7:cloud
+# nemotron-3-nano:30b-cloud
+# minimax-m2.5:cloud
+# devstral-2:123b-cloud
+# gemini-3-flash-preview:cloud
+# cogito-2.1:671b-cloud
+# glm-4.7:cloud
+# deepseek-v3.2:cloud
+# minimax-m2.1:cloud
+# mistral-large-3:675b-cloud
+# gpt-oss:20b-cloud
+# gpt-oss:120b-cloud
+# qwen3-vl:235b-cloud
+# qwen3-vl:235b-instruct-cloud
+# qwen3-coder:480b-cloud
+# deepseek-v3.1:671b-cloud
+# minimax-m2:cloud
+# glm-4.6:cloud 
+# gemma3:4b-cloud
+# gemma3:12b-cloud
+# gemma3:27b-cloud

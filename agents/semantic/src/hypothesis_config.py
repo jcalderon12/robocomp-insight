@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any
 
 
+class ConfigError(ValueError):
+    """Raised when a required configuration value is missing or invalid."""
+
+
 def _as_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -36,6 +40,21 @@ def _as_str(value: Any, default: str = "") -> str:
         return default
     text = str(value).strip()
     return text if text else default
+
+
+def _require_str(section: dict[str, Any], key: str, section_name: str) -> str:
+    """Return a non-empty string from the config or raise ConfigError."""
+    raw = section.get(key)
+    if raw is None:
+        raise ConfigError(
+            f"Missing required config key '{section_name}.{key}'."
+        )
+    text = str(raw).strip().strip('"').strip("'")
+    if not text:
+        raise ConfigError(
+            f"Config key '{section_name}.{key}' must be a non-empty string."
+        )
+    return text
 
 
 def _get_section(config_data: dict[str, Any], section_name: str) -> dict[str, Any]:
@@ -73,26 +92,45 @@ class HypothesisGeneratorConfig:
     description_char_limit: int
 
     @classmethod
-    def from_config(cls, config_data: dict[str, Any], component_root: Path) -> "HypothesisGeneratorConfig":
-        section = _get_section(config_data, "hypothesisGenerator")
-        output_dir = _resolve_path(
-            _as_str(section.get("OutputDir"), "generated_hypotheses"),
-            component_root,
-        )
-        description_path = _resolve_path(
-            _as_str(section.get("DescriptionPath"), "../../description.md"),
-            component_root,
-        )
+    def from_config(
+        cls, config_data: dict[str, Any], component_root: Path
+    ) -> "HypothesisGeneratorConfig":
+        section_name = "hypothesisGenerator"
+        section = _get_section(config_data, section_name)
+
+        # ! Required values: must be present in the .cfg file
+        primary_model = _require_str(section, "PrimaryModel", section_name)
+        ollama_base_url = _require_str(section, "OllamaBaseUrl", section_name)
+        preferred_client = _require_str(section, "PreferredClient", section_name)
+        output_dir_raw = _require_str(section, "OutputDir", section_name)
+        description_path_raw = _require_str(section, "DescriptionPath", section_name)
+        request_timeout_raw = section.get("RequestTimeoutSeconds")
+        internal_count_raw = section.get("InternalCount")
+        external_count_raw = section.get("ExternalCount")
+        description_char_limit_raw = section.get("DescriptionCharLimit")
+
+        if request_timeout_raw is None:
+            raise ConfigError(f"Missing required config key '{section_name}.RequestTimeoutSeconds'.")
+        if internal_count_raw is None:
+            raise ConfigError(f"Missing required config key '{section_name}.InternalCount'.")
+        if external_count_raw is None:
+            raise ConfigError(f"Missing required config key '{section_name}.ExternalCount'.")
+        if description_char_limit_raw is None:
+            raise ConfigError(f"Missing required config key '{section_name}.DescriptionCharLimit'.")
+
+        enabled = _as_bool(section.get("Enabled"), False)
+        fallback_model = _as_str(section.get("FallbackModel"), "")
+
         return cls(
-            enabled=_as_bool(section.get("Enabled"), False),
-            output_dir=output_dir,
-            description_path=description_path,
-            primary_model=_as_str(section.get("PrimaryModel"), "gpt-oss:120b-cloud"),
-            fallback_model=_as_str(section.get("FallbackModel"), ""),
-            ollama_base_url=_as_str(section.get("OllamaBaseUrl"), "http://localhost:11434"),
-            request_timeout_seconds=_as_float(section.get("RequestTimeoutSeconds"), 180.0),
-            internal_count=max(1, _as_int(section.get("InternalCount"), 3)),
-            external_count=max(1, _as_int(section.get("ExternalCount"), 3)),
-            preferred_client=_as_str(section.get("PreferredClient"), "ollama_http"),
-            description_char_limit=max(500, _as_int(section.get("DescriptionCharLimit"), 3500)),
+            enabled=enabled,
+            output_dir=_resolve_path(output_dir_raw, component_root),
+            description_path=_resolve_path(description_path_raw, component_root),
+            primary_model=primary_model,
+            fallback_model=fallback_model,
+            ollama_base_url=ollama_base_url,
+            request_timeout_seconds=_as_float(request_timeout_raw, 0.0),
+            internal_count=max(1, _as_int(internal_count_raw, 1)),
+            external_count=max(1, _as_int(external_count_raw, 1)),
+            preferred_client=preferred_client,
+            description_char_limit=max(500, _as_int(description_char_limit_raw, 500)),
         )
