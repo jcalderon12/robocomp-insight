@@ -101,7 +101,8 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
-	auto_localization();
+	if (simulated) 
+		auto_localization();
 
     if (queck_affordance_active())
 	{
@@ -118,7 +119,8 @@ void SpecificWorker::compute()
 
 	last_velocities_readed = actual_velocities;	
 	
-	update_or_create_imu_node();
+	if (simulated)
+		update_or_create_imu_node();
 
 }
 
@@ -200,7 +202,7 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     if (distance_error < 0.0f)
         distance_error = 0.0f;
 
-    float Kp_lin = 1.0f;
+    float Kp_lin = 0.003f;
     float Kp_ang = 1.0f;
 
     float linear_velocity  = Kp_lin * distance_error;
@@ -250,7 +252,15 @@ std::vector<float> SpecificWorker::auto_localization()
 		robot_pose[6] = quat.w();
 	}
 	else{
-		//Real robot localization code here
+		robot_pose[0] = last_odometry[0];
+		robot_pose[1] = last_odometry[1];
+		robot_pose[2] = 0.0f;
+		Eigen::AngleAxisf rot_z(last_odometry[2], Eigen::Vector3f::UnitZ());
+		Eigen::Quaternionf quat(rot_z);
+		robot_pose[3] = quat.x();
+		robot_pose[4] = quat.y();
+		robot_pose[5] = quat.z();
+		robot_pose[6] = quat.w();
 	}
 
 	if (!has_significant_change(robot_pose, last_robot_pose))
@@ -453,8 +463,31 @@ void SpecificWorker::stop_robot()
 //SUBSCRIPTION to newFullPose method from FullPoseEstimationPub interface
 void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimation::FullPoseEuler pose)
 {
-//subscribesToCODE
+	if (simulated)
+		return;
 
+	float adv, rot, last_x, last_y, last_theta;
+	adv = pose.y;
+	rot = pose.rz;
+
+	if (last_odometry.empty())
+	{
+		last_x = 0;
+		last_y = 0;
+		last_theta = 0;
+	}
+	else
+	{		
+		last_x = last_odometry[0];
+		last_y = last_odometry[1];
+		last_theta = last_odometry[2];
+	}
+
+		float theta = init_theta + pose.rz;
+		float x = adv * std::cos(theta) + last_x;
+		float y = adv * std::sin(theta) + last_y;
+
+		last_odometry = {x, y, theta};
 }
 
 

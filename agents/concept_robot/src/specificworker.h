@@ -159,8 +159,10 @@ private:
 	std::vector<float> last_velocities_readed;
 	std::vector<float> last_robot_pose;
 
+	std::vector<float> last_odometry;
+
 	bool print_extra_info = false;
-	bool simulated = true;
+	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
 
 	std::unique_ptr<DSR::RT_API> rt;
