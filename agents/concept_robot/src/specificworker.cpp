@@ -101,8 +101,7 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
-	if (simulated) 
-		auto_localization();
+	auto_localization();
 
     if (queck_affordance_active())
 	{

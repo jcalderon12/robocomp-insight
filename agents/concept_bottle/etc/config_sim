@@ -45,4 +45,4 @@ Ice.MessageSizeMax = "20004800"
 
 Simulated = true
 UsePointCloudSegmentation = true
-DisplayPointCloud = false
+DisplayPointCloud = true
