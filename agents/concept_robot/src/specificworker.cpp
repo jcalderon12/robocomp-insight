@@ -251,6 +251,9 @@ std::vector<float> SpecificWorker::auto_localization()
 		robot_pose[6] = quat.w();
 	}
 	else{
+		if (last_odometry.empty())
+			return robot_pose;
+			
 		robot_pose[0] = last_odometry[0];
 		robot_pose[1] = last_odometry[1];
 		robot_pose[2] = 0.0f;
