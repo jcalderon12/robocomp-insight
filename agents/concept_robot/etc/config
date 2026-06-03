@@ -47,3 +47,4 @@ Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
 
 Simulated = False
+Desired_distance = 1800.0

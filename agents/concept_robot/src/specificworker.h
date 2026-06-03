@@ -161,6 +161,10 @@ private:
 
 	std::vector<float> last_odometry;
 
+	static constexpr float HALF_PI = std::numbers::pi_v<float> / 2.0f;
+
+	float desired_distance;
+
 	float prev_distance_error;
 	float prev_angle_error;
 	std::chrono::steady_clock::time_point last_follow_time;

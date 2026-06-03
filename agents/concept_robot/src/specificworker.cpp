@@ -99,6 +99,11 @@ void SpecificWorker::initialize()
 	prev_distance_error = 0.0f;
 	prev_angle_error    = 0.0f;
 	last_follow_time    = std::chrono::steady_clock::now();
+
+	if (simulated)
+		desired_distance = configLoader.get<double>("Desired_distance") / 1000;
+	else
+		desired_distance = configLoader.get<double>("Desired_distance");
 }
 
 
@@ -109,7 +114,7 @@ void SpecificWorker::compute()
 
     if (queck_affordance_active())
 	{
-		follow_target(0.4f, 0.5f, 1.2f);
+		follow_target(0.7f, 0.7f, desired_distance);
 	}
 	else{
 		stop_robot();
@@ -159,83 +164,6 @@ int SpecificWorker::startup_check()
 
 #pragma region ROBOT_METHODS
 
-// void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance)
-// {
-//     auto robot_node_opt = G->get_node("robot");
-//     if (!robot_node_opt.has_value())
-//     {
-//         std::cerr << "Robot node not found in DSR." << std::endl;
-//         return;
-//     }
-//     DSR::Node robot_node = robot_node_opt.value();
-
-//     auto target_edges = G->get_edges_by_type("TARGET");
-//     if (target_edges.empty())
-//     {
-//         std::cerr << "No target edges found in DSR." << std::endl;
-//         return;
-//     }
-//     DSR::Edge target_edge = target_edges[0];
-
-//     auto rt_edge_opt = rt->get_edge_RT(robot_node, target_edge.to());
-//     if (!rt_edge_opt.has_value())
-//     {
-//         std::cerr << "RT edge not found." << std::endl;
-//         return;
-//     }
-//     DSR::Edge rt_edge = rt_edge_opt.value();
-
-//     auto rt_translation_opt = G->get_attrib_by_name<rt_translation_att>(rt_edge);
-//     if (!rt_translation_opt.has_value())
-//     {
-//         std::cerr << "RT translation missing." << std::endl;
-//         return;
-//     }
-
-//     std::vector<float> t = rt_translation_opt.value(); 
-
-//     float x = t[0];   
-//     float y = t[1];   
-
-//     float distance_to_target = std::sqrt(x*x + y*y);
-//     float angle_to_target = std::atan2(x, y);
-
-// 	float distance_error = (distance_to_target > 1e-3f) ? (distance_to_target - desired_distance) / distance_to_target : 0.0f;
-
-// 	float Kp_lin = 0.8f;
-//     float Kp_ang = 1.0f;
-
-//     float linear_velocity  = Kp_lin * distance_error;
-//     float angular_velocity = Kp_ang * angle_to_target;
-
-//     if (std::abs(angle_to_target) > 0.4f)
-//         linear_velocity *= 0.3f;
-
-//     linear_velocity = std::clamp(
-//         linear_velocity,
-//         0.0f,
-//         WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor
-//     );
-
-//     angular_velocity = std::clamp(
-//         angular_velocity,
-//         -WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
-//          WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
-//     );
-
-// 	if (print_extra_info)
-// 		std::cout << "Distance: " << distance_to_target
-// 				<< "  Error: " << distance_error
-// 				<< "  Angle: " << angle_to_target
-// 				<< "  Linear Vel: " << linear_velocity
-// 				<< "  Angular Vel: " << angular_velocity << std::endl;
-
-
-//     G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
-//     G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
-//     G->update_node(robot_node);
-// }
-
 void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance)
 {
     auto robot_node_opt = G->get_node("robot");
@@ -277,7 +205,6 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     float distance_to_target = std::sqrt(x*x + y*y);
     float angle_to_target    = std::atan2(x, y);
 
-    // Error normalizado adimensional
     float distance_error = 0.0f;
     if (distance_to_target > 1e-3f)
         distance_error = (distance_to_target - desired_distance) / distance_to_target;
@@ -300,7 +227,6 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 
 	prev_distance_error = distance_error;
 	prev_angle_error    = angle_to_target;
-    // ------------------------
 
     const float Kp_lin = 0.8f;
     const float Kd_lin = 0.1f;   
@@ -308,23 +234,23 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     const float Kp_ang = 1.0f;
     const float Kd_ang = 0.1f;   
 
-    float linear_velocity  = Kp_lin * distance_error + Kd_lin * d_distance_error;
-    float angular_velocity = Kp_ang * angle_to_target + Kd_ang * d_angle_error;
+	float linear_velocity  = Kp_lin * distance_error + Kd_lin * d_distance_error;
+	float angular_velocity = Kp_ang * angle_to_target + Kd_ang * d_angle_error;
 
-    if (std::abs(angle_to_target) > 0.4f)
-        linear_velocity *= 0.3f;
+	float angle_attenuation = std::cos(std::clamp(angle_to_target, -HALF_PI, HALF_PI));
+	linear_velocity *= angle_attenuation;
 
-    linear_velocity = std::clamp(
-        linear_velocity,
-        0.0f,
-        WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor
-    );
+	linear_velocity = std::clamp(
+		linear_velocity,
+		0.0f,
+		WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor
+	);
 
-    angular_velocity = std::clamp(
-        angular_velocity,
-        -WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
-         WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
-    );
+	angular_velocity = std::clamp(
+		angular_velocity,
+		-WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
+		WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
+	);
 
     if (print_extra_info)
         std::cout << "Distance: "    << distance_to_target
