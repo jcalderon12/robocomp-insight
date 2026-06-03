@@ -161,7 +161,11 @@ private:
 
 	std::vector<float> last_odometry;
 
-	bool print_extra_info = false;
+	float prev_distance_error;
+	float prev_angle_error;
+	std::chrono::steady_clock::time_point last_follow_time;
+
+	bool print_extra_info = true;
 	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
 
