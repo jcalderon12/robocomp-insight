@@ -1,8 +1,8 @@
 [
     {
-        "name": "Shadow Base",
-        "directory": "$ROBOCOMP/components/robocomp-shadow/components/SVD48VBase",
-        "command": "bin/SVD48VBase etc/config_diferential",
+        "name": "webots",
+        "directory": ".",
+        "command": "webots $ROBOCOMP/components/webots-shadow/worlds/SimpleWorld_Bump.wbt",
         "restart": false,
         "buildable": false
     },
@@ -14,9 +14,9 @@
         "buildable": false
     },
     {
-        "name": "IMU",
+        "name": "bridge",
         "directory": "$ROBOCOMP/components/webots-bridge",
-        "command": "echo 'Not implemented'",
+        "command": "bin/Webots2Robocomp etc/config",
         "restart": false,
         "buildable": false
     },
@@ -44,21 +44,21 @@
     {
         "name": "concept_robot",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_robot",
-        "command": "bin/concept_robot etc/config",
+        "command": "bin/concept_robot etc/config_sim",
         "restart": false,
         "buildable": true
     },
     {
         "name": "concept_bottle",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_bottle",
-        "command": "bin/concept_bottle etc/config",
+        "command": "bin/concept_bottle etc/config_sim",
         "restart": false,
         "buildable": true
     },
     {
         "name": "zed_component",
         "directory": "$ROBOCOMP/components/robocomp-shadow/insect/zed_component",
-        "command": "bin/zed_component etc/config.toml",
+        "command": "bin/zed_component etc/config_sim.toml",
         "restart": false,
         "buildable": false
     },
@@ -72,7 +72,7 @@
     {
         "name": "concept_person",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/concept_person",
-        "command": "bin/concept_person etc/config",
+        "command": "bin/concept_person etc/config_sim",
         "restart": false,
         "buildable": true
     },
@@ -96,12 +96,5 @@
         "command": "bin/semantic etc/config",
         "restart": false,
         "buildable": true
-    },
-    {
-        "name": "joystick",
-        "directory": "$ROBOCOMP/components/robocomp-robolab/components/hardware/external_control/python_xbox_controller",
-        "command": "bin/python_xbox_controller etc/config",
-        "restart": false,
-        "buildable": true
     }
-]
+  ]

@@ -171,7 +171,7 @@ void SpecificWorker::initialize()
 						elapsed_attr.value(mission_accumulated_time);
 						mission.attrs()["elapsed_time"] = elapsed_attr;
 						mission_graph->update_node(mission);
-						std::cout << "    ✓ Elapsed time saved to mission node: " << mission_accumulated_time << "s" << std::endl;
+						std::cout << "  Elapsed time saved to mission node: " << mission_accumulated_time << "s" << std::endl;
 					}
 				} catch (const std::exception& e) {
 					std::cerr << "Error saving elapsed time to mission node: " << e.what() << std::endl;
@@ -709,6 +709,7 @@ void SpecificWorker::on_stopMission_clicked()
 	}
 }
 
+//TODO - Refactor to use problem node instead of relying on "follow_me" node name 
 void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names)
 {
     auto node = G->get_node(id);
@@ -743,6 +744,7 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
             active_mission_row = -1;
     }
 }
+
 
 void SpecificWorker::updateMissionTime()
 {

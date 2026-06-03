@@ -34,7 +34,7 @@ sys.path.append(parent_dir + "/src/")
 console = Console(highlight=False)
 
 from pydsr import *
-from pydsr import Node, Edge, rt_api
+from pydsr import Node, Edge, rt_api, Attribute
 
 
 class SpecificWorker(GenericWorker):
@@ -102,10 +102,16 @@ class SpecificWorker(GenericWorker):
         if problem_node is None:
             robot_node = self.g.get_node("robot")
             problem_node = Node(self.agent_id, "intention", name="problem")
+            problem_node.attrs["parent"] = Attribute(robot_node.id, self.agent_id)
+            problem_node.attrs["level"] = Attribute(robot_node.attrs["level"].value + 1, self.agent_id)
+            problem_node.attrs["pos_x"] = Attribute(robot_node.attrs["pos_x"].value - 200, self.agent_id)
+            problem_node.attrs["pos_y"] = Attribute(robot_node.attrs["pos_y"].value, self.agent_id)
             self.g.insert_node(problem_node)
             
             problem_node = self.g.get_node("problem")
-            self.rt_api.insert_or_assign_edge_RT(robot_node, problem_node.id, [0.0,0.0,0.0], [0.0,0.0,0.0])
+
+            problem_edge = Edge(robot_node.id, problem_node.id, "has", self.agent_id);
+            self.g.insert_or_assign_edge(problem_edge)
 
     
     def deactivate_affordance(self):
