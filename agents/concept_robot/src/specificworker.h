@@ -174,6 +174,8 @@ private:
 	std::string robot_DEF = "shadow";
 
 	static constexpr int ODOMETRY_WINDOW_SIZE = 5;
+	static constexpr float LINEAR_VELOCITY_DEADBAND  = 2.f;    // mm/s
+	static constexpr float ANGULAR_VELOCITY_DEADBAND = 0.01f;  // rad/s
 	std::deque<std::tuple<float, float, float>> velocity_window;
 	long long last_timestamp = 0;
 

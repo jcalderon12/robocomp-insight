@@ -589,6 +589,10 @@ void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimatio
     avg_vy  /= ODOMETRY_WINDOW_SIZE;
     avg_vrz /= ODOMETRY_WINDOW_SIZE;
 
+	if (std::abs(avg_vy) < LINEAR_VELOCITY_DEADBAND) avg_vy = 0.f;
+	if (std::abs(avg_vx) < LINEAR_VELOCITY_DEADBAND) avg_vx = 0.f;
+	if (std::abs(avg_vrz) < ANGULAR_VELOCITY_DEADBAND) avg_vrz = 0.f;
+
     float last_x     = last_odometry[0];
     float last_y     = last_odometry[1];
     float last_theta = last_odometry[2];
