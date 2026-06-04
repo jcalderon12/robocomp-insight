@@ -173,6 +173,10 @@ private:
 	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
 
+	static constexpr int ODOMETRY_WINDOW_SIZE = 5;
+	std::deque<std::tuple<float, float, float>> velocity_window;
+	long long last_timestamp = 0;
+
 	std::unique_ptr<DSR::RT_API> rt;
 
 signals:

@@ -100,6 +100,8 @@ void SpecificWorker::initialize()
 	prev_angle_error    = 0.0f;
 	last_follow_time    = std::chrono::steady_clock::now();
 
+	last_odometry = {0.0f, 0.0f, 0.0f};
+
 	if (simulated)
 		desired_distance = configLoader.get<double>("Desired_distance") / 1000;
 	else
@@ -493,32 +495,119 @@ void SpecificWorker::stop_robot()
 #pragma endregion DSR
 
 //SUBSCRIPTION to newFullPose method from FullPoseEstimationPub interface
+// void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimation::FullPoseEuler pose)
+// {
+// 	if (simulated)
+// 		return;
+
+//     if (!std::isfinite(pose.y) || !std::isfinite(pose.rz))
+//     {
+//         std::cerr << "[FullPoseEstimationPub_newFullPose] WARNING: invalid pose received "
+//                   << "(y=" << pose.y << ", rz=" << pose.rz << "), skipping." << std::endl;
+//         return;
+//     }
+
+// 	float adv, last_x, last_y, last_theta;
+// 	adv = pose.y;
+
+// 	if (last_odometry.empty())
+// 	{
+// 		last_x = 0;
+// 		last_y = 0;
+// 		last_theta = 0;
+// 	}
+// 	else
+// 	{		
+// 		last_x = last_odometry[0];
+// 		last_y = last_odometry[1];
+// 		last_theta = last_odometry[2];
+// 	}
+
+// 		float theta = last_theta + pose.rz;
+// 		float x = adv * std::cos(theta) + last_x;
+// 		float y = adv * std::sin(theta) + last_y;
+
+// 		last_odometry = {x, y, theta};
+
+// 		if (print_extra_info){
+// 			std::cout << "[FullPoseEstimationPub_newFullPose]" << std::endl;
+// 			std::cout << "  Raw pose    -> y (adv): " << adv 
+// 					<< " | rz: " << pose.rz << std::endl;
+// 			std::cout << "  Last odom   -> x: " << last_x 
+// 					<< " | y: " << last_y 
+// 					<< " | theta: " << last_theta << std::endl;
+// 			std::cout << "  New odom    -> x: " << x 
+// 					<< " | y: " << y 
+// 					<< " | theta: " << theta << std::endl;
+// 		}
+// }
+
 void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimation::FullPoseEuler pose)
 {
-	if (simulated)
-		return;
+    if (simulated)
+        return;
 
-	float adv, last_x, last_y, last_theta;
-	adv = pose.y;
+    if (!std::isfinite(pose.vy) || !std::isfinite(pose.vx) || !std::isfinite(pose.vrz))
+    {
+        std::cerr << "[FullPoseEstimationPub_newFullPose] WARNING: invalid pose, skipping." << std::endl;
+        return;
+    }
 
-	if (last_odometry.empty())
-	{
-		last_x = 0;
-		last_y = 0;
-		last_theta = 0;
-	}
-	else
-	{		
-		last_x = last_odometry[0];
-		last_y = last_odometry[1];
-		last_theta = last_odometry[2];
-	}
+    // Calcular dt a partir del timestamp de la pose (viene en ms)
+    if (last_timestamp == 0)
+    {
+        last_timestamp = pose.timestamp;
+        last_odometry = {0.f, 0.f, 0.f};
+        return;
+    }
 
-		float theta = last_theta + pose.rz;
-		float x = adv * std::cos(theta) + last_x;
-		float y = adv * std::sin(theta) + last_y;
+    float dt = (pose.timestamp - last_timestamp) / 1000.f;
+    last_timestamp = pose.timestamp;
 
-		last_odometry = {x, y, theta};
+    if (dt <= 0.f || dt > 1.f)
+    {
+        std::cerr << "[FullPoseEstimationPub_newFullPose] WARNING: anomalous dt=" << dt << ", skipping." << std::endl;
+        return;
+    }
+
+    // Ventana deslizante de velocidades
+    velocity_window.push_back({pose.vx, pose.vy, pose.vrz});
+    if (velocity_window.size() > ODOMETRY_WINDOW_SIZE)
+        velocity_window.pop_front();
+
+    if (velocity_window.size() < ODOMETRY_WINDOW_SIZE)
+        return;
+
+    float avg_vx = 0.f, avg_vy = 0.f, avg_vrz = 0.f;
+    for (const auto& [vx, vy, vrz] : velocity_window)
+    {
+        avg_vx  += vx;
+        avg_vy  += vy;
+        avg_vrz += vrz;
+    }
+    avg_vx  /= ODOMETRY_WINDOW_SIZE;
+    avg_vy  /= ODOMETRY_WINDOW_SIZE;
+    avg_vrz /= ODOMETRY_WINDOW_SIZE;
+
+    float last_x     = last_odometry[0];
+    float last_y     = last_odometry[1];
+    float last_theta = last_odometry[2];
+
+	float theta = last_theta + avg_vrz * dt;
+	float x     = last_x + (avg_vy * std::sin(last_theta) + avg_vx * std::cos(last_theta)) * dt;
+	float y     = last_y + (avg_vy * std::cos(last_theta) - avg_vx * std::sin(last_theta)) * dt;
+
+    last_odometry = {x, y, theta};
+
+    if (print_extra_info)
+    {
+        std::cout << "[FullPoseEstimationPub_newFullPose]\n"
+                  << "  Raw vel    -> vy: " << pose.vy  << " | vx: " << pose.vx  << " | vrz: " << pose.vrz << "\n"
+                  << "  Avg vel    -> vy: " << avg_vy   << " | vx: " << avg_vx   << " | vrz: " << avg_vrz  << "\n"
+                  << "  dt         -> " << dt << " s\n"
+                  << "  Last odom  -> x: " << last_x    << " | y: " << last_y    << " | theta: " << last_theta << "\n"
+                  << "  New odom   -> x: " << x         << " | y: " << y         << " | theta: " << theta << std::endl;
+    }
 }
 
 
