@@ -195,7 +195,7 @@ private:
 
 	int bottle_lost_count = 0;
 	int bottle_redetected_count = 0;
-	const int bottle_lost_threshold = 10;
+	const int bottle_lost_threshold = 5;
 	const int bottle_redetected_threshold = 5;
 	const float tilt_threshold = 45.0f; // Degrees
 
