@@ -95,26 +95,17 @@ void SpecificWorker::initialize()
 	rt = G->get_rt_api();
 
 	last_velocities_readed = getVelocitiesFromDSR();
-
-	prev_distance_error = 0.0f;
-	prev_angle_error    = 0.0f;
-	last_follow_time    = std::chrono::steady_clock::now();
-
-	if (simulated)
-		desired_distance = configLoader.get<double>("Desired_distance") / 1000;
-	else
-		desired_distance = configLoader.get<double>("Desired_distance");
 }
 
 
 
 void SpecificWorker::compute()
 {
-	auto_localization();
+	//auto_localization();
 
     if (queck_affordance_active())
 	{
-		follow_target(0.7f, 0.7f, desired_distance);
+		follow_target(0.4f, 0.5f, 1800.0f);
 	}
 	else{
 		stop_robot();
@@ -127,8 +118,7 @@ void SpecificWorker::compute()
 
 	last_velocities_readed = actual_velocities;	
 	
-	if (simulated)
-		update_or_create_imu_node();
+	//update_or_create_imu_node();
 
 }
 
@@ -197,68 +187,47 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
         return;
     }
 
-    std::vector<float> t = rt_translation_opt.value();
+    std::vector<float> t = rt_translation_opt.value(); 
 
-    float x = t[0];
-    float y = t[1];
+    float x = t[0];   
+    float y = t[1];   
 
     float distance_to_target = std::sqrt(x*x + y*y);
-    float angle_to_target    = std::atan2(x, y);
+    float angle_to_target = std::atan2(x, y);
 
-    float distance_error = 0.0f;
-    if (distance_to_target > 1e-3f)
-        distance_error = (distance_to_target - desired_distance) / distance_to_target;
+	float distance_error = distance_to_target - desired_distance;
 
     if (distance_error < 0.0f)
         distance_error = 0.0f;
 
-	float d_distance_error = 0.0f;
-	float d_angle_error    = 0.0f;
+    float Kp_lin = 0.003f;
+    float Kp_ang = 1.0f;
 
-    auto now = std::chrono::steady_clock::now();
-	float dt = std::chrono::duration<float>(now - last_follow_time).count();
-	last_follow_time = now;
+    float linear_velocity  = Kp_lin * distance_error;
+    float angular_velocity = Kp_ang * angle_to_target;
 
-	if (dt > 1e-4f)
-	{
-		d_distance_error = (distance_error - prev_distance_error) / dt;
-		d_angle_error    = (angle_to_target - prev_angle_error)   / dt;
-	}
+    if (std::abs(angle_to_target) > 0.4f)
+        linear_velocity *= 0.3f;
 
-	prev_distance_error = distance_error;
-	prev_angle_error    = angle_to_target;
+    linear_velocity = std::clamp(
+        linear_velocity,
+        0.0f,
+        WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor
+    );
 
-    const float Kp_lin = 0.8f;
-    const float Kd_lin = 0.1f;   
+    angular_velocity = std::clamp(
+        angular_velocity,
+        -WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
+         WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
+    );
 
-    const float Kp_ang = 1.0f;
-    const float Kd_ang = 0.1f;   
+	if (print_extra_info)
+		std::cout << "Distance: " << distance_to_target
+				<< "  Error: " << distance_error
+				<< "  Angle: " << angle_to_target
+				<< "  Linear Vel: " << linear_velocity
+				<< "  Angular Vel: " << angular_velocity << std::endl;
 
-	float linear_velocity  = Kp_lin * distance_error + Kd_lin * d_distance_error;
-	float angular_velocity = Kp_ang * angle_to_target + Kd_ang * d_angle_error;
-
-	float angle_attenuation = std::cos(std::clamp(angle_to_target, -HALF_PI, HALF_PI));
-	linear_velocity *= angle_attenuation;
-
-	linear_velocity = std::clamp(
-		linear_velocity,
-		0.0f,
-		WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor
-	);
-
-	angular_velocity = std::clamp(
-		angular_velocity,
-		-WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
-		WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
-	);
-
-    if (print_extra_info)
-        std::cout << "Distance: "    << distance_to_target
-                  << "  Error: "     << distance_error
-                  << "  dError/dt: " << d_distance_error
-                  << "  Angle: "     << angle_to_target
-                  << "  Linear Vel: "<< linear_velocity
-                  << "  Angular Vel:"<< angular_velocity << std::endl;
 
     G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
     G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
@@ -281,18 +250,7 @@ std::vector<float> SpecificWorker::auto_localization()
 		robot_pose[6] = quat.w();
 	}
 	else{
-		if (last_odometry.empty())
-			return robot_pose;
-			
-		robot_pose[0] = last_odometry[0];
-		robot_pose[1] = last_odometry[1];
-		robot_pose[2] = 0.0f;
-		Eigen::AngleAxisf rot_z(last_odometry[2], Eigen::Vector3f::UnitZ());
-		Eigen::Quaternionf quat(rot_z);
-		robot_pose[3] = quat.x();
-		robot_pose[4] = quat.y();
-		robot_pose[5] = quat.z();
-		robot_pose[6] = quat.w();
+		//Real robot localization code here
 	}
 
 	if (!has_significant_change(robot_pose, last_robot_pose))
@@ -495,30 +453,8 @@ void SpecificWorker::stop_robot()
 //SUBSCRIPTION to newFullPose method from FullPoseEstimationPub interface
 void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimation::FullPoseEuler pose)
 {
-	if (simulated)
-		return;
+//subscribesToCODE
 
-	float adv, last_x, last_y, last_theta;
-	adv = pose.y;
-
-	if (last_odometry.empty())
-	{
-		last_x = 0;
-		last_y = 0;
-		last_theta = 0;
-	}
-	else
-	{		
-		last_x = last_odometry[0];
-		last_y = last_odometry[1];
-		last_theta = last_odometry[2];
-	}
-
-		float theta = last_theta + pose.rz;
-		float x = adv * std::cos(theta) + last_x;
-		float y = adv * std::sin(theta) + last_y;
-
-		last_odometry = {x, y, theta};
 }
 
 

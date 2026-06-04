@@ -1,9 +1,9 @@
 [
     {
         "name":"bump",
-        "bump_file": "../../etc/URDFs/bump/bump_25x5cm.urdf",
-        "bump_x_range": 0.25,
-        "bump_y_range": 0.25,
+        "bump_file": "../../etc/URDFs/bump/bump_25x2cm.urdf",
+        "bump_x_range": 0.2,
+        "bump_y_range": 0.2,
         "bump_z_range": 0.0,
         "bump_x_origin": 0.0,
         "bump_y_origin": 0.01,

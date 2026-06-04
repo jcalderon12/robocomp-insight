@@ -80,6 +80,7 @@ void SpecificWorker::initialize()
 	rt = G->get_rt_api();
 
 	last_relative_pose = get_person_relative_position();
+
 }
 
 
@@ -87,7 +88,6 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	auto relative_position = get_person_relative_position();
-
 
 	if (has_significant_change(relative_position, last_relative_pose)){
 		if (update_relative_position_to_person(relative_position)){
@@ -186,70 +186,159 @@ bool SpecificWorker::has_significant_change(const std::vector<float>& a,
     return false;
 }
 
+// std::vector<float> SpecificWorker::get_person_relative_position()
+// {
+// 	std::vector<float> relative_position = {0.0f, 0.0f, 0.0f};
+
+// 	if (simulated){
+// 		auto person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
+// 		auto robot_pose  = this->webots2robocomp_proxy->getObjectPose(robot_def);
+
+// 		std::vector<float> p_pos = {person_pose.position.x / 1000.f,
+// 						 person_pose.position.y / 1000.f,
+// 						 person_pose.position.z / 1000.f};
+// 		std::vector<float> r_pos = {robot_pose.position.x / 1000.f,
+// 						 robot_pose.position.y / 1000.f,
+// 						 robot_pose.position.z / 1000.f};
+
+// 		relative_position = {p_pos[0] - r_pos[0], p_pos[1] - r_pos[1], p_pos[2] - r_pos[2]};
+// 	}
+// 	else{
+// 		auto segmented_objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
+
+// 		std::vector<std::vector<float>> person_positions;
+
+// 		for (const auto& obj : segmented_objects){
+// 			if (obj.label == "person"){
+// 				auto point_cloud = obj.points3D;
+// 				if (!point_cloud.X.empty()){
+// 					person_positions.push_back(std::vector<float>{point_cloud.X[0], point_cloud.Y[0], point_cloud.Z[0]});
+// 				}
+// 			}
+// 		}
+
+// 		if (!person_positions.empty()){
+// 			// Tolerance in mm: if two people are within this distance, prefer the one more centered
+// 			const float distance_tolerance_mm = 150.0f; 
+// 			auto best_person = person_positions[0];
+// 			auto best_distance_sq = best_person[0]*best_person[0] + best_person[1]*best_person[1] + best_person[2]*best_person[2];
+
+// 			auto best_center_offset = std::abs(best_person[0]);
+
+// 			for (const auto& pos : person_positions){
+// 				float distance_sq = pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2];
+// 				// If clearly closer (beyond tolerance), this is the new best
+// 				if (distance_sq + distance_tolerance_mm * distance_tolerance_mm < best_distance_sq){
+// 					best_person = pos;
+// 					best_distance_sq = distance_sq;
+// 					best_center_offset = std::abs(pos[0]);
+// 				}
+// 				// If within tolerance (similar distance), prefer the more centered one
+// 				else if (std::abs(distance_sq - best_distance_sq) <= distance_tolerance_mm * distance_tolerance_mm){
+// 					auto center_offset = std::abs(pos[0]);
+// 					// Prefer less offset from center; if tied, prefer less vertical offset
+// 					if (center_offset < best_center_offset ||
+// 					    (center_offset == best_center_offset && std::abs(pos[1]) < std::abs(best_person[1]))){
+// 						best_person = pos;
+// 						best_center_offset = center_offset;
+// 					}
+// 				}
+// 			}
+
+// 			relative_position = {best_person[0], best_person[1], best_person[2]};
+// 		}
+// 	}
+
+// 	return relative_position;
+// }
+
 std::vector<float> SpecificWorker::get_person_relative_position()
 {
-	std::vector<float> relative_position = {0.0f, 0.0f, 0.0f};
+    std::vector<float> relative_position = {0.0f, 0.0f, 0.0f};
 
-	if (simulated){
-		auto person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
-		auto robot_pose  = this->webots2robocomp_proxy->getObjectPose(robot_def);
+    auto segmented_objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
 
-		std::vector<float> p_pos = {person_pose.position.x / 1000.f,
-						 person_pose.position.y / 1000.f,
-						 person_pose.position.z / 1000.f};
-		std::vector<float> r_pos = {robot_pose.position.x / 1000.f,
-						 robot_pose.position.y / 1000.f,
-						 robot_pose.position.z / 1000.f};
+    struct Candidate
+    {
+        std::vector<float> pos;
+        float dist2_last;
+    };
 
-		relative_position = {p_pos[0] - r_pos[0], p_pos[1] - r_pos[1], p_pos[2] - r_pos[2]};
-	}
-	else{
-		auto segmented_objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
+    std::vector<Candidate> candidates;
 
-		std::vector<std::vector<float>> person_positions;
+    if (segmented_objects.empty())
+        return relative_position;
 
-		for (const auto& obj : segmented_objects){
-			if (obj.label == "person"){
-				auto point_cloud = obj.points3D;
-				if (!point_cloud.X.empty()){
-					person_positions.push_back(std::vector<float>{point_cloud.X[0], point_cloud.Y[0], point_cloud.Z[0]});
-				}
-			}
-		}
+    for (const auto& obj : segmented_objects)
+    {
+        if (obj.label != "person")
+            continue;
 
-		if (!person_positions.empty()){
-			// Tolerance in mm: if two people are within this distance, prefer the one more centered
-			const float distance_tolerance_mm = 150.0f; 
-			auto best_person = person_positions[0];
-			auto best_distance_sq = best_person[0]*best_person[0] + best_person[1]*best_person[1] + best_person[2]*best_person[2];
+        auto pc = obj.points3D;
+        if (pc.X.empty())
+            continue;
 
-			auto best_center_offset = std::abs(best_person[0]);
+        std::vector<float> pos = {
+            pc.X[0],
+            pc.Y[0],
+            pc.Z[0]
+        };
 
-			for (const auto& pos : person_positions){
-				float distance_sq = pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2];
-				// If clearly closer (beyond tolerance), this is the new best
-				if (distance_sq + distance_tolerance_mm * distance_tolerance_mm < best_distance_sq){
-					best_person = pos;
-					best_distance_sq = distance_sq;
-					best_center_offset = std::abs(pos[0]);
-				}
-				// If within tolerance (similar distance), prefer the more centered one
-				else if (std::abs(distance_sq - best_distance_sq) <= distance_tolerance_mm * distance_tolerance_mm){
-					auto center_offset = std::abs(pos[0]);
-					// Prefer less offset from center; if tied, prefer less vertical offset
-					if (center_offset < best_center_offset ||
-					    (center_offset == best_center_offset && std::abs(pos[1]) < std::abs(best_person[1]))){
-						best_person = pos;
-						best_center_offset = center_offset;
-					}
-				}
-			}
+        float dist2_last;
 
-			relative_position = {best_person[0], best_person[1], best_person[2]};
-		}
-	}
+        if (has_last)
+        {
+            float dx = pos[0] - last_person_pos[0];
+            float dy = pos[1] - last_person_pos[1];
+            float dz = pos[2] - last_person_pos[2];
 
-	return relative_position;
+            dist2_last = dx*dx + dy*dy + dz*dz;
+        }
+        else
+        {
+            dist2_last = pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2];
+        }
+
+        candidates.push_back({pos, dist2_last});
+    }
+
+    if (candidates.empty())
+        return relative_position;
+
+    Candidate best = candidates[0];
+
+    for (const auto& c : candidates)
+    {
+        if (!locked)
+        {
+            if (c.dist2_last < best.dist2_last)
+                best = c;
+        }
+        else
+        {
+            if (c.dist2_last < best.dist2_last * 0.5f)
+                best = c;
+        }
+    }
+
+
+    if (!locked)
+    {
+        if (best.dist2_last < LOCK_TH2)
+            locked = true;
+    }
+    else
+    {
+        if (best.dist2_last > SWITCH_TH2)
+        {
+            locked = false;
+        }
+    }
+
+    last_person_pos = best.pos;
+    has_last = true;
+
+    return best.pos;
 }
 
 

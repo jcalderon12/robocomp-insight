@@ -195,6 +195,16 @@ private:
 	float large_jump_threshold = 1000.0f; // millimeters
 	float large_jump_candidate_tolerance = 200.0f; // millimeters
 
+	std::vector<float> last_person_pos;
+	bool has_last = false;
+
+	bool locked = false;
+	const float LOCK_TH = 500.0f;   // millimeters
+    const float SWITCH_TH = 1500.0f; // millimeters
+
+    const float LOCK_TH2 = LOCK_TH * LOCK_TH;
+    const float SWITCH_TH2 = SWITCH_TH * SWITCH_TH;
+
 signals:
 	//void customSignal();
 };

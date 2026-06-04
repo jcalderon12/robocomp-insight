@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QApplication
 from rich.console import Console
 from genericworker import *
 import interfaces as ifaces
+import os
 
 sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
