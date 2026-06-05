@@ -15,8 +15,8 @@
     },
     {
         "name": "IMU",
-        "directory": "$ROBOCOMP/components/webots-bridge",
-        "command": "echo 'Not implemented'",
+        "directory": "$ROBOCOMP/components/robocomp-shadow/components/imu_phidget",
+        "command": "bin/imu_phidget etc/config",
         "restart": false,
         "buildable": false
     },
