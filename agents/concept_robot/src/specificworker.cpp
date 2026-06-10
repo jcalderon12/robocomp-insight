@@ -116,7 +116,7 @@ void SpecificWorker::compute()
 
     if (queck_affordance_active())
 	{
-		follow_target(0.7f, 0.7f, desired_distance);
+		follow_target(1.0f, 1.0f, desired_distance);
 	}
 	else{
 		stop_robot();
@@ -129,8 +129,8 @@ void SpecificWorker::compute()
 
 	last_velocities_readed = actual_velocities;	
 	
-	if (simulated)
-		update_or_create_imu_node();
+
+	update_or_create_imu_node();
 
 }
 
@@ -395,11 +395,23 @@ bool SpecificWorker::has_significant_change(const std::vector<float>& a,
 
 void SpecificWorker::update_or_create_imu_node()
 {
+	std::vector<float> acceleration, angularVel;
 
-	auto acceleration_raw = this->imu_proxy->getAcceleration();
-	auto angularVel_raw = this->imu_proxy->getAngularVel();
-	std::vector<float> acceleration = {acceleration_raw.XAcc, acceleration_raw.YAcc, acceleration_raw.ZAcc};
-	std::vector<float> angularVel = {angularVel_raw.XGyr, angularVel_raw.YGyr, angularVel_raw.ZGyr};
+	try{
+		auto acceleration_raw = this->imu_proxy->getAcceleration();
+		auto angularVel_raw = this->imu_proxy->getAngularVel();
+
+		acceleration = {acceleration_raw.XAcc, acceleration_raw.YAcc, acceleration_raw.ZAcc};
+		angularVel = {angularVel_raw.XGyr, angularVel_raw.YGyr, angularVel_raw.ZGyr};
+
+	}catch(const Ice::Exception& ex)
+    {
+        std::cout <<"IMU proxy exception:"<< ex << std::endl;
+        throw;
+    }
+
+	if (acceleration.empty() || angularVel.empty())
+		return;	
 
 	if (auto imu_node_opt = G->get_node("imu"); imu_node_opt.has_value())
 	{

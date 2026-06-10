@@ -169,7 +169,7 @@ private:
 	float prev_angle_error;
 	std::chrono::steady_clock::time_point last_follow_time;
 
-	bool print_extra_info = true;
+	bool print_extra_info = false;
 	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
 
