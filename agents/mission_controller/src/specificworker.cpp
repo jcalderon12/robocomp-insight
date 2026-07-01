@@ -140,13 +140,14 @@ void SpecificWorker::initialize()
 	mission_controller_ui.mission_list->setModel(model);
 	mission_controller_ui.mission_list->setItemDelegate(delegate);
 
+	// UI START/STOP buttons
 	connect(delegate, &MissionDelegate::missionToggleClicked, this, [this](int row)
 	{
 		Mission m = model->getMission(row);
 
+		// If RUNNING, stop it.
 		if (m.status == MissionStatus::RUNNING)
 		{
-			// STOP: Mission is currently running, stop it
 			if (mission_timing_active) {
 				auto now = std::chrono::steady_clock::now();
 				auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
@@ -177,12 +178,12 @@ void SpecificWorker::initialize()
 					std::cerr << "Error saving elapsed time to mission node: " << e.what() << std::endl;
 				}
 			}
-			
+
 			on_stopMission_clicked();
 		}
+		// If not RUNNING, activate it (with preemption if needed)
 		else if (m.status != MissionStatus::COMPLETED)
 		{
-			// ACTIVATE: Mission is not running, activate it
 			uint64_t new_mission_id = 0;
 			if (mission_row_to_node_id.count(row) > 0) {
 				new_mission_id = mission_row_to_node_id[row];
@@ -1198,7 +1199,7 @@ std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::
 		}
 			
 			// Add mission to scheduler (all new missions are USER-initiated by default)
-			mission_scheduler.addMission(mission_id, priority, MissionType::USER);
+			mission_scheduler.addMission(mission_id, priority, ControlType::USER);
 			
 			return mission_id;
 		} else {
@@ -1493,7 +1494,7 @@ void SpecificWorker::check_recording_handshake()
 				// Note: mission status was already set to "running" in the activation callback
 				// Just activate affordances here - agents will react immediately
 				on_startMission_clicked();
-				// mission_scheduler.setAffordanceReady(handshake_waiting_mission_id, true);
+				mission_scheduler.setAffordanceReady(handshake_waiting_mission_id, true);
 				
 				// Reset handshake state
 				handshake_waiting_mission_id = 0;

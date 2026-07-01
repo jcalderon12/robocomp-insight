@@ -23,9 +23,9 @@ struct MissionComparator {
 };
 
 /**
- * @brief Mission type: USER (user-initiated) vs AUTONOMOUS (system-initiated)
+ * @brief Control type: USER (user-initiated) vs AUTONOMOUS (system-initiated)
  */
-enum class MissionType {
+enum class ControlType {
     USER,
     AUTONOMOUS
 };
@@ -36,13 +36,13 @@ enum class MissionType {
 struct MissionInfo {
     uint64_t mission_id;
     int priority;           // 1-5, where 5=Critical (highest) and 1=VeryLow (lowest)
-    MissionType type;       // USER or AUTONOMOUS
+    ControlType control_type;       // USER or AUTONOMOUS
     std::string status;     // "pending", "running", "stopped", "completed"
     
-    MissionInfo() : mission_id(0), priority(3), type(MissionType::AUTONOMOUS), status("pending") {}
+    MissionInfo() : mission_id(0), priority(3), control_type(ControlType::AUTONOMOUS), status("pending") {}
     
-    MissionInfo(uint64_t id, int pr, MissionType t, const std::string& st = "pending")
-        : mission_id(id), priority(pr), type(t), status(st) {}
+    MissionInfo(uint64_t id, int pr, ControlType t, const std::string& st = "pending")
+        : mission_id(id), priority(pr), control_type(t), status(st) {}
 };
 
 /**
@@ -98,10 +98,10 @@ private:
     std::map<uint64_t, MissionInfo> missions;  // mission_id -> MissionInfo
     uint64_t current_mission_id = 0;           // Currently executing mission
     
-    // === INTERNAL STATE MACHINE (hidden from users) ===
+    // === INTERNAL STATE MACHINE  ===
     InternalState internal_state = InternalState::IDLE;
     uint64_t active_mission_id = 0;            // Mission in current execution cycle
-    std::string active_mission_type = "";      // Mission type for callbacks
+    std::string active_mission_semantic_type = "";      // Mission type for callbacks
     int idle_cycles_count = 0;                 // Cycles with no pending missions
     static constexpr int MAX_IDLE_CYCLES = 20;  // 20 cycles * 100ms = 2 seconds
     
@@ -160,10 +160,10 @@ public:
      * @param priority Priority level (1-5, where 5=Critical is highest)
      * @param type Mission type (USER or AUTONOMOUS)
      */
-    void addMission(uint64_t mission_id, int priority, MissionType type) {
+    void addMission(uint64_t mission_id, int priority, ControlType control_type) {
         // Clamp priority to [1, 5]
         priority = std::max(1, std::min(5, priority));
-        missions[mission_id] = MissionInfo(mission_id, priority, type);
+        missions[mission_id] = MissionInfo(mission_id, priority, control_type);
     }
     
     /**
@@ -221,27 +221,19 @@ public:
         auto it_candidate = missions.find(mission_id);
         auto it_current = missions.find(current_mission_id);
         
-        if (it_candidate == missions.end() || it_current == missions.end()) {
-            return false;
-        }
+        if (it_candidate == missions.end() || it_current == missions.end()) return false;
         
         const auto& candidate = it_candidate->second;
         const auto& current = it_current->second;
         
         // USER missions preempt AUTONOMOUS missions if higher priority (larger number)
-        if (candidate.type == MissionType::USER && current.type == MissionType::AUTONOMOUS) {
-            return candidate.priority > current.priority;
-        }
+        if (candidate.control_type == ControlType::USER && current.control_type == ControlType::AUTONOMOUS) return candidate.priority > current.priority;
         
         // USER missions preempt other USER missions if higher priority (larger number)
-        if (candidate.type == MissionType::USER && current.type == MissionType::USER) {
-            return candidate.priority > current.priority;
-        }
+        if (candidate.control_type == ControlType::USER && current.control_type == ControlType::USER) return candidate.priority > current.priority;
         
         // AUTONOMOUS missions preempt other AUTONOMOUS if higher priority (larger number)
-        if (candidate.type == MissionType::AUTONOMOUS && current.type == MissionType::AUTONOMOUS) {
-            return candidate.priority > current.priority;
-        }
+        if (candidate.control_type == ControlType::AUTONOMOUS && current.control_type == ControlType::AUTONOMOUS) return candidate.priority > current.priority;
         
         // AUTONOMOUS missions do NOT preempt USER missions
         return false;
@@ -439,8 +431,7 @@ public:
             }
             if (handshake_timeout_cycles > HANDSHAKE_TIMEOUT_CYCLES) {
                 handshake_retry_count++;
-                std::cout << "[SCHEDULER] Handshake timeout attempt " << handshake_retry_count 
-                          << "/" << MAX_HANDSHAKE_RETRIES << " for mission: " << handshake_mission_id << std::endl;
+                std::cout << "[SCHEDULER] Handshake timeout attempt " << handshake_retry_count << "/" << MAX_HANDSHAKE_RETRIES << " for mission: " << handshake_mission_id << std::endl;
                 
                 if (handshake_retry_count < MAX_HANDSHAKE_RETRIES) {
                     // Retry: reset cycle counter and try again
@@ -448,12 +439,9 @@ public:
                     handshake_timeout_cycles = 0;
                 } else {
                     // All retries failed - remove mission completely and go back to selecting
-                    std::cout << "[SCHEDULER] Handshake failed after " << MAX_HANDSHAKE_RETRIES 
-                              << " attempts. Removing mission from scheduler." << std::endl;
+                    std::cout << "[SCHEDULER] Handshake failed after " << MAX_HANDSHAKE_RETRIES << " attempts. Removing mission from scheduler." << std::endl;
                     removeMission(handshake_mission_id);
-                    if (event_callback) {
-                        event_callback({ ExecutionEvent::HANDSHAKE_TIMEOUT, handshake_mission_id, active_mission_type });
-                    }
+                    if (event_callback) event_callback({ ExecutionEvent::HANDSHAKE_TIMEOUT, handshake_mission_id, active_mission_semantic_type });
                     handshake_mission_id = 0;
                     handshake_retry_count = 0;
                     handshake_timeout_cycles = 0;
@@ -523,8 +511,8 @@ public:
     /**
      * @brief Get currently active mission type
      */
-    std::string getActiveMissionType() const {
-        return active_mission_type;
+    std::string getActiveMissionSemanticType() const {
+        return active_mission_semantic_type;
     }
     
     /**
@@ -586,7 +574,7 @@ private:
         
         // Signal that mission was selected
         if (event_callback) {
-            event_callback({ ExecutionEvent::MISSION_SELECTED, active_mission_id, active_mission_type });
+            event_callback({ ExecutionEvent::MISSION_SELECTED, active_mission_id, active_mission_semantic_type });
         }
         
         // Activate the mission
@@ -598,7 +586,7 @@ private:
         
         // Signal activation and transition to waiting for affordance
         if (event_callback) {
-            event_callback({ ExecutionEvent::MISSION_ACTIVATED, active_mission_id, active_mission_type });
+            event_callback({ ExecutionEvent::MISSION_ACTIVATED, active_mission_id, active_mission_semantic_type });
         }
         
         handshake_mission_id = active_mission_id;
@@ -616,7 +604,7 @@ private:
             internal_state = InternalState::RUNNING;
             
             if (event_callback) {
-                event_callback({ ExecutionEvent::MISSION_RUNNING, active_mission_id, active_mission_type });
+                event_callback({ ExecutionEvent::MISSION_RUNNING, active_mission_id, active_mission_semantic_type });
             }
         }
     }
@@ -630,11 +618,11 @@ private:
     void executeCompleted() {
         // Mission completed, perform cleanup
         if (event_callback) {
-            event_callback({ ExecutionEvent::MISSION_COMPLETED, active_mission_id, active_mission_type });
+            event_callback({ ExecutionEvent::MISSION_COMPLETED, active_mission_id, active_mission_semantic_type });
         }
         
         active_mission_id = 0;
-        active_mission_type = "";
+        active_mission_semantic_type = "";
         was_affordance_ready = false;
         
         // Transition to selecting next mission
