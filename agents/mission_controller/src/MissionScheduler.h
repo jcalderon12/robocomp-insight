@@ -113,6 +113,7 @@ private:
     static constexpr int MAX_HANDSHAKE_RETRIES = 3;
     
     bool was_affordance_ready = false;         // Track affordance state across cycles
+    bool disable_requested = false;            // Preserve external disable requests across callbacks
     
     // === CALLBACKS (for SpecificWorker to implement DSR operations) ===
     std::function<void(const ExecutionEventData&)> event_callback;
@@ -138,13 +139,19 @@ public:
     void setAutopilotEnabled(bool enabled) {
         if (enabled && internal_state == InternalState::IDLE) {
             // Initialize state machine on enabling
+            disable_requested = false;
             internal_state = InternalState::SELECTING_NEXT;
         } else if (!enabled) {
             // Reset on disabling
+            disable_requested = true;
             internal_state = InternalState::IDLE;
             active_mission_id = 0;
+            active_mission_semantic_type.clear();
             idle_cycles_count = 0;
             handshake_mission_id = 0;
+            handshake_timeout_cycles = 0;
+            handshake_retry_count = 0;
+            was_affordance_ready = false;
         }
     }
     
@@ -374,6 +381,13 @@ public:
         
         if (current_mission_id == mission_id) {
             current_mission_id = 0;
+            active_mission_id = 0;
+            active_mission_semantic_type.clear();
+            handshake_mission_id = 0;
+            handshake_timeout_cycles = 0;
+            handshake_retry_count = 0;
+            was_affordance_ready = false;
+            internal_state = InternalState::SELECTING_NEXT;
         }
         
         return true;
@@ -547,11 +561,8 @@ private:
             }
             
             if (idle_cycles_count > MAX_IDLE_CYCLES) {
-                // Timeout: create fallback follow_person mission
-                std::cout << "[SCHEDULER_IDLE_TIMEOUT] Idle timeout reached! Triggering fallback..." << std::endl;
-                if (event_callback) {
-                    event_callback({ ExecutionEvent::FALLBACK_CREATED, 0, "Follow Person" });
-                }
+                // No automatic fallback in the one-shot autopilot flow.
+                // Keep waiting so a later mission insertion can be picked up.
                 idle_cycles_count = 0;
             }
             return;
@@ -625,8 +636,9 @@ private:
         active_mission_semantic_type = "";
         was_affordance_ready = false;
         
-        // Transition to selecting next mission
-        internal_state = InternalState::SELECTING_NEXT;
+        // Transition to selecting next mission unless an external disable was requested
+        internal_state = disable_requested ? InternalState::IDLE : InternalState::SELECTING_NEXT;
+        disable_requested = false;
     }
 };
 

@@ -209,7 +209,7 @@ private:
 	// ===== DSR HELPER METHODS (Mission management in episodic graph) =====
 	
 	// Methods for mission management in episodic graph
-	std::optional<uint64_t> insert_mission_node_episodic(const std::string &mission_name, int row, int priority);
+	std::optional<uint64_t> insert_mission_node_episodic(const std::string &mission_name, int row, int priority, ControlType control_type = ControlType::USER);
 	void update_mission_status_episodic(uint64_t mission_id, const std::string &status);
 	void create_mission_target_edge(uint64_t mission_id);
 	void delete_mission_target_edge(uint64_t mission_id);
@@ -219,6 +219,9 @@ private:
 	void check_affordance_and_complete_handshake();   // Check if affordance appeared
 	void monitor_mission_execution_state();           // Monitor aff_interacting and mission status
 	void create_or_check_follow_person_mission();     // Create follow_person if it doesn't exist
+	void create_search_problem_cause_mission();       // Create search_cause once after a failure stop
+	void disable_autopilot_and_reset();               // Reset autopilot state and UI
+	bool bottle_rt_exists() const;                    // Minimal structural check
 	
 	/**
 	 * \brief Get mission type string ("Follow Person", "Search Problem Cause", etc) from mission ID.
