@@ -140,19 +140,28 @@ void SpecificWorker::initialize()
 	mission_controller_ui.mission_list->setModel(model);
 	mission_controller_ui.mission_list->setItemDelegate(delegate);
 
+	// UI START/STOP buttons
 	connect(delegate, &MissionDelegate::missionToggleClicked, this, [this](int row)
 	{
 		Mission m = model->getMission(row);
 
+		// If RUNNING, stop it.
 		if (m.status == MissionStatus::RUNNING)
 		{
-			// STOP: Mission is currently running, stop it
+			const std::string mission_type = m.type.toStdString();
 			if (mission_timing_active) {
 				auto now = std::chrono::steady_clock::now();
 				auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
 				mission_accumulated_time += elapsed;
 			}
 			mission_timing_active = false;  // Mark mission as not timing anymore
+			if (mission_type == "follow_person") {
+				follow_person_active = false;
+				last_aff_interacting_state = false;
+			}
+			if (active_mission_row == row) {
+				active_mission_row = -1;
+			}
 			
 			model->setMissionStatus(row, MissionStatus::STOPPED);
 			model->setMissionElapsedTime(row, mission_accumulated_time);
@@ -177,12 +186,27 @@ void SpecificWorker::initialize()
 					std::cerr << "Error saving elapsed time to mission node: " << e.what() << std::endl;
 				}
 			}
-			
+
 			on_stopMission_clicked();
+
+			if (autopilot_enabled && mission_type == "follow_person") {
+				if (mission_controller_ui.simulate_structural_failure_checkbox->isChecked()) {
+					std::cout << "[AUTOPILOT] follow_person is stopped and a structural failure is simulated. Creating search_cause." << std::endl;
+					create_search_problem_cause_mission();
+				}
+				else if (bottle_rt_exists()){
+					std::cout << "[AUTOPILOT] follow_person is stopped and bottle RT still exists. Disabling autopilot." << std::endl;
+					disable_autopilot_and_reset();
+				}
+				else {
+					std::cout << "[AUTOPILOT] follow_person is stopped and bottle RT does not exist. Creating search_cause." << std::endl;
+					create_search_problem_cause_mission();
+				}				
+			}
 		}
+		// If not RUNNING, activate it (with preemption if needed)
 		else if (m.status != MissionStatus::COMPLETED)
 		{
-			// ACTIVATE: Mission is not running, activate it
 			uint64_t new_mission_id = 0;
 			if (mission_row_to_node_id.count(row) > 0) {
 				new_mission_id = mission_row_to_node_id[row];
@@ -449,6 +473,7 @@ void SpecificWorker::initialize()
 		if (autopilot_enabled) {
 			// Initialize scheduler's autopilot orchestration
 			mission_scheduler.setAutopilotEnabled(true);
+				create_or_check_follow_person_mission();
 			
 			mission_controller_ui.autopilot_toggle_button->setText("ON");
 			mission_controller_ui.autopilot_toggle_button->setStyleSheet(
@@ -469,24 +494,7 @@ void SpecificWorker::initialize()
 			);
 			std::cout << "[AUTOPILOT] ✓ Autopilot mode ENABLED - State machine initialized" << std::endl;
 		} else {
-			mission_controller_ui.autopilot_toggle_button->setText("OFF");
-			mission_controller_ui.autopilot_toggle_button->setStyleSheet(
-				"QPushButton {"
-				"    background-color: #f44336;"
-				"    color: white;"
-				"    border: none;"
-				"    border-radius: 5px;"
-				"    padding: 8px 16px;"
-				"    font-weight: bold;"
-				"}"
-				"QPushButton:hover {"
-				"    background-color: #da190b;"
-				"}"
-				"QPushButton:pressed {"
-				"    background-color: #c91c00;"
-				"}"
-			);
-			std::cout << "[AUTOPILOT] ✗ Autopilot mode DISABLED" << std::endl;
+			disable_autopilot_and_reset();
 		}
 	});
 	
@@ -568,11 +576,21 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 		
 		case ExecutionEvent::MISSION_RUNNING:
 			// Handshake with episodic_memory complete, monitoring can begin
+			if (get_mission_type_from_id(event.mission_id) == "follow_person") {
+				follow_person_active = true;
+				last_aff_interacting_state = true;
+			}
 			check_affordance_and_complete_handshake();
 			break;
 		
 		case ExecutionEvent::MISSION_COMPLETED:
 			std::cout << "[SCHEDULER] Mission completed: id=" << event.mission_id << std::endl;
+			{
+				const std::string completed_type = get_mission_type_from_id(event.mission_id);
+				if (completed_type == "follow_person" || completed_type == "Search Problem Cause") {
+					disable_autopilot_and_reset();
+				}
+			}
 		
 		// Update UI: Find row for this mission and mark as COMPLETED
 		for (auto& [row, mission_id] : mission_row_to_node_id) {
@@ -618,8 +636,7 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 		break;
 		
 		case ExecutionEvent::FALLBACK_CREATED:
-			std::cout << "[SCHEDULER] Creating fallback follow_person mission" << std::endl;
-			create_or_check_follow_person_mission();
+			std::cout << "[SCHEDULER] Fallback disabled in one-shot autopilot mode" << std::endl;
 			break;
 		
 		case ExecutionEvent::HANDSHAKE_TIMEOUT:
@@ -1070,7 +1087,7 @@ void SpecificWorker::load_mission_in_debugger(int row) {
 
 // ===== METHODS FOR MISSION MANAGEMENT IN EPISODIC GRAPH =====
 
-std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::string &mission_name, int row, int priority) {
+std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::string &mission_name, int row, int priority, ControlType control_type) {
 	try {
 		// Generate unique mission name with timestamp and random number
 		auto now = std::chrono::system_clock::now();
@@ -1199,8 +1216,8 @@ std::optional<uint64_t> SpecificWorker::insert_mission_node_episodic(const std::
 			std::cerr << "Exception creating has_intention edge: " << e.what() << std::endl;
 		}
 			
-			// Add mission to scheduler (all new missions are USER-initiated by default)
-			mission_scheduler.addMission(mission_id, priority, MissionType::USER);
+			// Register the mission with the scheduler using the requested control type
+			mission_scheduler.addMission(mission_id, priority, control_type);
 			
 			return mission_id;
 		} else {
@@ -1329,7 +1346,7 @@ void SpecificWorker::create_or_check_follow_person_mission()
 	model->addMission(newMission);
 	
 	// Insert mission node in episodic graph
-	auto mission_id_opt = insert_mission_node_episodic(customName.toStdString(), row, priority_value);
+	auto mission_id_opt = insert_mission_node_episodic(customName.toStdString(), row, priority_value, ControlType::AUTONOMOUS);
 	
 	if (mission_id_opt.has_value())
 	{
@@ -1354,6 +1371,77 @@ void SpecificWorker::create_or_check_follow_person_mission()
 	{
 		std::cerr << "[FALLBACK_ERROR] ✗ Failed to insert mission node" << std::endl;
 	}
+}
+
+void SpecificWorker::create_search_problem_cause_mission()
+{
+	static int search_attempt_count = 1;
+	QString customName = QString("search_cause_attempt_%1").arg(search_attempt_count++);
+	QString missionType = "Search Problem Cause";
+	int priority_value = 5;
+
+	Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};
+	int row = model->rowCount();
+	model->addMission(newMission);
+
+	auto mission_id_opt = insert_mission_node_episodic(customName.toStdString(), row, priority_value, ControlType::AUTONOMOUS);
+	if (!mission_id_opt.has_value()) {
+		std::cerr << "[SEARCH_CAUSE_ERROR] Failed to insert mission node" << std::endl;
+		return;
+	}
+
+	std::cout << "[AUTOPILOT] Search Problem Cause mission created" << std::endl;
+}
+
+bool SpecificWorker::bottle_rt_exists() const
+{
+	if (!G) {
+		return false;
+	}
+
+	auto robot_opt = G->get_node("robot");
+	auto bottle_opt = G->get_node("bottle");
+	if (!robot_opt.has_value() || !bottle_opt.has_value()) {
+		return false;
+	}
+
+	auto rt_edges = G->get_edges_by_type("RT");
+	for (const auto& edge : rt_edges) {
+		if (edge.from() == robot_opt.value().id() && edge.to() == bottle_opt.value().id()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void SpecificWorker::disable_autopilot_and_reset()
+{
+	autopilot_enabled = false;
+	mission_scheduler.setAutopilotEnabled(false);
+	follow_person_active = false;
+	last_aff_interacting_state = false;
+	handshake_waiting_mission_id = 0;
+	waiting_mission_row = -1;
+	waiting_mission_id = 0;
+
+	mission_controller_ui.autopilot_toggle_button->setText("OFF");
+	mission_controller_ui.autopilot_toggle_button->setStyleSheet(
+		"QPushButton {"
+		"    background-color: #f44336;"
+		"    color: white;"
+		"    border: none;"
+		"    border-radius: 5px;"
+		"    padding: 8px 16px;"
+		"    font-weight: bold;"
+		"}"
+		"QPushButton:hover {"
+		"    background-color: #da190b;"
+		"}"
+		"QPushButton:pressed {"
+		"    background-color: #c91c00;"
+		"}"
+	);
+	std::cout << "[AUTOPILOT] Autopilot mode DISABLED" << std::endl;
 }
 
 void SpecificWorker::check_affordance_and_complete_handshake()
@@ -1495,7 +1583,7 @@ void SpecificWorker::check_recording_handshake()
 				// Note: mission status was already set to "running" in the activation callback
 				// Just activate affordances here - agents will react immediately
 				on_startMission_clicked();
-				// mission_scheduler.setAffordanceReady(handshake_waiting_mission_id, true);
+				mission_scheduler.setAffordanceReady(handshake_waiting_mission_id, true);
 				
 				// Reset handshake state
 				handshake_waiting_mission_id = 0;
