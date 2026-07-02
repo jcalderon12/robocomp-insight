@@ -29,6 +29,9 @@ agent_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if agent_root not in sys.path:
     sys.path.insert(0, agent_root)
 
+MM_TO_M = 0.001
+M_TO_MM = 1000
+
 from src.logger import Logger
 
 console = Console(highlight=False)
@@ -154,13 +157,16 @@ class CausesSimulator:
         self.historical = []
         self.engine_wrapper = EnginePybullet(self)
         self.forwardSpeed = 0.0
+        # Small Z offset in millimeters to place robot slightly above the ground
+        # Default 0.04 mm as requested (can be adjusted later)
+        self.robot_z_offset_mm = 0.04
 
         # Engine parameters
         self.physicsClient = p.connect(p.GUI)
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
-        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15, cameraTargetPosition=[-1.3, -0.5, 0.2])
-        self.dt = 1./62. # Simulation time step (60 Hz)
-        p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
+        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15, cameraTargetPosition=[0.8, -0.9, 0.2])
+        self.dt = 1./120. 
+        p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1, numSolverIterations=20)
         self.flags = p.URDF_USE_INERTIA_FROM_FILE
 
         # Simulation scene parameters
@@ -220,8 +226,9 @@ class CausesSimulator:
         obj = {}
         obj[HISTORY] = self.imu_history
         obj[GENERATED_INSTANCES] = self.current_cause.get_generated_instances()
-        obj[BOTTLE_POSITION] = p.getBasePositionAndOrientation(self.bottle)[0]
-        obj[BOTTLE_ORIENTATION] = p.getBasePositionAndOrientation(self.bottle)[1]
+        bottle_pos_m, bottle_orn = p.getBasePositionAndOrientation(self.bottle)
+        obj[BOTTLE_POSITION] = [coord * M_TO_MM for coord in bottle_pos_m]
+        obj[BOTTLE_ORIENTATION] = bottle_orn
         self.historical.append(obj)
 
     def send_history_to_parent(self) -> None:
@@ -244,18 +251,38 @@ class CausesSimulator:
         """
         return SimulationScene.model_validate_json(open(simulation_scene_file, 'r').read())
 
+    def mm_to_m(self, value):
+        """Convert a scalar or sequence from millimeters to meters."""
+        if isinstance(value, (list, tuple)):
+            return [v * MM_TO_M for v in value]
+        return value * MM_TO_M
+
     def apply_simulation_params(self) -> None:
         """Apply the currently stored simulation scene parameters to the real scene.
+
+        The JSON/simulation scene stores positions in millimeters, but PyBullet
+        expects meters internally.
         """
         p.setGravity(0, 0, self.simulation_scene.gravity)
-        self.initial_position = self.simulation_scene.initial_robot_position
+        # Apply small Z offset (in millimeters) so robot appears slightly above the ground
+        robot_init_pos_mm = list(self.simulation_scene.initial_robot_position)
+        # Ensure list has at least 3 elements
+        while len(robot_init_pos_mm) < 3:
+            robot_init_pos_mm.append(0.0)
+        robot_init_pos_mm[2] = robot_init_pos_mm[2] + getattr(self, 'robot_z_offset_mm', 0.04)
+        self.initial_position = self.mm_to_m(robot_init_pos_mm)
         self.initial_orientation = self.simulation_scene.initial_robot_orientation
-        self.bottle_position = self.simulation_scene.bottle_position
+        self.bottle_position = self.mm_to_m(self.simulation_scene.bottle_position)
         self.bottle_orientation = self.simulation_scene.bottle_orientation
         self.problem_position = self.simulation_scene.problem_position
         self.problem_orientation = self.simulation_scene.problem_orientation
         self.simulation_length = self.simulation_scene.simulation_length
-        self.num_of_repetitions = self.simulation_scene.num_of_repetitions
+        # If cause uses grid-based generation, derive repetitions from grid dimensions
+        if hasattr(self.current_cause, 'grid_dimensions'):
+            grid_dims = getattr(self.current_cause, 'grid_dimensions', [10, 10])
+            self.num_of_repetitions = grid_dims[0] * grid_dims[1]
+        else:
+            self.num_of_repetitions = getattr(self.current_cause, 'num_of_repetitions', None) or self.simulation_scene.num_of_repetitions
         self.list_of_target_velocities = self.simulation_scene.list_of_target_velocities
 
     def simulate(self) -> None:
@@ -284,6 +311,7 @@ class CausesSimulator:
         """
         self.intialState = p.saveState() # Save clean state
         for i in range(self.num_of_repetitions):
+            self.current_repetition = i
             self.current_cause.apply(self.engine_wrapper)
             self.init_imu_record()
             self.simulate()
@@ -346,7 +374,8 @@ class CausesSimulator:
     
     def instantiate_body(self, body_file:str, body_position:tuple, identifier:str=str(uuid4())):
         """ ENGINE: Spawn body """
-        self.loaded_bodies.append(p.loadURDF(body_file, basePosition=body_position))
+        body_position_m = self.mm_to_m(body_position)
+        self.loaded_bodies.append(p.loadURDF(body_file, basePosition=body_position_m))
 
     def set_robot_wheel_moving(self, simplified_wheel_name:str, moving:bool):
         """ ENGINE: Set robot wheel moving """
@@ -494,11 +523,24 @@ class CausesSimulator:
             link_name_to_id[link_name] = i
         return link_name_to_id
 
+    def save_raw_data(self, output_dir: str = "logs/imu_raw") -> None:
+        """Save raw IMU historical data to a JSON file before sending to parent process.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        cause_name = self.initial_cause.name  # ya existe en todas las subclases de Cause
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        filepath = os.path.join(output_dir, f"{cause_name}_{timestamp}.json")
+        
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(self.historical, f)
+        
+        self.logger.log(f"Raw data saved to '{filepath}'", style="bold cyan")
+
 
 def main():
     # Init logger
     os.path.exists("logs/causes_simulator") or os.makedirs("logs/causes_simulator")
-    logger = Logger(f"logs/causes_simulator/causes_simulator_{time.strftime("%Y%m%d_%H%M%S")}.log")
+    logger = Logger(f"logs/causes_simulator/causes_simulator_{time.strftime('%Y%m%d_%H%M%S')}.log")
     logger.log("Starting causes simulator...")
     parser = argparse.ArgumentParser(
         prog = "Causes simulator",
@@ -525,6 +567,7 @@ def main():
             Combined number of recordings: {sum(len(h[HISTORY][TIMESTAMP]) for h in simulator.historical)}""")
         
         logger.log("Sending historicals to parent process...")
+        simulator.save_raw_data() 
         simulator.send_history_to_parent()
         
         logger.log("Sent. Exiting...")

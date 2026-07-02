@@ -12,6 +12,7 @@ class CauseWheel(BaseModel, Cause):
     """A wheel that stops working."""
 
     name:Literal["wheel"]
+    num_of_repetitions:int | None = None
 
     
     _wheel_simple_random:float | None = PrivateAttr(default=None)

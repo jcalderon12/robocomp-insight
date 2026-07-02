@@ -2,15 +2,14 @@
     {
         "name":"bump",
         "bump_file": "../../etc/URDFs/bump/bump_25x5cm.urdf",
-        "bump_x_range": 0.25,
-        "bump_y_range": 0.25,
+        "bump_x_range": 500.0,
+        "bump_y_range": 500.0,
         "bump_z_range": 0.0,
-        "bump_x_origin": 0.0,
-        "bump_y_origin": 0.01,
-        "bump_z_origin": 0.004
+        "grid_dimensions": [10, 10]
     },
     {
         "name":"wheel",
-        "wheel_wheel": "BR"
+        "wheel_wheel": "BR",
+        "num_of_repetitions": 40
     }
 ]
