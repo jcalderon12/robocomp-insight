@@ -33,7 +33,6 @@
 //#define HIBERNATION_ENABLED
 
 #include <genericworker.h>
-#include <nanoflann.hpp>
 #include <opencv2/opencv.hpp>
 #include <chrono>
 
