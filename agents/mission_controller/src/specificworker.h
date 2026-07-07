@@ -222,7 +222,9 @@ private:
 	void create_search_problem_cause_mission();       // Create search_cause once after a failure stop
 	void disable_autopilot_and_reset();               // Reset autopilot state and UI
 	bool bottle_rt_exists() const;                    // Minimal structural check
-	
+	bool problem_node_exists() const;                 // Check if problem node exists in DSR graph
+	void stop_active_mission(); 					  // Stop currently active mission and update UI
+
 	/**
 	 * \brief Get mission type string ("Follow Person", "Search Problem Cause", etc) from mission ID.
 	 * \param mission_id The DSR mission node ID.
