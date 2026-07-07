@@ -67,7 +67,7 @@ SpecificWorker::~SpecificWorker()
 
 void SpecificWorker::initialize()
 {
-    std::cout << "initialize worker" << std::endl;
+	std::cout << "initialize worker" << std::endl;	
 	//dsr update signals
 	//connect(G.get(), &DSR::DSRGraph::update_node_signal, this, &SpecificWorker::modify_node_slot);
 	//connect(G.get(), &DSR::DSRGraph::update_edge_signal, this, &SpecificWorker::modify_edge_slot);
@@ -168,7 +168,48 @@ void SpecificWorker::add_node(){
 
 	// If the node does not exist, create it and add it to the graph
 	if(!test_optional_node.has_value()) {
+		// Create the node and calculate it position for visualization
 		DSR::Node test_node = DSR::Node::create<object_node_type>(node_name);
+		float robot_pos_x = 0.0f, robot_pos_y = 0.0f;
+		try {
+			auto robot_opt = G->get_node("robot");
+			if (robot_opt.has_value()) {
+				auto robot_node = robot_opt.value();
+				auto pos_x_it = robot_node.attrs().find("pos_x");
+				auto pos_y_it = robot_node.attrs().find("pos_y");
+				if (pos_x_it != robot_node.attrs().end()) {
+					if (auto* pf = std::get_if<float>(&pos_x_it->second.value())) {
+						robot_pos_x = *pf;
+					}
+				}
+				if (pos_y_it != robot_node.attrs().end()) {
+					if (auto* pf = std::get_if<float>(&pos_y_it->second.value())) {
+						robot_pos_y = *pf;
+					}
+				}
+			}
+		} catch (const std::exception& e) {
+			std::cerr << "Error getting robot position: " << e.what() << std::endl;
+		}
+
+		// Positions arranged in rows of 3 missions
+		float mission_pos_x = robot_pos_x + (missions_in_current_row * 300.0f);
+		float mission_pos_y = robot_pos_y + current_y_offset;
+
+		// Add positions
+		DSR::Attribute pos_x_attr, pos_y_attr;
+		pos_x_attr.value(mission_pos_x);
+		pos_y_attr.value(mission_pos_y);
+		test_node.attrs()["pos_x"] = pos_x_attr;
+		test_node.attrs()["pos_y"] = pos_y_attr;
+
+		// Update layout counters
+		missions_in_current_row++;
+		if (missions_in_current_row >= 3) {
+			missions_in_current_row = 0;
+			current_y_offset += 300.0f; // Move down for the next row
+		}
+
 		G->insert_node(test_node);
 		
 		// Add the new node name to the list box (existing test nodes) if it doesn't already exist

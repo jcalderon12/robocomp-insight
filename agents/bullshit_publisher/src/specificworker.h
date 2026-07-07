@@ -55,6 +55,9 @@ public:
      */
 	~SpecificWorker();
 
+	// Mission layout control for graph visualization
+	int missions_in_current_row = 0;
+	float current_y_offset = 200.0f;
 
 public slots:
 
@@ -118,6 +121,8 @@ private:
 	QWidget bullshit_publisher_widget;
 
 	std::unique_ptr<DSR::RT_API> rt;
+
+	
 
 signals:
 	//void customSignal();
