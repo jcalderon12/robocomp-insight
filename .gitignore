@@ -295,3 +295,32 @@ agents/inner_simulator/*runs/
 agents/inner_simulator/sim_output.json
 agents/mission_controller/recorded_missions/*
 agents/inner_simulator/src/sim_scene.json
+
+# # #
+
+# Configuración vscode
+.vscode/
+
+# Prueba y logs
+**/testing.txt
+**/test_*.py
+**/test_*.cpp
+**/run_cpp_benchmarks.sh
+
+# Archivos generados
+**/.qglviewer.xml
+**/generated/
+**/.qt/
+
+# Documentación local y scripts personales
+**/documentation/
+**/keyframes_and_changes_*.txt
+mission_plan.md
+pm.sh
+DEBUGGER_IMPLEMENTATION.md
+test_api.h
+
+# Ignorar archivos de test y ejemplos en episodic_memory
+agents/episodic_memory/*_test.txt
+agents/episodic_memory/python/example_*.py
+agents/episodic_memory/python/test_*.py   
