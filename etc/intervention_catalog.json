@@ -1,0 +1,107 @@
+{
+  "schema_version": "1.0",
+  "description": "Closed catalog of executable intervention primitives for the INSIGHT inner simulator. Hypotheses produced by the semantic agent must ground their simulation_blueprint exclusively in these primitives and assets. Each intervention maps to a Cause implementation discoverable by the causes simulator (agents/inner_simulator).",
+  "interventions": {
+    "spawn_static_object": {
+      "description": "Place a static physical object in the environment before the episode replay starts. Models undetected obstacles lying on the floor (bumps, cables, small items) that the robot may drive over or collide with.",
+      "cause_name": "bump",
+      "phase": "setup",
+      "uses_activation_window": false,
+      "parameters": {
+        "asset": {
+          "type": "asset_ref",
+          "required": true,
+          "description": "Identifier of an asset from the 'assets' section."
+        },
+        "position_range": {
+          "type": "range3d",
+          "required": true,
+          "bounds": {"x": [-6.0, 3.0], "y": [-3.0, 3.0], "z": [0.0, 0.3]},
+          "units": "m",
+          "description": "Per-axis [min, max] sampling range (world frame, meters) for the object placement. Propose a range informed by the robot trajectory, not a single point."
+        }
+      }
+    },
+    "disable_wheel": {
+      "description": "One of the robot's wheels stops responding at some instant inside the activation window. Models a motor, driver or transmission failure in the locomotion subsystem.",
+      "cause_name": "wheel",
+      "phase": "runtime",
+      "uses_activation_window": true,
+      "parameters": {
+        "wheel_id": {
+          "type": "enum",
+          "required": true,
+          "values": ["FL", "FR", "BL", "BR"],
+          "description": "Which wheel fails: front-left, front-right, back-left, back-right."
+        }
+      }
+    },
+    "apply_external_force": {
+      "description": "An external force is applied to a body while the simulation time is inside the activation window. Models pushes, contacts with people or objects, or strong air flows acting on the robot or on the carried object.",
+      "cause_name": "external_force",
+      "phase": "runtime",
+      "uses_activation_window": true,
+      "parameters": {
+        "target": {
+          "type": "enum",
+          "required": true,
+          "values": ["robot", "bottle"],
+          "description": "Body the force acts on."
+        },
+        "force_range": {
+          "type": "range3d",
+          "required": true,
+          "bounds": {"x": [-500.0, 500.0], "y": [-500.0, 500.0], "z": [-200.0, 200.0]},
+          "units": "N",
+          "description": "Per-axis [min, max] sampling range for the force vector (world frame, Newtons). Use small magnitudes (1-50 N) for the bottle and larger ones for the robot."
+        }
+      }
+    },
+    "set_friction": {
+      "description": "Change the lateral friction coefficient of the floor for the whole episode. Models slippery or wet surfaces that degrade traction.",
+      "cause_name": "friction",
+      "phase": "setup",
+      "uses_activation_window": false,
+      "parameters": {
+        "target": {
+          "type": "enum",
+          "required": true,
+          "values": ["floor"],
+          "description": "Surface whose friction changes."
+        },
+        "lateral_friction_range": {
+          "type": "range1d",
+          "required": true,
+          "bounds": [0.005, 2.0],
+          "description": "[min, max] sampling range for the lateral friction coefficient (PyBullet default floor friction is ~1.0; slippery is < 0.3)."
+        }
+      }
+    }
+  },
+  "assets": {
+    "bump_100x5cm": {
+      "urdf": "etc/URDFs/bump/bump_100x5cm.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Low-profile bump strip, 100 cm wide and 5 cm tall. Hard to detect for obstacle classifiers.",
+      "approx_dimensions_m": [1.0, 0.05, 0.05]
+    },
+    "bump_100x10cm": {
+      "urdf": "etc/URDFs/bump/bump_100x10cm.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Bump strip, 100 cm wide and 10 cm tall.",
+      "approx_dimensions_m": [1.0, 0.1, 0.1]
+    },
+    "cylinder_bump_10m": {
+      "urdf": "etc/URDFs/bump/cylinder_bump_10m.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Long cylindrical bump (cable-like), 10 m long.",
+      "approx_dimensions_m": [10.0, 0.05, 0.05]
+    },
+    "cylinder": {
+      "urdf": "etc/URDFs/cylinder/cylinder.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Generic standing cylinder obstacle.",
+      "approx_dimensions_m": [0.2, 0.2, 0.5]
+    }
+  }
+}
