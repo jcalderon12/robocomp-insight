@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field, create_model
 from simulation_scene import SimulationScene
 from engines.engine_pybullet import EnginePybullet
 from rich.console import Console
-from src.logger import Logger
+# Bare import: when run as a subprocess (python3 src/causes_simulator.py) only the
+# script's directory is on sys.path, so 'src.logger' is not importable.
+from logger import Logger
 import os
 import copy
 import traceback
@@ -122,12 +124,12 @@ CauseWrapper = create_cause_model(DynamicUnion)
 
 class CausesSimulator:
 
-    def __init__(self, cause, simulation_scene, pipe, logger, real_time=False):
-        
+    def __init__(self, cause, simulation_scene, pipe, logger, real_time=False, gui=False):
+
 
         # ================ PYBULLET SIMULATION SETUP  ================
         # ============================================================
-        
+
         # Maps
         self.initialze_wheel_simplified_names_map()
         self.initialize_wheels_movement_map()
@@ -137,7 +139,7 @@ class CausesSimulator:
         # Cause-related parameters
         self.initial_cause:Cause = CauseWrapper.model_validate_json(cause).cause
         self.current_cause:Cause = copy.deepcopy(self.initial_cause)
-        
+
         # Working parameters
         self.pipe = int(pipe)
         self.realTime = real_time
@@ -147,10 +149,11 @@ class CausesSimulator:
         self.engine_wrapper = EnginePybullet(self)
         self.forwardSpeed = 0.0
 
-        # Engine parameters
-        self.physicsClient = p.connect(p.GUI)
-        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
-        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15, cameraTargetPosition=[-1.3, -0.5, 0.2])
+        # Engine parameters. Headless (DIRECT) by default so many instances can run in parallel.
+        self.physicsClient = p.connect(p.GUI if gui else p.DIRECT)
+        if gui:
+            p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+            p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15, cameraTargetPosition=[-1.3, -0.5, 0.2])
         self.dt = 1./62. # Simulation time step (60 Hz)
         p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
         self.flags = p.URDF_USE_INERTIA_FROM_FILE
@@ -162,12 +165,21 @@ class CausesSimulator:
         # LOAD PLANE IN THE SIMULATION
         self.plane = p.loadURDF("../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0]) 
 
-        # LOAD ROBOT IN THE SIMULATION
-        self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", [self.initial_position[0], self.initial_position[1], self.initial_position[2]], flags=self.flags)        
-        
+        # LOAD ROBOT IN THE SIMULATION. The initial orientation matters: episodes may
+        # start with the robot rotated, and the bottle pose is derived from the robot
+        # frame, so ignoring it would place the bottle off the tray.
+        self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", [self.initial_position[0], self.initial_position[1], self.initial_position[2]], self._as_quaternion(self.initial_orientation), flags=self.flags)
+
         # LOAD BOTTLE IN THE SIMULATION
-        self.bottle = p.loadURDF("../../etc/URDFs/bottle/bottle.urdf", [self.bottle_position[0], self.bottle_position[1], self.bottle_position[2]], flags=self.flags)
-        
+        self.bottle = p.loadURDF("../../etc/URDFs/bottle/bottle.urdf", [self.bottle_position[0], self.bottle_position[1], self.bottle_position[2]], self._as_quaternion(self.bottle_orientation), flags=self.flags)
+
+        self.bodies_by_name = {
+            "robot": self.robot,
+            "bottle": self.bottle,
+            "floor": self.plane,
+            "plane": self.plane,
+        }
+
         # ================ IMU SENSOR SETUP  ================
         # ====================================================
 
@@ -227,6 +239,18 @@ class CausesSimulator:
 
     # ================ SIMULATION  ===============
     # ==================================================
+    @staticmethod
+    def _as_quaternion(value) -> list:
+        """[x, y, z, w] quaternion; degenerate values (all-zeros placeholder in
+        old scene files) fall back to the identity."""
+        try:
+            quaternion = [float(component) for component in value]
+        except (TypeError, ValueError):
+            quaternion = []
+        if len(quaternion) != 4 or sum(component * component for component in quaternion) < 1e-9:
+            return [0.0, 0.0, 0.0, 1.0]
+        return quaternion
+
     def load_simulation_scene_json(self, simulation_scene_file: str) -> SimulationScene:
         """Load the simulation scene parameters from a JSON file.
             Parameters:
@@ -347,7 +371,26 @@ class CausesSimulator:
     def set_gravity(self, gravity:float=-9.81):
         """ ENGINE: Set gravity """
         p.setGravity(0, 0, gravity)
-        
+
+    def get_body_id_by_name(self, target_name:str) -> int:
+        """ ENGINE: Resolve a semantic body name to its PyBullet body id """
+        if target_name not in self.bodies_by_name:
+            raise ValueError(f"Unknown simulation body '{target_name}'. Known bodies: {sorted(self.bodies_by_name)}")
+        return self.bodies_by_name[target_name]
+
+    def apply_external_force(self, target_name:str, force_vector:list):
+        """ ENGINE: Apply a world-frame force (N) to a body's base for the next step.
+        PyBullet clears external forces after each stepSimulation, so causes must
+        re-apply it every step while their activation window is open. """
+        body_id = self.get_body_id_by_name(target_name)
+        position, _ = p.getBasePositionAndOrientation(body_id)
+        p.applyExternalForce(body_id, -1, force_vector, position, p.WORLD_FRAME)
+
+    def set_lateral_friction(self, target_name:str, value:float):
+        """ ENGINE: Set the lateral friction coefficient of a body's base link """
+        body_id = self.get_body_id_by_name(target_name)
+        p.changeDynamics(body_id, -1, lateralFriction=value)
+
     def get_simulation_time(self):
         """ ENGINE: Get sim time """
         return self.simulationTime
@@ -502,11 +545,12 @@ def main():
     parser.add_argument('-s', '--simulation_scene', required=True, help="Path to the JSON file defining the simulation scene parameters")
     parser.add_argument('-p', '--pipe', required=True, help="Name of the pipe with which inner simulator will comunicate with the cause simulator instance")
     parser.add_argument('-rt', '--real_time', required=False, help="Run simulations at real-time speed. Not recommended outside of debugging.", action='store_true')
+    parser.add_argument('-g', '--gui', required=False, help="Open the PyBullet GUI. Default is headless (DIRECT), required to run many instances in parallel.", action='store_true')
     args = parser.parse_args()
 
     try:
         logger.log("Arguments parsed successfully.")
-        simulator = CausesSimulator(args.cause, args.simulation_scene, args.pipe, logger, args.real_time)
+        simulator = CausesSimulator(args.cause, args.simulation_scene, args.pipe, logger, args.real_time, args.gui)
         
         logger.log("Starting simulations...")
         simulator.doSimulations()    
