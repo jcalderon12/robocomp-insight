@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 import requests
 
 from src.hypothesis_config import HypothesisGeneratorConfig
+from src.intervention_catalog import InterventionCatalog
 
 
 TOP_LEVEL_KEYS = {
@@ -38,12 +39,14 @@ HYPOTHESIS_KEYS = {
     "expected_observations",
 }
 
+# Blueprint schema v2: grounded in the intervention catalog. 'intervention' is a
+# catalog id (or null for hypotheses the catalog cannot test), 'parameters' must
+# match the intervention's parameter spec, and 'activation_window' is required
+# whenever the intervention declares uses_activation_window.
 BLUEPRINT_KEYS = {
-    "action",
-    "entity",
-    "reference_frame",
+    "intervention",
+    "parameters",
     "activation_window",
-    "asset",
 }
 
 
@@ -126,67 +129,53 @@ def _validate_activation_window(window: Any) -> dict[str, float]:
     }
 
 
-def _validate_geometry(value: Any) -> Optional[dict[str, Any]]:
-    if value in (None, {}):
-        return None
-    if not isinstance(value, dict):
-        raise ValueError("simulation_blueprint.geometry must be an object or null.")
-    kind = str(value.get("kind", "")).strip()
-    if kind not in {"box", "cylinder", "mesh"}:
-        raise ValueError("geometry.kind must be one of: box, cylinder, mesh.")
-    dimensions = value.get("dimensions")
-    if not isinstance(dimensions, list) or not dimensions:
-        raise ValueError("geometry.dimensions must be a non-empty list.")
-    dims = []
-    for item in dimensions:
-        try:
-            numeric = float(item)
-        except (TypeError, ValueError):
-            raise ValueError("geometry.dimensions must contain numbers.")
-        if numeric <= 0:
-            raise ValueError("geometry.dimensions values must be > 0.")
-        dims.append(numeric)
+def _ground_blueprint(
+    blueprint: Any,
+    catalog: InterventionCatalog,
+) -> tuple[dict[str, Any], bool, str]:
+    """Normalize a v2 blueprint against the catalog.
 
-    position_range = value.get("position_range")
-    if not isinstance(position_range, dict):
-        raise ValueError("geometry.position_range must be an object.")
-    normalized_range = {}
-    for axis in ("x", "y", "z"):
-        axis_range = position_range.get(axis)
-        if not isinstance(axis_range, list) or len(axis_range) != 2:
-            raise ValueError(f"geometry.position_range.{axis} must be a two-value list.")
-        try:
-            low = float(axis_range[0])
-            high = float(axis_range[1])
-        except (TypeError, ValueError):
-            raise ValueError(f"geometry.position_range.{axis} must contain numbers.")
-        if low > high:
-            raise ValueError(f"geometry.position_range.{axis} must have low <= high.")
-        normalized_range[axis] = [low, high]
+    Returns (normalized_blueprint, testable, untestable_reason). Malformed
+    structure raises ValueError (rejects the batch); grounding failures do not
+    reject the batch, they mark the hypothesis as untestable.
+    """
+    if not isinstance(blueprint, dict):
+        raise ValueError("Each hypothesis requires a simulation_blueprint object.")
+    blueprint_missing = BLUEPRINT_KEYS - set(blueprint)
+    if blueprint_missing:
+        raise ValueError(f"simulation_blueprint missing keys: {sorted(blueprint_missing)}")
 
-    return {
-        "kind": kind,
-        "dimensions": dims,
-        "position_range": normalized_range,
+    grounding = catalog.ground_blueprint(blueprint)
+
+    try:
+        activation_window = _validate_activation_window(blueprint.get("activation_window"))
+    except ValueError:
+        # Only interventions that use the window require a valid one; elsewhere
+        # it is tolerated so the LLM can always emit it without being penalized.
+        if grounding.testable and grounding.uses_activation_window:
+            raise
+        activation_window = None
+
+    intervention_name = blueprint.get("intervention")
+    if grounding.testable:
+        normalized = dict(grounding.blueprint)
+        normalized["activation_window"] = activation_window
+        return normalized, True, ""
+
+    normalized = {
+        "intervention": intervention_name if intervention_name is None else str(intervention_name).strip(),
+        "parameters": blueprint.get("parameters") if isinstance(blueprint.get("parameters"), dict) else {},
+        "activation_window": activation_window,
     }
+    return normalized, False, grounding.reason
 
 
-def _validate_asset(value: Any) -> Optional[dict[str, Any]]:
-    if value in (None, {}):
-        return None
-    if not isinstance(value, dict):
-        raise ValueError("simulation_blueprint.asset must be an object or null.")
-    asset_kind = str(value.get("kind", "")).strip()
-    asset_hint = str(value.get("hint", "")).strip()
-    if not asset_kind or not asset_hint:
-        raise ValueError("simulation_blueprint.asset requires non-empty 'kind' and 'hint'.")
-    return {
-        "kind": asset_kind,
-        "hint": asset_hint,
-    }
-
-
-def validate_hypothesis_batch(batch: dict[str, Any], internal_count: int, external_count: int) -> dict[str, Any]:
+def validate_hypothesis_batch(
+    batch: dict[str, Any],
+    internal_count: int,
+    external_count: int,
+    catalog: InterventionCatalog,
+) -> dict[str, Any]:
     if not isinstance(batch, dict):
         raise ValueError("Batch output must be a JSON object.")
 
@@ -242,23 +231,13 @@ def validate_hypothesis_batch(batch: dict[str, Any], internal_count: int, extern
         )
 
         blueprint = hypothesis.get("simulation_blueprint")
-        if not isinstance(blueprint, dict):
-            raise ValueError("Each hypothesis requires a simulation_blueprint object.")
-        blueprint_missing = BLUEPRINT_KEYS - set(blueprint)
-        if blueprint_missing:
-            raise ValueError(f"simulation_blueprint missing keys: {sorted(blueprint_missing)}")
-
-        normalized_blueprint = {
-            "action": str(blueprint.get("action", "")).strip(),
-            "entity": str(blueprint.get("entity", "")).strip(),
-            "reference_frame": str(blueprint.get("reference_frame", "")).strip(),
-            "activation_window": _validate_activation_window(blueprint.get("activation_window")),
-            "asset": _validate_asset(blueprint.get("asset")),
-        }
-        if not normalized_blueprint["action"] or not normalized_blueprint["entity"] or not normalized_blueprint["reference_frame"]:
-            raise ValueError("simulation_blueprint.action/entity/reference_frame must be non-empty.")
-        if family == "external" and not normalized_blueprint["asset"]:
-            raise ValueError("External hypotheses must define asset information.")
+        normalized_blueprint, testable, untestable_reason = _ground_blueprint(blueprint, catalog)
+        if not testable:
+            llm_reason = str(hypothesis.get("untestable_reason", "")).strip()
+            if not untestable_reason:
+                untestable_reason = llm_reason or "No catalog intervention can reproduce this hypothesis."
+            elif llm_reason and llm_reason not in untestable_reason:
+                untestable_reason = f"{untestable_reason} Generator note: {llm_reason}"
 
         normalized_hypotheses.append(
             {
@@ -269,6 +248,8 @@ def validate_hypothesis_batch(batch: dict[str, Any], internal_count: int, extern
                 "rationale": str(hypothesis.get("rationale", "")).strip(),
                 "confidence": confidence,
                 "grounding": grounding,
+                "testable": testable,
+                "untestable_reason": untestable_reason,
                 "simulation_blueprint": normalized_blueprint,
                 "expected_observations": expected_observations,
             }
@@ -290,7 +271,11 @@ def validate_hypothesis_batch(batch: dict[str, Any], internal_count: int, extern
     return normalized
 
 
-def build_generation_prompt(context: dict[str, Any], config: HypothesisGeneratorConfig) -> str:
+def build_generation_prompt(
+    context: dict[str, Any],
+    config: HypothesisGeneratorConfig,
+    catalog: InterventionCatalog,
+) -> str:
     schema_description = {
         "top_level": {
             "schema_version": "string",
@@ -313,17 +298,13 @@ def build_generation_prompt(context: dict[str, Any], config: HypothesisGenerator
             "rationale": "string",
             "confidence": "float in [0,1]",
             "grounding": ["string", "..."],
+            "untestable_reason": "string, only when simulation_blueprint.intervention is null",
             "simulation_blueprint": {
-                "action": "string",
-                "entity": "string",
-                "reference_frame": "string",
+                "intervention": "one intervention id from intervention_catalog, or null",
+                "parameters": "object matching the chosen intervention's parameter spec",
                 "activation_window": {
                     "start_fraction": "float in [0,1]",
                     "end_fraction": "float in [0,1]",
-                },
-                "asset": {
-                    "kind": "string",
-                    "hint": "string",
                 },
             },
             "expected_observations": ["string", "..."],
@@ -336,12 +317,14 @@ def build_generation_prompt(context: dict[str, Any], config: HypothesisGenerator
         f"Generate exactly {config.internal_count} internal hypotheses and {config.external_count} external hypotheses.",
         "Do not include markdown, comments, or introductory prose.",
         "Do not cite this prompt or describe the generation process.",
-        "Do not propose abstract explanations with no simulation blueprint.",
         "Keep the output minimal: only use the fields shown in the required schema.",
         "Internal hypotheses must be grounded only in robot subsystems supported by the robot description capsule.",
         "External hypotheses must be grounded in local physical changes in the environment.",
-        "For external hypotheses, include an asset object with a short kind and hint.",
-        "Do not include parameter ranges or geometry.",
+        "Each simulation_blueprint must instantiate exactly one intervention from intervention_catalog.",
+        "Blueprint parameters must follow the chosen intervention's parameter spec: respect types, enum values and numeric bounds.",
+        "For range parameters propose informed [min, max] sampling ranges (priors), not single points; the simulator samples inside them.",
+        "Set activation_window to the fraction of the episode where the cause plausibly acted; it is required when the intervention declares uses_activation_window.",
+        "If no catalog intervention can reproduce a hypothesis, set simulation_blueprint.intervention to null and explain why in 'untestable_reason'; prefer testable hypotheses.",
         "Do not copy the observed failure as the hypothesis itself; propose a latent cause.",
         "Keep ranks unique within each family, starting at 1.",
     ]
@@ -349,6 +332,7 @@ def build_generation_prompt(context: dict[str, Any], config: HypothesisGenerator
     payload = {
         "instructions": instructions,
         "required_schema": schema_description,
+        "intervention_catalog": catalog.prompt_capsule(),
         "context": context,
     }
     return json.dumps(payload, indent=2, ensure_ascii=True)
@@ -371,6 +355,12 @@ class SemanticHypothesisService:
         self.config = config
         self.session = requests.Session()
         self.log_hook = log_hook
+        self.catalog = InterventionCatalog.from_file(config.catalog_path)
+        self._log(
+            "info",
+            f"[HypothesisService] Intervention catalog loaded from '{config.catalog_path}' "
+            f"({len(self.catalog.interventions)} interventions, {len(self.catalog.assets)} assets).",
+        )
 
     def _log(self, level: str, message: str) -> None:
         if self.log_hook is not None:
@@ -530,7 +520,7 @@ class SemanticHypothesisService:
     def generate(self, context: dict[str, Any]) -> HypothesisGenerationResult:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         trace_id = f"trace_{uuid.uuid4().hex}"
-        prompt = build_generation_prompt(context=context, config=self.config)
+        prompt = build_generation_prompt(context=context, config=self.config, catalog=self.catalog)
         self._log(
             "info",
             f"[HypothesisService] Starting generation for case_id='{context.get('case_id', '')}' "
@@ -622,6 +612,7 @@ class SemanticHypothesisService:
                 batch=batch,
                 internal_count=self.config.internal_count,
                 external_count=self.config.external_count,
+                catalog=self.catalog,
             )
             output_path = self._write_batch(validated, validated["case_id"])
             self._log(

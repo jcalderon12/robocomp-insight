@@ -82,6 +82,7 @@ class HypothesisGeneratorConfig:
     enabled: bool
     output_dir: Path
     description_path: Path
+    catalog_path: Path
     primary_model: str
     fallback_model: str
     ollama_base_url: str
@@ -104,6 +105,7 @@ class HypothesisGeneratorConfig:
         preferred_client = _require_str(section, "PreferredClient", section_name)
         output_dir_raw = _require_str(section, "OutputDir", section_name)
         description_path_raw = _require_str(section, "DescriptionPath", section_name)
+        catalog_path_raw = _require_str(section, "CatalogPath", section_name)
         request_timeout_raw = section.get("RequestTimeoutSeconds")
         internal_count_raw = section.get("InternalCount")
         external_count_raw = section.get("ExternalCount")
@@ -125,6 +127,7 @@ class HypothesisGeneratorConfig:
             enabled=enabled,
             output_dir=_resolve_path(output_dir_raw, component_root),
             description_path=_resolve_path(description_path_raw, component_root),
+            catalog_path=_resolve_path(catalog_path_raw, component_root),
             primary_model=primary_model,
             fallback_model=fallback_model,
             ollama_base_url=ollama_base_url,

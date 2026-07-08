@@ -31,14 +31,21 @@ Ice.Trace.Network = "0"
 Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
 
+# --- GraphDB mirror (defaults shown explicitly) ---
+graphDB.Enabled = true
+graphDB.Endpoint = "http://localhost:7200"
+graphDB.Repository = "insight_prod"
+graphDB.NamedGraph = "urn:insight:semantic:live"
+
 # --- Hypothesis generation ---
 hypothesisGenerator.Enabled = true
 hypothesisGenerator.OutputDir = "generated_hypotheses"
 hypothesisGenerator.DescriptionPath = "../../description.md"
-hypothesisGenerator.PrimaryModel = "gemma4:31b-cloud" #"qwen3.5:397b-cloud
+# Closed catalog of executable simulation interventions (shared contract with inner_simulator)
+hypothesisGenerator.CatalogPath = "../../etc/intervention_catalog.json"
+hypothesisGenerator.PrimaryModel = "gemma4:31b-cloud"
 
 # Local fallback model. Must be downloaded beforehand with: ollama pull qwen3:14b
-hypothesisGenerator.FallbackModel = "qwen3:14b"
 hypothesisGenerator.FallbackModel = "qwen3:14b"
 hypothesisGenerator.OllamaBaseUrl = "http://localhost:11434"
 hypothesisGenerator.RequestTimeoutSeconds = 300
