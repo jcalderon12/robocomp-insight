@@ -293,5 +293,6 @@ agents/inner_simulator/agents/
 agents/inner_simulator/*.pth
 agents/inner_simulator/*runs/
 agents/inner_simulator/sim_output.json
+agents/inner_simulator/logs/
 agents/mission_controller/recorded_missions/*
 agents/inner_simulator/src/sim_scene.json
