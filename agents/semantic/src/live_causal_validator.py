@@ -52,6 +52,7 @@ class LiveCausalValidator:
             return ValidationResult(unexplained=False)
 
         # If the bottle entity itself is gone from the ontology, the retraction is explained by entity deletion
+        if self._bottle_type_triple not in current:
             return ValidationResult(
                 unexplained=False,
                 reason="Bottle entity removed from scene; retraction explained by entity deletion.",
