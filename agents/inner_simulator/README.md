@@ -4,11 +4,42 @@
 
 `inner_simulator` is a RoboComp agent that maintains a PyBullet physics simulation mirroring the real robot. It publishes synthetic IMU data to the DSR graph and, when the robot encounters a problem, launches parallel simulations of candidate *causes* (disturbances such as bumps or wheel failures) to identify which one best explains the observed sensor readings.
 
-The project is organised around three subsystems:
+The project is organised around four subsystems:
 
 1. **Runtime simulation** — `SpecificWorker` keeps a live PyBullet scene synchronised with DSR and records real IMU data.
 2. **Cause evaluation** — `CausesSimulator` runs headless PyBullet instances (one per candidate cause) and returns simulated IMU traces for comparison.
 3. **Cause generation** — a code-generation pipeline under `src/cause_gen/` that turns a JSON cause definition into a ready-to-use Python `Cause` subclass.
+4. **Hypothesis integration** — modules that connect the simulator to the semantic agent: `hypothesis_compiler.py` (LLM blueprint → cause payloads), `episode_scene.py` (scene poses from the episodic recording), and `verdict.py` (contrastive accept/reject decision against a nominal baseline).
+
+## Hypothesis-driven flow (semantic ↔ inner_simulator)
+
+When the semantic agent detects an unexplained change it publishes a hypotheses
+batch (grounded in the shared catalog `etc/intervention_catalog.json` at the repo
+root) and exposes its path as the `hypotheses_filepath` attribute of the
+`unexplained` intention node in the **work** DSR graph. On the next
+"Search Problem Cause" mission:
+
+1. `SpecificWorker` (IDLE) picks the batch up, compiles it with
+   `hypothesis_compiler.compile_batch` into cause payloads (a nominal `none`
+   cause is always prepended as the null hypothesis) and reconstructs the scene
+   poses from the episodic keyframe (`episode_scene.extract_scene_poses`).
+2. Each cause runs headless in its own subprocess (`CausesSimulator`,
+   `--gui` optional for debugging).
+3. `verdict.build_verdict` accepts a hypothesis iff one of its repetitions
+   reproduces the symbolic effect (bottle off the tray) **and** explains the
+   real IMU trace over the anomaly window better than the nominal run by a
+   configurable margin. The verdict JSON is written to `logs/verdicts/` and its
+   path is published back as the `verdict_filepath` attribute of the
+   `unexplained` node, where the semantic agent ingests it.
+
+Without a published batch the agent falls back to the static `src/causes.json`
+list (legacy one-shot behavior).
+
+> **Operational order**: the episodic recording is flushed to its file when the
+> mission finishes, so "Follow Person" must be **completed** before launching
+> "Search Problem Cause". If the recording cannot be indexed the episode is
+> skipped with a diagnostic (an empty file means the mission was not completed;
+> decimal commas mean the recorder agent ran under a non-C numeric locale).
 
 ## Configuration
 
@@ -16,7 +47,8 @@ The project is organised around three subsystems:
 |---|---|
 | `etc/config` | Agent ID, DSR flags, compute period. |
 | `src/sim_scene.json` | `SimulationScene` parameters (gravity, poses, velocity, repetitions). |
-| `src/causes.json` | List of cause payloads to evaluate when a problem is detected. |
+| `src/causes.json` | Fallback list of cause payloads when no hypotheses batch is published. |
+| `../../etc/intervention_catalog.json` | Shared catalog of executable interventions and URDF assets (contract with the semantic agent). |
 
 ## Starting the component
 
