@@ -250,65 +250,17 @@ void SpecificWorker::initialize()
 			}
 
 		}
-
-		// float total_time = mission_accumulated_time;
-		
-		// if (model->getMission(row).status == MissionStatus::RUNNING && mission_timing_active)
-		// {
-		// 	auto now = std::chrono::steady_clock::now();
-		// 	auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
-		// 	total_time += elapsed;
-		// }
-		
-		// model->setMissionElapsedTime(row, total_time);
-		// model->setMissionStatus(row, MissionStatus::COMPLETED);
-		
-		// if (active_mission_row == row)
-		// {
-		// 	active_mission_row = -1;
-		// 	mission_accumulated_time = 0;
-		// }
-		
-		// Update mission status to "completed" in episodic graph
-		// if (mission_row_to_node_id.count(row) > 0) {
-		// 	uint64_t mission_id = mission_row_to_node_id[row];
-		// 	update_mission_status_episodic(mission_id, "completed");
-		// 	delete_mission_target_edge(mission_id);  // Remove TARGET edge when mission completes
-			
-		// 	// Properly notify scheduler (calls completeMission() instead of updateMissionStatus())
-		// 	mission_scheduler.completeMission(mission_id);
-			
-		// 	// Reset waiting state if this was the mission we were waiting for
-		// 	if (mission_id == handshake_waiting_mission_id) {
-		// 		handshake_waiting_mission_id = 0;
-		// 	}
-		// 	if (waiting_mission_row >= 0 && mission_row_to_node_id.count(waiting_mission_row) && mission_row_to_node_id[waiting_mission_row] == mission_id) {
-		// 		waiting_mission_row = -1;
-		// 		waiting_mission_id = 0;
-		// 	}
-			
-		// 	// Optionally add elapsed_time attribute
-		// 	try {
-		// 		auto mission_opt = mission_graph->get_node(mission_id);
-		// 		if (mission_opt.has_value()) {
-		// 			auto mission = mission_opt.value();
-		// 			DSR::Attribute elapsed_attr;
-		// 			elapsed_attr.value(total_time);
-		// 			mission.attrs()["elapsed_time"] = elapsed_attr;
-		// 			mission_graph->update_node(mission);
-		// 		}
-		// 	} catch (const std::exception& e) {
-		// 		std::cerr << "Could not add elapsed_time attribute: " << e.what() << std::endl;
-		// 	}
-		// }
 	});
 
+	// Connect "Add Mission" button
 	connect(mission_controller_ui.add_mission_button, &QPushButton::clicked, this, [this]()
 	{
+		// Open a dialog to add a new mission
 		QDialog dialog(&mission_controller_widget);
 		Ui::AddMissionDialog dialog_ui;
 		dialog_ui.setupUi(&dialog);
 
+		// Populate mission types in the combo box
 		dialog_ui.mission_name->clear();
 		auto available = getAvailableMissions();
 		if (available.empty())
@@ -317,23 +269,18 @@ void SpecificWorker::initialize()
 			dialog_ui.mission_name->setEditable(true);
 		}
 		else
-		{
-			for (const auto& mission : available)
-			{
-				dialog_ui.mission_name->addItem(QString::fromStdString(mission));
-			}
+		{ 
+			for (const auto& mission : available) { dialog_ui.mission_name->addItem(QString::fromStdString(mission)); }
 		}
 
 		if (dialog.exec() == QDialog::Accepted)
 		{
+			// Retrieve mission details from the dialog
 			QString customName = dialog_ui.mission_custom_name->text();
 			QString missionType = dialog_ui.mission_name->currentText();
 			int priority = dialog_ui.mission_priority->currentIndex();  // 0=Critical, 1=High, 2=Normal, 3=Low, 4=Very Low
 			
-			if (customName.isEmpty())
-			{
-				customName = missionType;
-			}
+			if (customName.isEmpty()) { customName = missionType; }
 			
 			// Convert priority index to priority value: Critical=5, High=4, Normal=3, Low=2, VeryLow=1
 			int priority_value = 5 - priority;
@@ -348,7 +295,7 @@ void SpecificWorker::initialize()
 			on_setMission_clicked();
 		}
 	});
-	// Configurar timer para actualizar tiempo en tiempo real
+	// Create a QTimer for mission timing updates
 	mission_timer = new QTimer(this);
 
 	// Connect debugger scrollbars and search
