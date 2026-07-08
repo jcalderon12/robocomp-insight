@@ -1,0 +1,7 @@
+{
+    "name": "none",
+    "description": "Nominal run with no intervention. Serves as the null-hypothesis baseline for the verdict.",
+    "instance_generators": [],
+    "apply_actions": [],
+    "apply_compute_actions": []
+}

@@ -1,0 +1,20 @@
+{
+    "name": "external_force",
+    "description": "An external force pushes a body (robot or bottle) during an activation window.",
+    "instance_generators":
+    [
+        {
+            "type": "random_range_coordinates",
+            "id": "force"
+        }
+    ],
+    "apply_actions": [],
+    "apply_compute_actions": [
+        {
+            "type": "apply_external_force",
+            "id": "force",
+            "force_input_type": "random_range_coordinates",
+            "force_input_id": "force"
+        }
+    ]
+}

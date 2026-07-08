@@ -11,6 +11,8 @@
     },
     {
         "name":"wheel",
-        "wheel_wheel": "BR"
+        "wheel_wheel": "BR",
+        "wheel_min": 0.0,
+        "wheel_max": 1.0
     }
 ]
