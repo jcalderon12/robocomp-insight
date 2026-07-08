@@ -22,19 +22,20 @@
 import threading
 
 from PySide6 import QtCore
+from pydsr import Attribute
 from rich.console import Console
 from genericworker import *
 from src.simulation_scene import SimulationScene
 from src.logger import Logger
+from src.episode_scene import extract_scene_poses
+from src.hypothesis_compiler import compile_batch
+from src.verdict import build_verdict, write_verdict, save_comparison_plots, save_real_imu_plot
 
 
 import json
 import episodic_memory_api as mem
 import numpy as np
 import locale
-import matplotlib.pyplot as plt
-import matplotlib
-import pandas as pd
 import time
 import subprocess
 import sys
@@ -45,6 +46,11 @@ from .agent_generator import *
 JSON_FILE = "src/causes.json"
 AGENTS_FOLDER = "agents/"
 EM_HISTORY_FILE = "src/mission_Follow Path_25032026_120505.txt"
+
+# DSR contract with the semantic agent (work graph)
+UNEXPLAINED_NODE = "unexplained"
+HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
+VERDICT_FILEPATH_ATTR = "verdict_filepath"
 
 # Keys of IMU history dictionary
 TIMESTAMP = "timestamp"
@@ -60,8 +66,6 @@ ROBOT_POS = [-3.7, -0.3, 0.0325]
 PROBLEM_POS = [0.0, 0.04, 0.001]
 BOTTLE_POS = [-3.65, -0.19, 0.795]
 
-
-matplotlib.use("TkAgg")
 
 sys.path.append('/opt/robocomp/lib')
 
@@ -88,6 +92,20 @@ class SpecificWorker(GenericWorker):
         self.logger = Logger(f"logs/specific_worker/specific_worker_{time.strftime('%Y%m%d_%H%M%S')}.log")
 
         self.state = "IDLE" # Possible states: "IDLE", "SIMULATE_REASON", "TERMINATED"
+
+        # Simulation visualization (config: Simulation.Gui / Simulation.RealTime).
+        # Off by default so the pipeline stays headless and runs every cause in
+        # parallel; enable to watch each cause in its own PyBullet window.
+        sim_cfg = configData.get("Simulation", {})
+        self.sim_gui = bool(sim_cfg.get("Gui", False))
+        self.sim_real_time = bool(sim_cfg.get("RealTime", False))
+
+        # Hypothesis-driven mode state (set when the semantic agent publishes a batch)
+        self.hypotheses_compiled = None
+        self.hypotheses_path = None
+        self.processed_hypotheses_paths = set()
+        self.processed_episode_paths = set()
+        self.mem_api_path = None
 
         # Clear terminal
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -239,16 +257,27 @@ class SpecificWorker(GenericWorker):
             return None    
 
 
-    # DEBUG: Write fake JSON file
     def writeSimulationScene(self) -> None:
-       # Fake SIM_SCENE JSON file
+       # Build the scene from the episodic recording; scene constants remain as fallback.
        self.logger.log("Writing simulation scene to sim_scene.json...", style="bold purple")
-       self.sim_scene.problem_position, self.sim_scene.problem_orientation = PROBLEM_POS, [0,0,0,1]
+       poses = extract_scene_poses(
+           self.mem_api,
+           fallback_robot_position=ROBOT_POS,
+           fallback_bottle_position=BOTTLE_POS,
+           fallback_problem_position=PROBLEM_POS,
+           tray_offset=[b - r for b, r in zip(BOTTLE_POS, ROBOT_POS)],
+       )
+       self.logger.log(f"Scene poses reconstructed from episode: {poses.sources}", style="purple")
+       self.sim_scene.initial_robot_position = poses.initial_robot_position
+       self.sim_scene.initial_robot_orientation = poses.initial_robot_orientation
+       self.sim_scene.problem_position = poses.problem_position
+       self.sim_scene.problem_orientation = poses.problem_orientation
+       self.sim_scene.bottle_position = poses.bottle_position
+       self.sim_scene.bottle_orientation = poses.bottle_orientation
        self.sim_scene.simulation_length = self.get_simulation_length_from_episodic_memory()
-       self.sim_scene.list_of_target_velocities = self.get_robot_adv_speed_history() if self.get_robot_adv_speed_history() is not None else []
+       adv_speed_history = self.get_robot_adv_speed_history()
+       self.sim_scene.list_of_target_velocities = adv_speed_history if adv_speed_history is not None else []
        self.sim_scene.num_of_repetitions = 10
-       self.sim_scene.bottle_position = BOTTLE_POS # TODO: Constant
-       self.sim_scene.bottle_orientation = [0,0,0,0] # TODO: Constant
        self.sim_scene.model_validate(self.sim_scene.__dict__)
        file = open("src/sim_scene.json", "w")
        file.write(self.sim_scene.model_dump_json(indent=4))
@@ -265,6 +294,67 @@ class SpecificWorker(GenericWorker):
             print(f"> [loadCausesJson] {JSON_FILE} content: \n{causes_data}")
         except Exception as e:
             print(f"> [loadCausesJson] Error while reading from {JSON_FILE}: " + str(e))
+
+    def load_hypotheses_causes(self) -> bool:
+        """Compile the hypotheses batch published on the intention node of the work
+        graph. False means there is nothing new: fall back to the static causes.json."""
+        self.hypotheses_compiled = None
+        try:
+            unexplained_node = self.graphs["work"].get_node(UNEXPLAINED_NODE)
+        except Exception as e:
+            self.logger.log(f"Cannot read work graph for hypotheses: {e}", style="yellow")
+            return False
+        if unexplained_node is None or HYPOTHESES_FILEPATH_ATTR not in unexplained_node.attrs:
+            return False
+
+        hypotheses_path = unexplained_node.attrs[HYPOTHESES_FILEPATH_ATTR].value
+        if not hypotheses_path or hypotheses_path in self.processed_hypotheses_paths:
+            return False
+        if not os.path.exists(hypotheses_path):
+            self.logger.log(f"Hypotheses path '{hypotheses_path}' not readable.", style="yellow")
+            return False
+
+        try:
+            with open(hypotheses_path, "r") as f:
+                batch = json.load(f)
+            compiled = compile_batch(batch)
+        except Exception as e:
+            self.logger.log(f"Failed to compile hypotheses batch '{hypotheses_path}': {e}", style="bold red")
+            return False
+
+        self.hypotheses_compiled = compiled
+        self.hypotheses_path = hypotheses_path
+        self.causes_data = [entry["cause"] for entry in compiled["entries"]]
+        self.logger.log(
+            f"Hypotheses batch '{compiled.get('case_id', '')}' compiled: "
+            f"{len(compiled['entries'])} causes (incl. nominal), {len(compiled['skipped'])} skipped.",
+            style="bold green",
+        )
+        return True
+
+    def publish_verdict_filepath(self, verdict_path: str) -> bool:
+        """Expose the verdict path on the intention node so the semantic agent
+        can close the loop."""
+        try:
+            unexplained_node = self.graphs["work"].get_node(UNEXPLAINED_NODE)
+            if unexplained_node is None:
+                self.logger.log("Cannot publish verdict: intention node not found.", style="yellow")
+                return False
+            unexplained_node.attrs[VERDICT_FILEPATH_ATTR] = Attribute(str(verdict_path), self.agent_id)
+            self.graphs["work"].update_node(unexplained_node)
+            self.logger.log(f"Published {VERDICT_FILEPATH_ATTR}='{verdict_path}' on intention node.", style="bold green")
+            return True
+        except Exception as e:
+            self.logger.log(f"Cannot publish {VERDICT_FILEPATH_ATTR}: {e}", style="bold red")
+            return False
+
+    def retire_batch(self) -> None:
+        """Forget the current batch so it is not retried, and re-arm IDLE."""
+        if self.hypotheses_path:
+            self.processed_hypotheses_paths.add(self.hypotheses_path)
+        self.hypotheses_compiled = None
+        self.hypotheses_path = None
+        self.state = "IDLE"
 
 
     def __del__(self) -> None:
@@ -293,37 +383,60 @@ class SpecificWorker(GenericWorker):
                             fp_node = node
                     
                     if spc_node is not None and "status" in spc_node.attrs and spc_node.attrs["status"].value == "running" and fp_node is not None and "filepath" in fp_node.attrs and fp_node.attrs["filepath"].value is not None:
-                        console.print(f"Search Problem Cause node found with status 'running' and Follow Person node found with non-empty filepath.", style="bold green")
-                        self.state = "SIMULATE_REASON"
-                        self.actual_time = time.time()
-                        console.print("MemoryAPI will be initialized with filepath: " + fp_node.attrs["filepath"].value, style="green")
-                        self.mem_api = mem.EpisodicMemoryAPI(fp_node.attrs["filepath"].value)
-                        #self.mem_api = mem.EpisodicMemoryAPI(EM_HISTORY_FILE)
-                        
-                        # Wait for mem_api.is_ready() to be True, with a timeout of 10 seconds
-                        timeout = 10
-                        start_time = time.time()
-                        while not self.mem_api.is_ready():
-                            if time.time() - start_time > timeout:
-                                console.print(f"Timeout of {timeout} seconds reached while waiting for Episodic Memory API to be ready!", style="bold red")
-                                break
-                            time.sleep(0.1)
-                        self.writeSimulationScene()
-        
-                    
+                        episode_path = fp_node.attrs["filepath"].value
+                        has_new_hypotheses = self.load_hypotheses_causes()
+                        if has_new_hypotheses or episode_path not in self.processed_episode_paths:
+                            console.print(f"Search Problem Cause node found with status 'running' and Follow Person node found with non-empty filepath.", style="bold green")
+                            self.state = "SIMULATE_REASON"
+                            self.actual_time = time.time()
+                            if self.mem_api_path != episode_path:
+                                console.print("MemoryAPI will be initialized with filepath: " + episode_path, style="green")
+                                self.mem_api = mem.EpisodicMemoryAPI(episode_path)
+                                self.mem_api_path = episode_path
+
+                            timeout = 10
+                            start_time = time.time()
+                            while not self.mem_api.is_ready():
+                                if time.time() - start_time > timeout:
+                                    console.print(f"Timeout of {timeout} seconds reached while waiting for Episodic Memory API to be ready!", style="bold red")
+                                    break
+                                time.sleep(0.1)
+                            self.processed_episode_paths.add(episode_path)
+                            if not self.mem_api.is_ready():
+                                console.print(
+                                    f"Episode recording '{episode_path}' could not be indexed "
+                                    f"(no keyframes / malformed). Skipping this episode. "
+                                    f"Hint: decimal commas in the file indicate a locale problem "
+                                    f"in the recorder agent.",
+                                    style="bold red",
+                                )
+                                self.retire_batch()
+                            else:
+                                self.writeSimulationScene()
+
+
                 case "SIMULATE_REASON":
-                    # Read JSON to get causes
-                    self.loadCausesJson()
+                    # Causes were already selected in IDLE: hypothesis-driven if available,
+                    # static causes.json otherwise.
+                    if self.hypotheses_compiled is None:
+                        self.loadCausesJson()
 
                     # Launch subprocesses for simulation
                     print("Launching subprocesses...")                
                     pids = []
                     historicals = {}
+                    # Watch the simulations in the PyBullet GUI (one window per cause)
+                    # when enabled in etc/config; headless otherwise (see __init__).
+                    gui_flags = []
+                    if self.sim_gui:
+                        gui_flags = ["--gui"]
+                        if self.sim_real_time:
+                            gui_flags.append("--real_time")
                     for cause in self.causes_data:
                         rpipe, wpipe = os.pipe()
                         json_data = {"cause": cause}
                         json_data = json.dumps(json_data)
-                        pids.append([subprocess.Popen([str(sys.executable), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=(wpipe,)), rpipe])
+                        pids.append([subprocess.Popen([str(sys.executable), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe), *gui_flags], pass_fds=(wpipe,)), rpipe])
                         # Close wpipe descriptor to prevent deadlocks
                         os.close(wpipe)
                     
@@ -359,152 +472,97 @@ class SpecificWorker(GenericWorker):
                     self.convert_episodic_to_imu_history(list_of_ts)
                     print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
 
-                    # Graph an example of the real IMU history (accelerometer and gyro)
-                    axis_labels = ["X", "Y", "Z"]
-                    axis_colors = ["tab:red", "tab:green", "tab:blue"]
-                    plt.figure(figsize=(12, 5))
-                    plt.suptitle("Real IMU history from Episodic Memory", fontsize=16)
-                    # Accelerometer
-                    plt.subplot(1, 2, 1)
-                    plt.title("Accelerometer")
-                    for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
-                        real_acc = [v[j] for v in self.imu_history[ACCELEROMETER]]
-                        plt.plot(self.imu_history[TIMESTAMP], real_acc, color=color, linestyle="-", label=f"Real {axis}")
-                    plt.xlabel("Time (s)")
-                    plt.ylabel("Acceleration (m/s^2)")
-                    plt.legend()
-                    # Gyroscope
-                    plt.subplot(1, 2, 2)
-                    plt.title("Gyroscope")
-                    for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
-                        real_gyro = [v[j] for v in self.imu_history[GYROSCOPE]]
-                        plt.plot(self.imu_history[TIMESTAMP], real_gyro, color=color, linestyle="-", label=f"Real {axis}")
-                    plt.xlabel("Time (s)")
-                    plt.ylabel("Angular Velocity (rad/s)")
-                    plt.legend()
-                    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-                    plt.show()
+                    plots_dir = os.path.join(
+                        "logs/plots",
+                        (self.hypotheses_compiled or {}).get("case_id") or "static_causes",
+                    )
+                    os.makedirs(plots_dir, exist_ok=True)
+                    save_real_imu_plot(self.imu_history, os.path.join(plots_dir, "real_imu_history.png"))
 
-                    # Check for any possible matches between causes and real IMU's
-                    threads = []
-                    sim_out = {}
-                    sim_out["sim_scene"] = self.sim_scene.model_dump()
-                    sim_out["registers"] = []
-                    # {cause_definition: "asdasdasdas", top_five:[]}, {cause_definition: "asdas", top_five:[]}
-                    with ProcessPoolExecutor(max_workers=2) as executor:
-                        # Launch proccesses
-                        for h in historicals:
-                            threads.append(executor.submit(SpecificWorker.find_matching_imu_recordings, self.imu_history, historicals[h]))
-                        # Wait for processes and check results
-                        i = 0
-                        for h in historicals:
-                            res = threads[i].result()
-                            items = []
-                            print("Top 5 best recordings for cause", self.causes_data[i]["name"], ":")
-                            for rec in res:
-                                print("\tRecording", rec[0], "with score", rec[1])
-                                items.append(historicals[h][rec[0]]) #stores the whole recording (ts, acc and gyro) of the historical with id rec[0]
-                            
-                            row = {"cause_definition": self.causes_data[i], "top_five": items}
-                            sim_out["registers"].append(row)
-                            i += 1
+                    if self.hypotheses_compiled is None:
+                        # Legacy matching (static causes mode): top-5 ranking into sim_output.json
+                        threads = []
+                        sim_out = {}
+                        sim_out["sim_scene"] = self.sim_scene.model_dump()
+                        sim_out["registers"] = []
+                        with ProcessPoolExecutor(max_workers=2) as executor:
+                            for h in historicals:
+                                threads.append(executor.submit(SpecificWorker.find_matching_imu_recordings, self.imu_history, historicals[h]))
+                            i = 0
+                            for h in historicals:
+                                res = threads[i].result()
+                                items = []
+                                print("Top 5 best recordings for cause", self.causes_data[i]["name"], ":")
+                                for rec in res:
+                                    print("\tRecording", rec[0], "with score", rec[1])
+                                    items.append(historicals[h][rec[0]])
+                                row = {"cause_definition": self.causes_data[i], "top_five": items}
+                                sim_out["registers"].append(row)
+                                i += 1
 
-                    # Write results to JSON file
-                    
-                    # Sim_output structure:
-                    # sim_out = {
-                    #     "sim_scene": {JSON data from sim_scene.json},
-                    #     "registers": [
-                    #         {
-                    #             "cause_definition": {JSON data from causes.json},
-                    #             "top_five": [
-                    #                 {
-                    #                     "timestamp": [ts1, ts2, ts3, ...],
-                    #                     "accelerometer": [[acc_x1, acc_y1, acc_z1
-                    #                                      [acc_x2, acc_y2, acc_z2],
-                    #                                      [acc_x3, acc_y3, acc_z3],
-                    #                                      ...],
-                    #                     "gyroscope": [[gyro_x1, gyro_y1, gyro_z1
-                    #                                    [gyro_x2, gyro_y2, gyro_z2],
-                    #                                    [gyro_x3, gyro_y3, gyro_z3],
-                    #                                    ...]
-                    #                 },
-                    #                 ... (up to 5 recordings)
-                    #             ]
-                    #         },
-                    #         ... (one for each cause)
-                    #     ]
-                    # }
-                    
-                    # Show a graph comparing the real IMU history with the best recording of the top for each cause (a graph per cause)
-                    axis_labels = ["X", "Y", "Z"]
-                    axis_colors = ["tab:red", "tab:green", "tab:blue"]
+                        with open("sim_output.json", "w") as output:
+                            output.write(json.dumps(sim_out, indent=4))
+                        print("Simulations finished. Results written to sim_output.json!")
 
-                    # debug: make imu_history a flat line to easily compare with the simulated ones
-                    #self.imu_history[ACCELEROMETER] = [[0,0,0] for _ in self.imu_history[ACCELEROMETER]]
-                    #self.imu_history[GYROSCOPE] = [[0,0,0] for _ in self.imu_history[GYROSCOPE]]
+                    # ============ CONTRASTIVE VERDICT ============
+                    # Nominal baseline + symbolic effect (bottle off the tray) + IMU score.
+                    if self.hypotheses_compiled is not None:
+                        entries = self.hypotheses_compiled["entries"]
+                        skipped = self.hypotheses_compiled["skipped"]
+                        case_id = self.hypotheses_compiled.get("case_id", "") or "hypotheses_case"
+                    else:
+                        entries = [
+                            {"hypothesis_id": f"static_{c['name']}", "title": c["name"], "cause": c}
+                            for c in self.causes_data
+                        ]
+                        skipped = []
+                        case_id = "static_causes"
 
-                    for i, cause in enumerate(self.causes_data):
-                        best_recording = sim_out["registers"][i]["top_five"][0]  # Best recording for this cause
+                    ordered_historicals = [historicals[pid[0]] for pid in pids]
+                    verdict = build_verdict(
+                        case_id=case_id,
+                        real_imu=self.imu_history,
+                        entries=entries,
+                        historicals=ordered_historicals,
+                        initial_bottle_z=self.sim_scene.bottle_position[2],
+                        skipped=skipped,
+                    )
+                    verdict_path = os.path.abspath(write_verdict(verdict, "logs/verdicts"))
+                    save_comparison_plots(self.imu_history, verdict["hypotheses"], ordered_historicals, plots_dir)
 
-                        plt.figure(figsize=(12, 5))
-                        plt.suptitle(f"Comparison of real IMU history with best recording of cause: {cause['name']}", fontsize=16)
+                    accepted_id = verdict.get("accepted_hypothesis_id")
+                    self.logger.log(
+                        f"Verdict written to {verdict_path}. Accepted hypothesis: {accepted_id}. "
+                        f"Nominal score: {verdict.get('nominal_best_score')}.",
+                        style="bold green" if accepted_id else "bold yellow",
+                    )
 
-                        # Accelerometer
-                        plt.subplot(1, 2, 1)
-                        plt.title("Accelerometer")
-                        for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
-                            real_acc = [v[j] for v in self.imu_history[ACCELEROMETER]]
-                            sim_acc = [v[j] for v in best_recording[HISTORY][ACCELEROMETER]]
-                            plt.plot(self.imu_history[TIMESTAMP], real_acc, color=color, linestyle="-", label=f"Real {axis}")
-                            plt.plot(best_recording[HISTORY][TIMESTAMP], sim_acc, color=color, linestyle="--", label=f"Sim {axis}")
-                        plt.xlabel("Time (s)")
-                        plt.ylabel("Acceleration (m/s^2)")
-                        plt.legend()
+                    # Synthesize detector agent templates only for accepted causes
+                    accepted_causes = {
+                        e["cause"]["name"] for e in verdict["hypotheses"] if e.get("accepted")
+                    }
+                    for cause_name in accepted_causes:
+                        if not generate_agent(cause_name, AGENTS_FOLDER):
+                            print("Error while generating agent template for cause", cause_name)
+                    if accepted_causes:
+                        print("Agent templates generated at folder", AGENTS_FOLDER)
 
-                        # Gyroscope
-                        plt.subplot(1, 2, 2)
-                        plt.title("Gyroscope")
-                        for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
-                            real_gyro = [v[j] for v in self.imu_history[GYROSCOPE]]
-                            sim_gyro = [v[j] for v in best_recording[HISTORY][GYROSCOPE]]
-                            plt.plot(self.imu_history[TIMESTAMP], real_gyro, color=color, linestyle="-", label=f"Real {axis}")
-                            plt.plot(best_recording[HISTORY][TIMESTAMP], sim_gyro, color=color, linestyle="--", label=f"Sim {axis}")
-                        plt.xlabel("Time (s)")
-                        plt.ylabel("Angular Velocity (rad/s)")
-                        plt.legend()
-
-                        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-                        plt.show()
-
-                    output = open(f"sim_output.json", "w")
-                    output.write(json.dumps(sim_out, indent=4))
-                    output.close()
-                    
-                    print("Simulations finished. Results written to sim_output.json!")
-                    
-                    
-                    # Create agent template (CDSL) for each cause
-                    for cause in self.causes_data:
-                        if not generate_agent(cause["name"], AGENTS_FOLDER):
-                            print("Error while generating agent template for cause", cause["name"])
-                        
-                    print("Agents templated generated at folder", AGENTS_FOLDER)
-
-                    # TODO: Usamos terminated porque ahora mismo la misión de buscar causas no se termina.
-                    self.state = "TERMINATED"      
+                    if self.hypotheses_compiled is not None:
+                        self.publish_verdict_filepath(verdict_path)
+                        self.retire_batch()
+                    else:
+                        # Legacy static-causes mode keeps the one-shot behavior.
+                        self.state = "TERMINATED"
 
                 case "TERMINATED":
                     pass
                 
-        except Exception as e:            
-            self.logger.log(f"Fatal exception occurred: {e} at line {sys.exc_info()[-1].tb_lineno}", style="bold red")
-            # print traceback
+        except Exception as e:
+            self.logger.log(f"Exception during '{self.state}': {e} at line {sys.exc_info()[-1].tb_lineno}", style="bold red")
             import traceback
-            traceback_str = traceback.format_exc()
-            self.logger.log(traceback_str, style="red")
-            exit(1)
-            
+            self.logger.log(traceback.format_exc(), style="red")
+            self.retire_batch()
+
         return True
     
         

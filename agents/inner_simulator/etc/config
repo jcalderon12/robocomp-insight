@@ -30,6 +30,13 @@ Agent.episodic.3d = false
 Period.Compute = 16
 Period.Emergency = 500
 
+# --- Inner simulation visualization ---
+# Gui: open one PyBullet window per cause during "Search Problem Cause" to watch
+#      the simulations. false = headless (faster, runs every cause in parallel).
+#      RealTime: slow each run down to wall-clock speed (only with Gui).
+Simulation.Gui = true
+Simulation.RealTime = false
+
 Component.Debug.Verbose = true
 
 Ice.Warn.Connections = "0"
