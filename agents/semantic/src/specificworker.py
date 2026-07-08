@@ -27,7 +27,7 @@ import sys
 from PySide6 import QtCore
 from PySide6.QtCore import QTimer, Signal, Qt
 from PySide6.QtWidgets import QApplication
-from pydsr import signals, Node, Edge
+from pydsr import signals, Attribute, Node, Edge
 from rich.console import Console
 from genericworker import *
 import interfaces as ifaces
@@ -37,12 +37,18 @@ import interfaces as ifaces
 sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
 
-from src.ontology_mapping import DSRSemanticWrapper
+from src.ontology_mapping import DSRSemanticWrapper, UNEXPLAINED_INTENTION_NAME
 from src.graphdb_client import GraphDBClient, GraphDBConfig
 from src.hypothesis_config import HypothesisGeneratorConfig
 from src.hypothesis_context import build_hypothesis_generation_context
 from src.hypothesis_service import SemanticHypothesisService
 from src.live_causal_validator import LiveCausalValidator
+from src.verdict_ingestor import ingest_verdict
+
+# DSR contract with the inner simulator (attributes of the intention node)
+HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
+VERDICT_FILEPATH_ATTR = "verdict_filepath"
+GRAPHDB_RETRY_SECONDS = 5.0
 
 
 
@@ -83,6 +89,11 @@ class SpecificWorker(GenericWorker):
         self.trigger_added: frozenset[tuple[str, str, str]] = frozenset()
         self.trigger_removed: frozenset[tuple[str, str, str]] = frozenset()
         self.hypothesis_generation_done = False
+        self.last_hypotheses_path = None
+        self.hypotheses_path_published = False
+        self.ingested_verdict_paths: set[str] = set()
+        self._parsed_ingestions = {}
+        self._graphdb_retry_at = 0.0
         self.component_root = Path(__file__).resolve().parent.parent
         self.hypothesis_config = HypothesisGeneratorConfig.from_config(configData, self.component_root)
         self.hypothesis_service = (
@@ -151,6 +162,23 @@ class SpecificWorker(GenericWorker):
         if self.unexplained and self.hypothesis_service is not None and not self.hypothesis_generation_done:
             self.generate_hypotheses_json()
 
+        # Publish (and retry until the node accepts it) the hypotheses batch path so
+        # the inner simulator can pick it up from the working memory.
+        if (
+            self.unexplained
+            and self.hypothesis_generation_done
+            and self.last_hypotheses_path is not None
+            and not self.hypotheses_path_published
+        ):
+            self.hypotheses_path_published = self._publish_path_attribute(
+                HYPOTHESES_FILEPATH_ATTR, self.last_hypotheses_path
+            )
+
+        # Once the hypotheses are out, watch for the inner simulator's verdict and
+        # close the loop: consolidate the accepted causal relation and resolve the
+        # unexplained intention.
+        if self.unexplained and self.hypotheses_path_published:
+            self._check_and_ingest_verdict()
 
         return True
 
@@ -166,6 +194,84 @@ class SpecificWorker(GenericWorker):
         }
         console.print(message, style=styles.get(level, "white"))
 
+    def _publish_path_attribute(self, attribute_name: str, path) -> bool:
+        """Expose a file path as an attribute of the 'unexplained' intention node so
+        other agents (inner_simulator) can pick it up from the working memory."""
+        node = self.g.get_node(UNEXPLAINED_INTENTION_NAME)
+        if node is None:
+            console.print(
+                f"Cannot publish {attribute_name}: '{UNEXPLAINED_INTENTION_NAME}' node not found yet.",
+                style="yellow",
+            )
+            return False
+        try:
+            node.attrs[attribute_name] = Attribute(str(path), self.agent_id)
+            self.g.update_node(node)
+        except Exception as exc:
+            console.print(f"Cannot publish {attribute_name} on intention node: {exc}", style="red")
+            return False
+        console.print(f"Published {attribute_name}='{path}' on intention node.", style="cyan")
+        return True
+
+    def _check_and_ingest_verdict(self) -> None:
+        """Ingest the verdict published by the inner simulator on the intention node:
+        write the episodic explanation to GraphDB and resolve the unexplained cycle."""
+        node = self.g.get_node(UNEXPLAINED_INTENTION_NAME)
+        if node is None or VERDICT_FILEPATH_ATTR not in node.attrs:
+            return
+        verdict_path = str(node.attrs[VERDICT_FILEPATH_ATTR].value)
+        if not verdict_path or verdict_path in self.ingested_verdict_paths:
+            return
+
+        ingestion = self._parsed_ingestions.get(verdict_path)
+        if ingestion is None:
+            ingestion = ingest_verdict(verdict_path)
+            self._parsed_ingestions[verdict_path] = ingestion
+        if not ingestion.ok:
+            self.ingested_verdict_paths.add(verdict_path)
+            console.print(f"Verdict at '{verdict_path}' could not be ingested: {ingestion.reason}", style="red")
+            return
+
+        if ingestion.triples:
+            if self.graphdb_client is not None:
+                if time.monotonic() < self._graphdb_retry_at:
+                    return
+                try:
+                    self.graphdb_client.apply_delta(added=set(ingestion.triples), removed=set())
+                except Exception as exc:
+                    self._graphdb_retry_at = time.monotonic() + GRAPHDB_RETRY_SECONDS
+                    console.print(f"Could not consolidate causal triples in GraphDB: {exc}", style="red")
+                    return
+            console.print(
+                f"Case '{ingestion.case_id}' explained by intervention "
+                f"'{ingestion.accepted_intervention}' ({len(ingestion.triples)} triples).",
+                style="green",
+            )
+        else:
+            console.print(
+                f"Verdict for case '{ingestion.case_id}' accepted no hypothesis: {ingestion.reason}",
+                style="yellow",
+            )
+
+        self.ingested_verdict_paths.add(verdict_path)
+        self._resolve_unexplained_cycle(node)
+
+    def _resolve_unexplained_cycle(self, intention_node) -> None:
+        """Remove the unexplained intention node and re-arm the detection cycle."""
+        try:
+            self.g.delete_node(intention_node.id)
+        except Exception as exc:
+            console.print(f"Could not delete intention node: {exc}", style="red")
+        self.unexplained = False
+        self.unexplained_reason = ""
+        self.stop_inserted = False
+        self.hypothesis_generation_done = False
+        self.last_hypotheses_path = None
+        self.hypotheses_path_published = False
+        self.trigger_added = frozenset()
+        self.trigger_removed = frozenset()
+        console.print("Unexplained cycle resolved and re-armed.", style="green")
+
     def insert_intention_hanging_for_robot(self) -> bool:
         """Insert an unexplained intention node hanging from robot with a has_intention edge."""
         robot_node = self.g.get_node("robot")
@@ -176,7 +282,7 @@ class SpecificWorker(GenericWorker):
         intention_node = Node(
             agent_id=self.agent_id,
             type="intention",
-            name="unexplained",
+            name=UNEXPLAINED_INTENTION_NAME,
         )
 
         intention_id = self.g.insert_node(intention_node)
@@ -399,6 +505,8 @@ class SpecificWorker(GenericWorker):
             generation_elapsed = time.perf_counter() - generation_started_at
             self.hypothesis_generation_done = True
             if result.ok:
+                self.last_hypotheses_path = result.output_path
+                self.hypotheses_path_published = False
                 console.print(
                     f"Hypothesis batch generated at {result.output_path}. "
                     f"{len(result.batch.get('hypotheses', []))} hypotheses exported. "

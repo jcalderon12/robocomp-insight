@@ -35,6 +35,14 @@ INTENTION_UNEXPLAINED = INSIGHT.Intention_Unexplained
 INTENTION_CLASS = INSIGHT.Intention
 HAS_INTENTION = INSIGHT.hasIntention
 
+EVENT_CLASS = DUL.Event
+EVENT_BOTTLE_LOCATION_CHANGE = INSIGHT.Event_BottleLocationChange
+ANOMALY_CASE_CLASS = INSIGHT.AnomalyCase
+EXPLAINED_BY = INSIGHT.explainedBy
+CONCERNS_EVENT = INSIGHT.concernsEvent
+INTERVENTION_EVENT_PREFIX = "Event_"
+CASE_PREFIX = "Case_"
+
 @dataclass
 class SemanticState:
     triples: set[tuple[str, str, str]] = field(default_factory=set)
