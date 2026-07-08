@@ -18,9 +18,15 @@
  *    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "specificworker.h"
+#include <clocale>
 
 SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx, bool startup_check)
     : GenericWorker(configLoader, tprx) {
+	// Qt sets the C locale from the environment (e.g. es_ES uses ',' as decimal
+	// separator), which corrupts the recording format: std::to_string would write
+	// "9,809" and std::stof would truncate "9.809" to 9. The history file format
+	// requires the dot as decimal separator, so force the C numeric locale.
+	std::setlocale(LC_NUMERIC, "C");
 	std::cout << "--- SpecificWorker CONSTRUCTOR START ---" << std::endl;
 	this->startup_check_flag = startup_check;
 	if (this->startup_check_flag) {
