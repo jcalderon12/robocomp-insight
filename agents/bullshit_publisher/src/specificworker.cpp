@@ -62,6 +62,16 @@ SpecificWorker::~SpecificWorker()
 {
 	std::cout << "Destroying SpecificWorker" << std::endl;
 	//G->write_to_json_file("./"+agent_name+".json");
+
+	// Delete generated agents if the checkbox is checked
+	if (agent_generator_ui.delete_agents_check_box->isChecked()) {
+		for (const QString& path : generated_agents) {
+			QDir dir(path);
+			if (dir.exists()) {
+				dir.removeRecursively();
+			}
+		}
+	}
 }
 
 
@@ -88,15 +98,15 @@ void SpecificWorker::initialize()
 	//graph_viewer->add_custom_widget_to_dock("CustomWidget", &custom_widget);
 
 	bullshit_publisher_ui.setupUi(&bullshit_publisher_widget);
+	agent_generator_ui.setupUi(&agent_generator_widget);
 
+	// bullshit_publisher UI connections
 	connect(bullshit_publisher_ui.create_node_button, &QPushButton::clicked, this, &SpecificWorker::add_node);
 	connect(bullshit_publisher_ui.delete_node_button, &QPushButton::clicked, this, &SpecificWorker::delete_node);
 	connect(bullshit_publisher_ui.modify_node_button, &QPushButton::clicked, this, &SpecificWorker::modify_node);
-
 	connect(bullshit_publisher_ui.create_edge_button, &QPushButton::clicked, this, &SpecificWorker::add_edge);
 	connect(bullshit_publisher_ui.delete_edge_button, &QPushButton::clicked, this, &SpecificWorker::delete_edge);
-	connect(bullshit_publisher_ui.modify_edge_button, &QPushButton::clicked, this, &SpecificWorker::modify_edge);
-	
+	connect(bullshit_publisher_ui.modify_edge_button, &QPushButton::clicked, this, &SpecificWorker::modify_edge);	
 	connect(bullshit_publisher_ui.create_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::add_RT_edge);
 	connect(bullshit_publisher_ui.delete_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::delete_RT_edge);
 	connect(bullshit_publisher_ui.modify_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::modify_edge_RT);
@@ -104,7 +114,65 @@ void SpecificWorker::initialize()
 	// Connect the node name list box to update the text box when a selection is made
 	connect(bullshit_publisher_ui.node_name_list_box, &QComboBox::currentTextChanged, bullshit_publisher_ui.node_name_text_box, &QLineEdit::setText);
 
+	agent_process = new QProcess(this);
+
+	// Connect the create_agent_button to run the agent_generator.py script with the provided agent name
+	connect(agent_generator_ui.create_agent_button, &QPushButton::clicked, this, [this](){
+		// Clear terminal output
+		agent_generator_ui.agent_output->clear();
+
+		// Get the agent name from the text box and validate it
+		QString cause_name = agent_generator_ui.agent_name_text->text().trimmed();
+		if (cause_name.isEmpty()) {
+			agent_generator_ui.agent_status_label->setText("<font color ='red'><b>Error: Nombre vacío</b></font>");
+			return;
+		}
+		
+		agent_generator_ui.agent_status_label->setText("<font color ='orange'><b>Generating agent...</b></font>");
+
+		QString script_path = "/home/robolab/robocomp/components/robocomp-insight/agents/bullshit_publisher/src/agent_generator.py";
+		QString output_path = "/home/robolab/robocomp/components/robocomp-insight/agents";
+		current_agent_name = output_path + "/" + cause_name;
+		QStringList args;
+		args << script_path << cause_name << output_path;
+
+		agent_generator_ui.agent_output->appendPlainText("Running agent generator script...");
+
+		agent_process->start("python3", args);
+	});
+
+	// Connect the agent output to the agent_output text box - standard output
+	connect(agent_process, &QProcess::readyReadStandardOutput, this, [this]() {
+		QString output = agent_process->readAllStandardOutput().trimmed();
+		if (output.isEmpty()) return;
+
+		// Key output in green
+		if (output.contains("SUCCESS"))
+			agent_generator_ui.agent_output->appendHtml("<font color='green'>SUCCESS: " + output + "</font>");
+		// Normal output in black	
+		else
+			agent_generator_ui.agent_output->appendPlainText(output);
+	});	
+	
+	// Connect the agent error output to the agent_output text box - standard error
+	connect(agent_process , &QProcess::readyReadStandardError, this, [this]() {
+		QString error = agent_process->readAllStandardError().trimmed();
+		if (!error.isEmpty()) 
+			agent_generator_ui.agent_output->appendHtml("<font color='red'>ERROR: " + error + "</font>");
+	});
+
+	connect(agent_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this](int exit_code, QProcess::ExitStatus exit_status){
+		if (exit_code == QProcess::NormalExit && exit_code == 0) {
+			agent_generator_ui.agent_status_label->setText("<font color ='green'><b>Agent generated successfully!</b></font>");
+			generated_agents.push_back(current_agent_name);
+		}
+		else {
+			agent_generator_ui.agent_status_label->setText("<font color ='red'><b>Error generating agent. Check output for details.</b></font>");
+		}
+	});
+
 	graph_viewer->add_custom_widget_to_dock("Bullshit publisher", &bullshit_publisher_widget);
+	graph_viewer->add_custom_widget_to_dock("Agent generator", &agent_generator_widget);
 
     //initializeCODE
 

@@ -33,7 +33,10 @@
 
 #include <genericworker.h>
 #include "ui_bullshit_publisher.h"
+#include "ui_agent_generator.h"
 #include <experimental/random>
+#include <QProcess>
+#include <vector>
 
 /**
  * \brief Class SpecificWorker implements the core functionality of the component.
@@ -118,11 +121,15 @@ private:
 	bool startup_check_flag;
 
 	Ui::bullshit_publisher bullshit_publisher_ui;
-	QWidget bullshit_publisher_widget;
+	Ui::agent_generator agent_generator_ui;
+	QWidget bullshit_publisher_widget, agent_generator_widget;
 
 	std::unique_ptr<DSR::RT_API> rt;
 
-	
+	// Process to manage the created agent's execution
+	QProcess *agent_process;
+	std::vector<QString> generated_agents;
+	QString current_agent_name;
 
 signals:
 	//void customSignal();
