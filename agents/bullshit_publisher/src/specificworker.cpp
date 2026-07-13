@@ -130,8 +130,11 @@ void SpecificWorker::initialize()
 		
 		agent_generator_ui.agent_status_label->setText("<font color ='orange'><b>Generating agent...</b></font>");
 
-		QString script_path = "/home/robolab/robocomp/components/robocomp-insight/agents/bullshit_publisher/src/agent_generator.py";
-		QString output_path = "/home/robolab/robocomp/components/robocomp-insight/agents";
+		QDir dir(QCoreApplication::applicationDirPath());
+		dir.cdUp(); // Move up to the parent directory
+		QString script_path = dir.absolutePath() + "/src/agent_generator.py";
+		dir.cdUp(); // Move up to agents directory
+		QString output_path = dir.absolutePath();
 		current_agent_name = output_path + "/" + cause_name;
 		QStringList args;
 		args << script_path << cause_name << output_path;
@@ -161,6 +164,7 @@ void SpecificWorker::initialize()
 			agent_generator_ui.agent_output->appendHtml("<font color='red'>ERROR: " + error + "</font>");
 	});
 
+	// Connect the finished signal to handle the status label output
 	connect(agent_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [this](int exit_code, QProcess::ExitStatus exit_status){
 		if (exit_code == QProcess::NormalExit && exit_code == 0) {
 			agent_generator_ui.agent_status_label->setText("<font color ='green'><b>Agent generated successfully!</b></font>");
@@ -171,6 +175,7 @@ void SpecificWorker::initialize()
 		}
 	});
 
+	// Add the bullshit_publisher and agent_generator widgets to the graph viewer's dock
 	graph_viewer->add_custom_widget_to_dock("Bullshit publisher", &bullshit_publisher_widget);
 	graph_viewer->add_custom_widget_to_dock("Agent generator", &agent_generator_widget);
 

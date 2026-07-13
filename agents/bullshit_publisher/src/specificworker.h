@@ -36,6 +36,8 @@
 #include "ui_agent_generator.h"
 #include <experimental/random>
 #include <QProcess>
+#include <QCoreApplication>
+#include <QDir>
 #include <vector>
 
 /**
