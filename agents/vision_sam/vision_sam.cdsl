@@ -1,0 +1,11 @@
+import "CameraRGBDSimple.idsl";
+
+Component vision_sam
+{   
+    Communications
+    {
+        requires CameraRGBDSimple;
+    };
+    language python;
+    gui Qt(QWidget);
+};
