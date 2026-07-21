@@ -175,6 +175,33 @@ void SpecificWorker::initialize()
 		}
 	});
 
+	// Connect the create concept button so it creates a node with text box concept name and a RT edge with its coordinates
+	connect(agent_generator_ui.create_concept_button, &QPushButton::clicked, this, [this](){
+		QString concept_name = agent_generator_ui.agent_name_text->text().trimmed();
+		if (concept_name.isEmpty()) {
+			agent_generator_ui.agent_status_label->setText("<font color ='red'><b>Error: Concept name is empty</b></font>");
+			return;
+		}
+
+		// Create the concept node
+		DSR::Node concept_node = DSR::Node::create<object_node_type>(concept_name.toStdString());
+		try {
+			G->insert_node(concept_node);
+			
+			// Create the RT edge from robot to concept node with coordinates
+			auto robot_optional = G->get_node("robot");
+			if (robot_optional.has_value()) {
+				DSR::Node robot_node = robot_optional.value();
+				rt->insert_or_assign_edge_RT(robot_node, concept_node.id(), {0.f, 1500.f, 0.f}, {0.f, 0.f, 0.f});
+				agent_generator_ui.agent_status_label->setText("<font color ='green'><b>Concept created successfully!</b></font>");
+			} else {
+				agent_generator_ui.agent_status_label->setText("<font color ='red'><b>Error: Robot node not found</b></font>");
+			}
+		} catch (const std::exception& e) {
+			agent_generator_ui.agent_status_label->setText("<font color ='red'><b>Error creating concept: " + QString::fromStdString(e.what()) + "</b></font>");
+		}
+	});
+
 	// Add the bullshit_publisher and agent_generator widgets to the graph viewer's dock
 	graph_viewer->add_custom_widget_to_dock("Bullshit publisher", &bullshit_publisher_widget);
 	graph_viewer->add_custom_widget_to_dock("Agent generator", &agent_generator_widget);

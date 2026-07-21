@@ -27,7 +27,7 @@ from genericworker import *
 import interfaces as ifaces
 import numpy as np
 import cv2
-from ultralytics import SAM
+# from ultralytics import SAM
 import torch
 import sys
 import threading
@@ -35,6 +35,8 @@ import time
 
 sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
+
+from pydsr import *
 
 # Animated spinner class to show progress while processing the image with SAM
 class AnimatedSpinner:
@@ -68,10 +70,23 @@ class SpecificWorker(GenericWorker):
         self.Period = configData["Period"]["Compute"]
         
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        # _b for base model, _l for large model
-        self.sam = SAM("sam_b.pt")
+        self.qimage = None
+        # self.sam = SAM("sam_b.pt")
         self.sam_masks = None
 
+        self.current_node_id = None
+
+        try:
+            signals.connect(self.g, signals.UPDATE_NODE_ATTR, self.update_node_att)
+            signals.connect(self.g, signals.UPDATE_NODE, self.update_node)
+            signals.connect(self.g, signals.DELETE_NODE, self.delete_node)
+            signals.connect(self.g, signals.UPDATE_EDGE, self.update_edge)
+            signals.connect(self.g, signals.UPDATE_EDGE_ATTR, self.update_edge_att)
+            signals.connect(self.g, signals.DELETE_EDGE, self.delete_edge)
+            console.print("signals connected")
+        except RuntimeError as e:
+            print(e)
+    
         if startup_check:
             self.startup_check()
         else:
@@ -85,7 +100,6 @@ class SpecificWorker(GenericWorker):
 
     @QtCore.Slot()
     def compute(self):
-        
         try:
             # get the image from the camera
             image_struct = self.camerargbdsimple_proxy.getImage("camera")
@@ -106,33 +120,35 @@ class SpecificWorker(GenericWorker):
             h, w, ch = image_rgb.shape
 
             # process the image with SAM
-            if self.sam_masks is None:
-                spinner = AnimatedSpinner()
-                spinner.start()
-                results = self.sam(image_rgb, device=self.device, verbose=False)
-                spinner.stop()
-                if results[0].masks is not None:
-                    self.sam_masks = results[0].masks.data.cpu().numpy()
+            # if self.sam_masks is None:
+            #     spinner = AnimatedSpinner()
+            #     spinner.start()
+            #     results = self.sam(image_rgb, device=self.device, verbose=False)
+            #     spinner.stop()
+            #     if results[0].masks is not None:
+            #         self.sam_masks = results[0].masks.data.cpu().numpy()
             
-            # overlay masks on the image with random colors
-            if self.sam_masks is None:
-                print("No masks detected by SAM.")
-                return True
+            # # overlay masks on the image with random colors
+            # if self.sam_masks is None:
+            #     print("No masks detected by SAM.")
+            #     return True
 
-            for mask in self.sam_masks:
-                mask = mask.astype(np.uint8)
-                if mask.shape != (h, w):
-                    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-                color = np.random.randint(0, 255, (3,), dtype=np.uint8)
-                image_rgb[mask > 0] = image_rgb[mask > 0] * 0.5 + color * 0.5
+            # for mask in self.sam_masks:
+            #     mask = mask.astype(np.uint8)
+            #     if mask.shape != (h, w):
+            #         mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+            #     color = np.random.randint(0, 255, (3,), dtype=np.uint8)
+            #     image_rgb[mask > 0] = image_rgb[mask > 0] * 0.5 + color * 0.5
 
             # Show the image in the GUI
+            # if self.sam_masks is not None:
+
             qimage = QImage(image_rgb.data, w, h, w * ch, QImage.Format_RGB888).copy()
             self.ui.image_label.setPixmap(QPixmap.fromImage(qimage))
 
         except RuntimeError as e:
-            if 'spinner' in locals():
-                spinner.stop()
+            # if 'spinner' in locals():
+            #     spinner.stop()
             if "CUDA out of memory" in str(e):
                 print("CUDA out of memory error. Consider using a smaller model or reducing the image size.")
                 torch.cuda.empty_cache()
@@ -142,11 +158,65 @@ class SpecificWorker(GenericWorker):
                 print(f"RUNTIME ERROR ON COMPUTE: {e}")
 
         except Exception as e:
-            if 'spinner' in locals():
-                spinner.stop()
+            # if 'spinner' in locals():
+            #     spinner.stop()
             print(f"ERROR ON COMPUTE: {e}")
 
         return True
+
+
+    def get_current_rgb_image(self):
+        try:
+            image_struct = self.camerargbdsimple_proxy.getImage("camera")
+            if not image_struct.image:
+                return None
+            
+            image_np = np.frombuffer(image_struct.image, dtype=np.uint8)
+            image_np = image_np.reshape((image_struct.height, image_struct.width, 3))
+            return cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+        except Exception as e:
+            print(f"ERROR getting current RGB image: {e}")
+            return None
+
+
+    def process_sam_on_point(self, x, y):
+        # Load SAM
+        if not hasattr(self, 'sam') or self.sam is None:
+            print("Loading SAM model...")
+            from ultralytics import SAM
+            self.sam = SAM("sam_b.pt")
+
+        # Get current RGB image
+        image_rgb = self.get_current_rgb_image()
+        if image_rgb is None:
+            print("No image available to process.")
+            return
+        
+        # Process the image with SAM
+        print(f"Processing SAM on point: ({x}, {y})")
+        results = self.sam(image_rgb, points=[(x, y)], labels=[1], device=self.device, verbose=False)
+
+        # Get mask and save results
+        if results[0].masks is not None:
+            mask = results[0].masks.data.cpu().numpy()[0]
+            self.save_segmented_object(mask, image_rgb)
+        else:
+            print("No mask detected by SAM for the given point.")
+
+
+    def save_segmented_object(self, mask, image_rgb):
+        # Mask into uint8 format
+        mask_uint8 = (mask * 255).astype(np.uint8)
+
+        # Keep object and cut background
+        result = cv2.bitwise_and(image_rgb, image_rgb, mask=mask_uint8)
+        result_bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+
+        # Save into file
+        filename = f"bump_{int(time.time())}.jpg"
+        cv2.imwrite(filename, result_bgr)
+        print(f"Segmented object saved as {filename}")        
+
 
     def startup_check(self):
         print(f"Testing RoboCompCameraRGBDSimple.Point3D from ifaces.RoboCompCameraRGBDSimple")
@@ -162,7 +232,38 @@ class SpecificWorker(GenericWorker):
         QTimer.singleShot(200, QApplication.instance().quit)
 
 
+    # =============== DSR SLOTS ===================
+    # =============================================
 
+    def update_node_att(self, id: int, attribute_names: [str]):
+        console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
+
+    def update_node(self, id: int, type: str):
+        console.print(f"UPDATE NODE: {id} {type}", style='green')
+        self.current_node_id = id
+
+    def delete_node(self, id: int):
+        console.print(f"DELETE NODE:: {id} ", style='green')
+        if self.current_node_id == id:
+            self.current_node_id = None
+
+    def update_edge(self, fr: int, to: int, type: str):
+        console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
+
+    def update_edge_att(self, fr: int, to: int, type: str, attribute_names: [str]):
+        console.print(f"UPDATE EDGE ATT: {fr} to {type} {attribute_names}", style='green')
+        # check if if its RT, get x-y position and process SAM on that position
+        if type != "RT":
+            return
+    
+        print(f"Processing SAM on edge from {fr} to {to} of type {type}")
+        # add code to get x-y position from attributes
+        x, y = 320, 240 # example
+        self.process_sam_on_point(x, y)            
+            
+
+    def delete_edge(self, fr: int, to: int, type: str):
+        console.print(f"DELETE EDGE: {fr} to {type} {type}", style='green')
 
 
     ######################
@@ -179,5 +280,3 @@ class SpecificWorker(GenericWorker):
     # ifaces.RoboCompCameraRGBDSimple.TImage
     # ifaces.RoboCompCameraRGBDSimple.TDepth
     # ifaces.RoboCompCameraRGBDSimple.TRGBD
-
-

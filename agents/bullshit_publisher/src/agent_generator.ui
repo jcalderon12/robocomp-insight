@@ -16,8 +16,8 @@
   <widget class="QPushButton" name="create_agent_button">
    <property name="geometry">
     <rect>
-     <x>150</x>
-     <y>40</y>
+     <x>210</x>
+     <y>50</y>
      <width>115</width>
      <height>25</height>
     </rect>
@@ -41,6 +41,9 @@
      <height>27</height>
     </rect>
    </property>
+   <property name="text">
+    <string>bump</string>
+   </property>
   </widget>
   <widget class="QLabel" name="agent_name_label">
    <property name="geometry">
@@ -52,7 +55,7 @@
     </rect>
    </property>
    <property name="text">
-    <string>Agent name (if not empty):</string>
+    <string>Concept / Agent name:</string>
    </property>
   </widget>
   <widget class="QPlainTextEdit" name="agent_output">
@@ -104,6 +107,25 @@
    </property>
    <property name="text">
     <string>Delete generated agents on termination</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="create_concept_button">
+   <property name="geometry">
+    <rect>
+     <x>70</x>
+     <y>50</y>
+     <width>115</width>
+     <height>25</height>
+    </rect>
+   </property>
+   <property name="minimumSize">
+    <size>
+     <width>115</width>
+     <height>25</height>
+    </size>
+   </property>
+   <property name="text">
+    <string>Create concept</string>
    </property>
   </widget>
  </widget>

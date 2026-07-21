@@ -8,4 +8,5 @@ Component vision_sam
     };
     language python;
     gui Qt(QWidget);
+    options dsr;
 };

@@ -3,6 +3,12 @@
 # Proxies for required interfaces
 Proxies.CameraRGBDSimple = "camerargbdsimple:tcp -h localhost -p 10096"
 
+# Change id
+Agent.id = 9
+Agent.name = "vision_sam"
+Agent.configFile = ""
+
+
 Period.Compute = 100
 Period.Emergency = 500
 
