@@ -118,7 +118,7 @@ public slots:
 	 * \param desired_distance: Desired distance to the target in meters.
 	 * 
 	 */
-	void follow_target(float max_forward_speed_factor = 0.6f, float max_angular_speed_factor = 0.6f, float desired_distance = 0.5f);
+	void follow_target(float max_forward_speed_factor = 0.6f, float max_angular_speed_factor = 0.6f, float desired_distance = 0.5f, bool print_only = false);
 
 	/**
 	 * \brief This method calculates the robot position in the actual room and update the DSR graph with this information. 
@@ -169,7 +169,7 @@ private:
 	float prev_angle_error;
 	std::chrono::steady_clock::time_point last_follow_time;
 
-	bool print_extra_info = false;
+	bool print_extra_info = true;
 	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
 

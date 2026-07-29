@@ -20,6 +20,7 @@
 
 SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check) : GenericWorker(configLoader, tprx)
 {
+	setlocale(LC_NUMERIC, "C");
 	this->startup_check_flag = startup_check;
 	if(this->startup_check_flag)
 	{
@@ -103,9 +104,17 @@ void SpecificWorker::initialize()
 	last_odometry = {0.0f, 0.0f, 0.0f};
 
 	if (simulated)
-		desired_distance = configLoader.get<double>("Desired_distance") / 1000;
+		{
+			desired_distance = configLoader.get<double>("Desired_distance") / 1000;
+			std::cout << "Desired distance (simulated): " << desired_distance << std::endl;
+		}
 	else
-		desired_distance = configLoader.get<double>("Desired_distance");
+		{
+			desired_distance = configLoader.get<double>("Desired_distance");
+			std::cout << "Desired distance (real): " << desired_distance << std::endl;
+		}
+
+	std::cout << "Numeric locale active: " << setlocale(LC_NUMERIC, nullptr) << std::endl;
 }
 
 
@@ -113,10 +122,11 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	auto_localization();
+	follow_target(1.0f, 1.0f, desired_distance, true);
 
     if (queck_affordance_active())
 	{
-		follow_target(1.0f, 1.0f, desired_distance);
+		follow_target(1.0f, 1.0f, desired_distance, false);
 	}
 	else{
 		stop_robot();
@@ -124,8 +134,10 @@ void SpecificWorker::compute()
 
 	std::vector<float> actual_velocities = getVelocitiesFromDSR();
 
-	if (has_significant_change(actual_velocities, last_velocities_readed)) 
-		this->omnirobot_proxy->setSpeedBase(0.0 , actual_velocities[0], -actual_velocities[1]);
+	if (has_significant_change(actual_velocities, last_velocities_readed)) {
+		this->omnirobot_proxy->setSpeedBase(0.0, actual_velocities[0], actual_velocities[1]);
+		std::cout << "setSpeedBase -> advx: " << actual_velocities[0] << " | rot: " << actual_velocities[1] << std::endl;
+	}
 
 	last_velocities_readed = actual_velocities;	
 	
@@ -166,7 +178,7 @@ int SpecificWorker::startup_check()
 
 #pragma region ROBOT_METHODS
 
-void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance)
+void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance, bool print_only)
 {
     auto robot_node_opt = G->get_node("robot");
     if (!robot_node_opt.has_value())
@@ -205,7 +217,7 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     float y = t[1];
 
     float distance_to_target = std::sqrt(x*x + y*y);
-    float angle_to_target    = std::atan2(x, y);
+    float angle_to_target    = std::atan2(y, x);
 
     float distance_error = 0.0f;
     if (distance_to_target > 1e-3f)
@@ -224,7 +236,10 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 	if (dt > 1e-4f)
 	{
 		d_distance_error = (distance_error - prev_distance_error) / dt;
-		d_angle_error    = (angle_to_target - prev_angle_error)   / dt;
+		float angle_diff = angle_to_target - prev_angle_error;
+		angle_diff = std::atan2(std::sin(angle_diff), std::cos(angle_diff));
+		d_angle_error = angle_diff / dt;
+		// d_angle_error    = (angle_to_target - prev_angle_error)   / dt;
 	}
 
 	prev_distance_error = distance_error;
@@ -254,17 +269,30 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 		WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
 	);
 
-    if (print_extra_info)
-        std::cout << "Distance: "    << distance_to_target
-                  << "  Error: "     << distance_error
-                  << "  dError/dt: " << d_distance_error
-                  << "  Angle: "     << angle_to_target
-                  << "  Linear Vel: "<< linear_velocity
-                  << "  Angular Vel:"<< angular_velocity << std::endl;
+    if (print_extra_info){
+		auto ts_robot = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count();
+	
+		std::cout << "[" << ts_robot << "] RT target translation -> x: " << x << " | y: " << y
+				  << " | angle_to_target: " << angle_to_target
+				  << " | linear_v: " << linear_velocity
+				  << " | angular_v: " << angular_velocity << std::endl;
+	}    
+	
+	// std::cout << "Distance: "    << distance_to_target
+        //          << "  Error: "     << distance_error
+        //          << "  dError/dt: " << d_distance_error
+        //          << "  Angle: "     << angle_to_target
+        //          << "  Linear Vel: "<< linear_velocity
+        //          << "  Angular Vel:"<< angular_velocity
+	 	//		  << "RT target translation -> x: " << x << " | y: " << y 
+		//		  << std::endl;
 
-    G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
-    G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
-    G->update_node(robot_node);
+	if (!print_only) {
+		G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
+		G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
+	    G->update_node(robot_node);
+	}
 }
 
 std::vector<float> SpecificWorker::auto_localization()

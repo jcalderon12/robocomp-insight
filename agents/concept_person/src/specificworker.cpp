@@ -86,11 +86,19 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
+	auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	auto relative_position = get_person_relative_position();
 
+	std::cout << "[" << now_ms << "] get_person_relative_position -> x: " << relative_position[0]
+		<< " | y: " << relative_position[1] << " | z: " << relative_position[2] << std::endl;
 
-	if (has_significant_change(relative_position, last_relative_pose)){
-		if (update_relative_position_to_person(relative_position)){
+	bool changed = has_significant_change(relative_position, last_relative_pose);
+	std::cout << "[" << now_ms << "] Significant change detected: " << (changed ? "Yes" : "No") << std::endl;
+
+	if (changed){
+		bool updated = update_relative_position_to_person(relative_position, now_ms);
+		std::cout << "[" << now_ms << "] update_relative_position_to_person -> " << (updated ? "Updated successfully" : "Update failed") << std::endl;
+		if (updated){
 			last_relative_pose = relative_position;
 		}
 	}
@@ -202,6 +210,28 @@ std::vector<float> SpecificWorker::get_person_relative_position()
 						 robot_pose.position.z / 1000.f};
 
 		relative_position = {p_pos[0] - r_pos[0], p_pos[1] - r_pos[1], p_pos[2] - r_pos[2]};
+
+		float dx = (person_pose.position.x - robot_pose.position.x) / 1000.f;
+		float dy = (person_pose.position.y - robot_pose.position.y) / 1000.f;
+		float dz = (person_pose.position.z - robot_pose.position.z) / 1000.f;
+
+		Eigen::Quaternionf q(robot_pose.orientation.w, robot_pose.orientation.x,
+							 robot_pose.orientation.y, robot_pose.orientation.z);
+
+		q.normalize();
+		// float theta = q.toRotationMatrix().eulerAngles(0, 1, 2)[2];
+		float theta = std::atan2(2.f * (q.w() * q.z() + q.x() * q.y()), 1.f - 2.f * (q.y() * q.y() + q.z() * q.z()));
+		float local_x = -std::sin(theta) * dx + std::cos(theta) * dy;
+		float local_y = -std::cos(theta) * dx - std::sin(theta) * dy;
+
+		relative_position = {local_x, local_y, dz};
+
+		// debug
+		auto ts_person = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count();
+		std::cout << "[" << ts_person << "] local_delta -> dx: " << relative_position[0]
+				  << " | dy: " << relative_position[1]
+				  << " | theta: " << theta << std::endl;
 	}
 	else{
 		auto segmented_objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
@@ -372,7 +402,7 @@ bool SpecificWorker::check_affordance_accepted()
 	}
 }
 
-bool SpecificWorker::update_relative_position_to_person(const std::vector<float>& relative_position)
+bool SpecificWorker::update_relative_position_to_person(const std::vector<float>& relative_position, std::uint64_t now_ms)
 {
 	auto optional_robot_node = G->get_node("robot");
     auto optional_person_node = G->get_node("person");
@@ -412,8 +442,16 @@ bool SpecificWorker::update_relative_position_to_person(const std::vector<float>
 		else
 		{
 			consecutive_large_jump_confirmations++;
-			if (print_extra_info)
-				std::cout << "Large jump confirmation " << consecutive_large_jump_confirmations << "/" << required_large_jump_confirmations << std::endl;
+			if (print_extra_info){
+				// std::cout << "Large jump confirmation " << consecutive_large_jump_confirmations << "/" << required_large_jump_confirmations << std::endl;
+				std::cout << "[" << now_ms << "] jump_distance: " << jump_distance
+				<< " | threshold: " << large_jump_threshold
+				<< " | pending_distance: " << pending_distance
+				<< " | tolerance: " << large_jump_candidate_tolerance
+				<< " | confirmations: " << consecutive_large_jump_confirmations
+				<< "/" << required_large_jump_confirmations << std::endl;
+
+			}
 			if (consecutive_large_jump_confirmations < required_large_jump_confirmations)
 				return false;
 		}
