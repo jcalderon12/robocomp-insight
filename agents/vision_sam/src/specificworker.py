@@ -26,6 +26,7 @@ from rich.console import Console
 from genericworker import *
 import interfaces as ifaces
 import numpy as np
+import os
 import cv2
 # from ultralytics import SAM
 import torch
@@ -68,7 +69,14 @@ class SpecificWorker(GenericWorker):
     def __init__(self, proxy_map, configData, startup_check=False):
         super(SpecificWorker, self).__init__(proxy_map, configData)
         self.Period = configData["Period"]["Compute"]
-        
+
+        # activate mouse tracking and install event filter to capture mouse clicks on the image label
+        self.ui.image_label.setMouseTracking(True)
+        self.ui.image_label.installEventFilter(self)
+
+        self.selected_point = None
+        self.ui.segment_button.clicked.connect(self.on_segment_button_clicked)
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.qimage = None
         # self.sam = SAM("sam_b.pt")
@@ -83,7 +91,7 @@ class SpecificWorker(GenericWorker):
             signals.connect(self.g, signals.UPDATE_EDGE, self.update_edge)
             signals.connect(self.g, signals.UPDATE_EDGE_ATTR, self.update_edge_att)
             signals.connect(self.g, signals.DELETE_EDGE, self.delete_edge)
-            console.print("signals connected")
+            console.print("dsr signals connected")
         except RuntimeError as e:
             print(e)
     
@@ -164,6 +172,36 @@ class SpecificWorker(GenericWorker):
 
         return True
 
+    def eventFilter(self, watched, event):
+        # filter events within image label
+        if watched == self.ui.image_label:
+            # handle mouse hover tracking
+            if event.type() == QtCore.QEvent.MouseMove:
+                pos = event.position().toPoint()
+                self.ui.image_coords_label.setText(f"Mouse at: ({pos.x()}, {pos.y()})")
+            # handle mouse click events
+            elif event.type() == QtCore.QEvent.MouseButtonPress:
+                pos = event.position().toPoint()
+                if self.ui.image_label.pixmap():
+                    pix_w = self.ui.image_label.pixmap().width()
+                    pix_h = self.ui.image_label.pixmap().height()
+                    lbl_w = self.ui.image_label.width()
+                    lbl_h = self.ui.image_label.height()
+                    scaled_x = int(pos.x() * pix_w / lbl_w)
+                    scaled_y = int(pos.y() * pix_h / lbl_h)
+                else:
+                    scaled_x, scaled_y = pos.x(), pos.y()
+                self.selected_point = (scaled_x, scaled_y)
+                self.ui.image_sel_coords_label.setText(f"Selected point: ({scaled_x}, {scaled_y})")
+        return super(SpecificWorker, self).eventFilter(watched, event)
+
+    def on_segment_button_clicked(self):
+        if self.selected_point is not None:
+            x, y = self.selected_point
+            print(f"Segment button clicked. Processing SAM on point: ({x}, {y})")
+            self.process_sam_on_point(x, y)
+        else:
+            print("No point selected. Please click on the image to select a point before segmenting.")
 
     def get_current_rgb_image(self):
         try:
@@ -183,7 +221,7 @@ class SpecificWorker(GenericWorker):
         # Load SAM
         if not hasattr(self, 'sam') or self.sam is None:
             print("Loading SAM model...")
-            from ultralytics import SAM
+            from ultralytics import SAM # import here for lazy loading
             self.sam = SAM("sam_b.pt")
 
         # Get current RGB image
@@ -205,6 +243,7 @@ class SpecificWorker(GenericWorker):
 
 
     def save_segmented_object(self, mask, image_rgb):
+        os.makedirs("segmented_objects", exist_ok=True)
         # Mask into uint8 format
         mask_uint8 = (mask * 255).astype(np.uint8)
 
@@ -214,8 +253,9 @@ class SpecificWorker(GenericWorker):
 
         # Save into file
         filename = f"bump_{int(time.time())}.jpg"
-        cv2.imwrite(filename, result_bgr)
-        print(f"Segmented object saved as {filename}")        
+        filepath = os.path.join("segmented_objects", filename)
+        cv2.imwrite(filepath, result_bgr)
+        print(f"Segmented object saved as {filepath}")        
 
 
     def startup_check(self):
@@ -237,6 +277,20 @@ class SpecificWorker(GenericWorker):
 
     def update_node_att(self, id: int, attribute_names: [str]):
         console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
+        try:
+            node = self.g.get_node(id)
+            if node is None:
+                return
+            attrs = node.attrs
+            if "pos_x" in attrs and "pos_y" in attrs:
+                x = int(attrs["pos_x"].value)
+                y = int(attrs["pos_y"].value)
+                if x > 0 and y > 0:
+                    print(f"Processing SAM on node {id} at coordinates: ({x}, {y})")
+                    self.process_sam_on_point(x, y)
+        except Exception as e:
+            print(f"ERROR in update_node_att: {e}")
+
 
     def update_node(self, id: int, type: str):
         console.print(f"UPDATE NODE: {id} {type}", style='green')
