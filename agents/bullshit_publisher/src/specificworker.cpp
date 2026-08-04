@@ -185,6 +185,10 @@ void SpecificWorker::initialize()
 
 		// Create the concept node
 		DSR::Node concept_node = DSR::Node::create<object_node_type>(concept_name.toStdString());
+		// Add 2D coords (for SAM testing) as a new attribute: (596, 589) - fixed coordinates for testing
+		concept_node.attrs()["pos_x"].value(596.0f);
+		concept_node.attrs()["pos_y"].value(589.0f);
+
 		try {
 			G->insert_node(concept_node);
 			
@@ -192,7 +196,7 @@ void SpecificWorker::initialize()
 			auto robot_optional = G->get_node("robot");
 			if (robot_optional.has_value()) {
 				DSR::Node robot_node = robot_optional.value();
-				rt->insert_or_assign_edge_RT(robot_node, concept_node.id(), {0.f, 1500.f, 0.f}, {0.f, 0.f, 0.f});
+				rt->insert_or_assign_edge_RT(robot_node, concept_node.id(), {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
 				agent_generator_ui.agent_status_label->setText("<font color ='green'><b>Concept created successfully!</b></font>");
 			} else {
 				agent_generator_ui.agent_status_label->setText("<font color ='red'><b>Error: Robot node not found</b></font>");
@@ -298,19 +302,33 @@ void SpecificWorker::add_node(){
 
 		// Add positions
 		DSR::Attribute pos_x_attr, pos_y_attr;
-		pos_x_attr.value(mission_pos_x);
-		pos_y_attr.value(mission_pos_y);
-		test_node.attrs()["pos_x"] = pos_x_attr;
-		test_node.attrs()["pos_y"] = pos_y_attr;
+		if(!bullshit_publisher_ui.sam_checkBox->isChecked()){
+			pos_x_attr.value(mission_pos_x);
+			pos_y_attr.value(mission_pos_y);
+			test_node.attrs()["pos_x"] = pos_x_attr;
+			test_node.attrs()["pos_y"] = pos_y_attr;
 
-		// Update layout counters
-		missions_in_current_row++;
-		if (missions_in_current_row >= 3) {
-			missions_in_current_row = 0;
-			current_y_offset += 300.0f; // Move down for the next row
+			// Update layout counters
+			missions_in_current_row++;
+			if (missions_in_current_row >= 3) {
+				missions_in_current_row = 0;
+				current_y_offset += 300.0f; // Move down for the next row
+			}
 		}
-
+		// fixed coords for SAM testing - need to match with robot's camera view
+		else {
+			// create node with RT edge
+			test_node.attrs()["pos_x"].value(596.0f);
+			test_node.attrs()["pos_y"].value(589.0f);
+		}
 		G->insert_node(test_node);
+		if (bullshit_publisher_ui.sam_checkBox->isChecked()) {
+			auto robot_optional = G->get_node("robot");
+			if (robot_optional.has_value()) {
+				DSR::Node robot_node = robot_optional.value();
+				rt->insert_or_assign_edge_RT(robot_node, test_node.id(), {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
+			}
+		}
 		
 		// Add the new node name to the list box (existing test nodes) if it doesn't already exist
 		int index = bullshit_publisher_ui.node_name_list_box->findText(q_node_name);

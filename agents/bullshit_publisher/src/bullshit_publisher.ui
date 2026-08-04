@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>400</width>
-    <height>329</height>
+    <height>356</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -21,6 +21,9 @@
      <width>171</width>
      <height>25</height>
     </rect>
+   </property>
+   <property name="text">
+    <string>bump</string>
    </property>
   </widget>
   <widget class="QComboBox" name="node_name_list_box">
@@ -65,7 +68,7 @@
     <string>Node list:</string>
    </property>
   </widget>
-  <widget class="QWidget" name="">
+  <widget class="QWidget" name="layoutWidget">
    <property name="geometry">
     <rect>
      <x>9</x>
@@ -139,6 +142,19 @@
      </widget>
     </item>
    </layout>
+  </widget>
+  <widget class="QCheckBox" name="sam_checkBox">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>330</y>
+     <width>381</width>
+     <height>23</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Test SAM (will add fixed coords, need SAM running)</string>
+   </property>
   </widget>
  </widget>
  <resources/>
