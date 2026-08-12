@@ -295,6 +295,11 @@ agents/inner_simulator/*runs/
 agents/inner_simulator/sim_output.json
 agents/mission_controller/recorded_missions/*
 agents/inner_simulator/src/sim_scene.json
+agents/inner_simulator/logs/
+
+# Vision SAM
+agents/vision_sam/*.pt
+agents/vision_sam/segmented_objects/
 
 # # #
 
