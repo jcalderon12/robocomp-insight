@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>400</width>
-    <height>356</height>
+    <height>333</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -142,19 +142,6 @@
      </widget>
     </item>
    </layout>
-  </widget>
-  <widget class="QCheckBox" name="sam_checkBox">
-   <property name="geometry">
-    <rect>
-     <x>10</x>
-     <y>330</y>
-     <width>381</width>
-     <height>23</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Test SAM (will add fixed coords, need SAM running)</string>
-   </property>
   </widget>
  </widget>
  <resources/>

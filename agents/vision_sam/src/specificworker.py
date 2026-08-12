@@ -39,6 +39,60 @@ console = Console(highlight=False)
 
 from pydsr import *
 
+# ================ ZED CAMERA CALIBRATION (Shadow.proto) ================
+# Mount offset and rotation of the "zed" RGB camera relative to the robot's
+# local frame, taken from webots-shadow/protos/Shadow.proto (the Camera child
+# node under the robot Group, name "zed"). Webots gives these in meters;
+# converted here to millimeters to match the mm convention used elsewhere
+# in this DSR (sim_scene.json, causes.json, problem_position).
+ZED_CAMERA_NAME = "zed"
+ZED_MOUNT_OFFSET_MM = [0.0, -75.0, 945.0]
+ZED_MOUNT_ROTATION_AXIS = [0.0, 0.0, 1.0]
+ZED_MOUNT_ROTATION_ANGLE_RAD = 1.57  # ~90 deg about Z, robot-local frame
+
+# concept_robot writes the live room->robot RT translation in METERS (it
+# divides the raw Webots pose by 1000 before storing it), while every other
+# position in this project (sim_scene.json, causes.json, problem_position) is
+# in MILLIMETERS. Pre-existing unit mismatch, not introduced here: converted
+# back to mm on read so this module stays consistent with the rest of the DSR.
+ROOM_ROBOT_RT_TRANSLATION_IS_METERS = True
+
+
+def _rotation_matrix_from_axis_angle(axis, angle):
+    """Rodrigues' formula: 3x3 rotation matrix from an axis-angle rotation."""
+    axis = np.array(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    x, y, z = axis
+    c, s = np.cos(angle), np.sin(angle)
+    C = 1 - c
+    return np.array([
+        [x * x * C + c,     x * y * C - z * s, x * z * C + y * s],
+        [y * x * C + z * s, y * y * C + c,     y * z * C - x * s],
+        [z * x * C - y * s, z * y * C + x * s, z * z * C + c],
+    ])
+
+
+def _rotation_matrix_from_quaternion(qx, qy, qz, qw):
+    """3x3 rotation matrix from a quaternion (x, y, z, w)."""
+    n = np.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if n < 1e-9:
+        return np.eye(3)
+    qx, qy, qz, qw = qx / n, qy / n, qz / n, qw / n
+    return np.array([
+        [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw),     2 * (qx * qz + qy * qw)],
+        [2 * (qx * qy + qz * qw),     1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+        [2 * (qx * qz - qy * qw),     2 * (qy * qz + qx * qw),     1 - 2 * (qx * qx + qy * qy)],
+    ])
+
+
+def _homogeneous_transform(rotation_3x3, translation_3):
+    """Build a 4x4 homogeneous transform from a 3x3 rotation and a translation."""
+    t = np.eye(4)
+    t[:3, :3] = rotation_3x3
+    t[:3, 3] = translation_3
+    return t
+
+
 # Animated spinner class to show progress while processing the image with SAM
 class AnimatedSpinner:
     def __init__(self, message="Processing image with SAM..."):
@@ -83,6 +137,7 @@ class SpecificWorker(GenericWorker):
         self.sam_masks = None
 
         self.current_node_id = None
+        self._projected_problem_positions = {}  # node id -> last-projected problem_position value
 
         try:
             signals.connect(self.g, signals.UPDATE_NODE_ATTR, self.update_node_att)
@@ -172,25 +227,30 @@ class SpecificWorker(GenericWorker):
 
         return True
 
+    def _scale_label_pos_to_image(self, pos):
+        """Scale a mouse position in image_label's widget coordinates to the
+        underlying pixmap's native resolution (label may display it scaled).
+        """
+        if self.ui.image_label.pixmap():
+            pix_w = self.ui.image_label.pixmap().width()
+            pix_h = self.ui.image_label.pixmap().height()
+            lbl_w = self.ui.image_label.width()
+            lbl_h = self.ui.image_label.height()
+            return int(pos.x() * pix_w / lbl_w), int(pos.y() * pix_h / lbl_h)
+        return pos.x(), pos.y()
+
     def eventFilter(self, watched, event):
         # filter events within image label
         if watched == self.ui.image_label:
             # handle mouse hover tracking
             if event.type() == QtCore.QEvent.MouseMove:
                 pos = event.position().toPoint()
-                self.ui.image_coords_label.setText(f"Mouse at: ({pos.x()}, {pos.y()})")
+                scaled_x, scaled_y = self._scale_label_pos_to_image(pos)
+                self.ui.image_coords_label.setText(f"Mouse at: ({scaled_x}, {scaled_y})")
             # handle mouse click events
             elif event.type() == QtCore.QEvent.MouseButtonPress:
                 pos = event.position().toPoint()
-                if self.ui.image_label.pixmap():
-                    pix_w = self.ui.image_label.pixmap().width()
-                    pix_h = self.ui.image_label.pixmap().height()
-                    lbl_w = self.ui.image_label.width()
-                    lbl_h = self.ui.image_label.height()
-                    scaled_x = int(pos.x() * pix_w / lbl_w)
-                    scaled_y = int(pos.y() * pix_h / lbl_h)
-                else:
-                    scaled_x, scaled_y = pos.x(), pos.y()
+                scaled_x, scaled_y = self._scale_label_pos_to_image(pos)
                 self.selected_point = (scaled_x, scaled_y)
                 self.ui.image_sel_coords_label.setText(f"Selected point: ({scaled_x}, {scaled_y})")
         return super(SpecificWorker, self).eventFilter(watched, event)
@@ -242,6 +302,80 @@ class SpecificWorker(GenericWorker):
             print("No mask detected by SAM for the given point.")
 
 
+    def get_room_to_camera_transform(self):
+        """Compose the fixed zed mount transform with the live room->robot RT edge
+        to get the room->camera transform (4x4 homogeneous, millimeters).
+            Returns:
+                - np.ndarray | None: 4x4 transform, or None if robot/room/RT missing.
+        """
+        robot_node = self.g.get_node("robot")
+        room_node = self.g.get_node("room")
+        if robot_node is None or room_node is None:
+            return None
+
+        rt_edge = self.g.get_edge(room_node.id, robot_node.id, "RT")
+        if rt_edge is None or "rt_translation" not in rt_edge.attrs or "rt_quaternion" not in rt_edge.attrs:
+            return None
+
+        translation = list(rt_edge.attrs["rt_translation"].value)
+        if ROOM_ROBOT_RT_TRANSLATION_IS_METERS:
+            translation = [v * 1000.0 for v in translation]
+        qx, qy, qz, qw = rt_edge.attrs["rt_quaternion"].value
+        print(f"[DEBUG] room->robot translation (mm): {translation}, quaternion (x,y,z,w): {(qx, qy, qz, qw)}")
+
+        room_to_robot = _homogeneous_transform(_rotation_matrix_from_quaternion(qx, qy, qz, qw), translation)
+        robot_to_camera = _homogeneous_transform(
+            _rotation_matrix_from_axis_angle(ZED_MOUNT_ROTATION_AXIS, ZED_MOUNT_ROTATION_ANGLE_RAD),
+            ZED_MOUNT_OFFSET_MM,
+        )
+        return room_to_robot @ robot_to_camera
+
+    def project_point_3d_to_2d(self, point_room_mm):
+        """Project a 3D point expressed in the 'room' frame (millimeters) onto the
+        zed camera's image plane.
+            Parameters:
+                - point_room_mm (list[float]): [x, y, z] in the 'room' frame, mm.
+            Returns:
+                - tuple[int, int] | None: (u, v) pixel coordinates, or None if the
+                  point is behind the camera, out of frame, or data is unavailable.
+        """
+        room_to_camera = self.get_room_to_camera_transform()
+        if room_to_camera is None:
+            print("Cannot project: room->camera transform unavailable (missing robot/room/RT).")
+            return None
+
+        camera_to_room = np.linalg.inv(room_to_camera)
+        point_room_h = np.array([point_room_mm[0], point_room_mm[1], point_room_mm[2], 1.0])
+        point_camera = camera_to_room @ point_room_h
+        print(f"[DEBUG] point in room frame (mm): {point_room_mm}, point in camera frame (mm): {point_camera[:3].tolist()}")
+
+        # Webots device convention (Camera/RangeFinder/Lidar): looks down local +X,
+        # with +Y left and +Z up (ROS-style body axes, not OpenGL -Z-forward).
+        # Confirmed against real debug data: using +Z as depth gave ~1000mm for a
+        # point actually ~3900mm away; +X matches the true distance.
+        depth = point_camera[0]
+        if depth <= 0:
+            print(f"Cannot project: point is behind the camera (depth={depth:.1f}mm).")
+            return None
+
+        try:
+            image_struct = self.camerargbdsimple_proxy.getImage(ZED_CAMERA_NAME)
+        except Exception as e:
+            print(f"Cannot project: error fetching '{ZED_CAMERA_NAME}' image for intrinsics: {e}")
+            return None
+        print(f"[DEBUG] image intrinsics: width={image_struct.width}, height={image_struct.height}, "
+              f"focalx={image_struct.focalx}, focaly={image_struct.focaly}, depth={depth:.1f}mm")
+
+        u = image_struct.width / 2 - image_struct.focalx * (point_camera[1] / depth)
+        v = image_struct.height / 2 - image_struct.focaly * (point_camera[2] / depth)
+
+        if not (0 <= u < image_struct.width and 0 <= v < image_struct.height):
+            print(f"Point projects outside the image frame: ({u:.1f}, {v:.1f}) vs {image_struct.width}x{image_struct.height}.")
+            return None
+
+        return int(u), int(v)
+
+
     def save_segmented_object(self, mask, image_rgb):
         os.makedirs("segmented_objects", exist_ok=True)
         # Mask into uint8 format
@@ -275,19 +409,35 @@ class SpecificWorker(GenericWorker):
     # =============== DSR SLOTS ===================
     # =============================================
 
+    def maybe_project_problem_position(self, id: int) -> None:
+        """Check node 'id' for a 'problem_position' attribute and trigger a SAM
+        capture at its projected pixel, once per distinct value. Needed because
+        DSR node creation (insert_node) only emits UPDATE_NODE, never
+        UPDATE_NODE_ATTR (that one only fires on later updates, e.g. the RT
+        edge's level/parent), so a fresh node's initial attributes must be
+        picked up from the UPDATE_NODE signal too.
+        """
+        node = self.g.get_node(id)
+        if node is None or "problem_position" not in node.attrs:
+            return
+
+        point_room_mm = list(node.attrs["problem_position"].value)
+        if self._projected_problem_positions.get(id) == point_room_mm:
+            return  # Already processed this exact value for this node.
+        self._projected_problem_positions[id] = point_room_mm
+
+        pixel = self.project_point_3d_to_2d(point_room_mm)
+        if pixel is not None:
+            x, y = pixel
+            print(f"Projected 3D point {point_room_mm} to pixel ({x}, {y}) on node {id}. Processing SAM.")
+            self.ui.image_sel_coords_label.setText(f"Selected point: ({x}, {y})")
+            self.process_sam_on_point(x, y)
+
     def update_node_att(self, id: int, attribute_names: [str]):
         console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
         try:
-            node = self.g.get_node(id)
-            if node is None:
-                return
-            attrs = node.attrs
-            if "pos_x" in attrs and "pos_y" in attrs:
-                x = int(attrs["pos_x"].value)
-                y = int(attrs["pos_y"].value)
-                if x > 0 and y > 0:
-                    print(f"Processing SAM on node {id} at coordinates: ({x}, {y})")
-                    self.process_sam_on_point(x, y)
+            if "problem_position" in attribute_names:
+                self.maybe_project_problem_position(id)
         except Exception as e:
             print(f"ERROR in update_node_att: {e}")
 
@@ -295,6 +445,10 @@ class SpecificWorker(GenericWorker):
     def update_node(self, id: int, type: str):
         console.print(f"UPDATE NODE: {id} {type}", style='green')
         self.current_node_id = id
+        try:
+            self.maybe_project_problem_position(id)
+        except Exception as e:
+            print(f"ERROR in update_node: {e}")
 
     def delete_node(self, id: int):
         console.print(f"DELETE NODE:: {id} ", style='green')

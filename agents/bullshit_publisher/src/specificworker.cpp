@@ -185,9 +185,26 @@ void SpecificWorker::initialize()
 
 		// Create the concept node
 		DSR::Node concept_node = DSR::Node::create<object_node_type>(concept_name.toStdString());
-		// Add 2D coords (for SAM testing) as a new attribute: (596, 589) - fixed coordinates for testing
-		concept_node.attrs()["pos_x"].value(596.0f);
-		concept_node.attrs()["pos_y"].value(589.0f);
+
+		// Use the 'problem' node's computed 3D position if present (see inner_simulator);
+		// otherwise fall back to the position captured from the last manual inner_simulator
+		// run, so bullshit_publisher/vision_sam/webots can be tested without the full pipeline.
+		bool got_position_from_problem_node = false;
+		if (auto problem_node = G->get_node("problem"); problem_node.has_value())
+		{
+			auto it = problem_node.value().attrs().find("problem_position");
+			if (it != problem_node.value().attrs().end())
+			{
+				concept_node.attrs()["problem_position"] = it->second;
+				got_position_from_problem_node = true;
+			}
+		}
+		if (!got_position_from_problem_node)
+			// X/Y swapped back vs the value captured on the 'problem' node: that one went
+			// through get_robot_positions_relative_to_problem's axis swap (inner_simulator/
+			// PyBullet convention), while rt_translation (and this projection) use the raw,
+			// unswapped Webots/room convention. See conversation for the full trace.
+			concept_node.attrs()["problem_position"].value(std::vector<float>{178.89f, -138.89f, 1.00f});
 
 		try {
 			G->insert_node(concept_node);
@@ -197,6 +214,13 @@ void SpecificWorker::initialize()
 			if (robot_optional.has_value()) {
 				DSR::Node robot_node = robot_optional.value();
 				rt->insert_or_assign_edge_RT(robot_node, concept_node.id(), {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
+
+				int index = bullshit_publisher_ui.node_name_list_box->findText(concept_name);
+				if (index == -1) {
+					bullshit_publisher_ui.node_name_list_box->addItem(concept_name);
+					index = bullshit_publisher_ui.node_name_list_box->findText(concept_name);
+				}
+				bullshit_publisher_ui.node_name_list_box->setCurrentText(index != -1 ? bullshit_publisher_ui.node_name_list_box->itemText(index) : concept_name);
 				agent_generator_ui.agent_status_label->setText("<font color ='green'><b>Concept created successfully!</b></font>");
 			} else {
 				agent_generator_ui.agent_status_label->setText("<font color ='red'><b>Error: Robot node not found</b></font>");
@@ -302,33 +326,20 @@ void SpecificWorker::add_node(){
 
 		// Add positions
 		DSR::Attribute pos_x_attr, pos_y_attr;
-		if(!bullshit_publisher_ui.sam_checkBox->isChecked()){
-			pos_x_attr.value(mission_pos_x);
-			pos_y_attr.value(mission_pos_y);
-			test_node.attrs()["pos_x"] = pos_x_attr;
-			test_node.attrs()["pos_y"] = pos_y_attr;
 
-			// Update layout counters
-			missions_in_current_row++;
-			if (missions_in_current_row >= 3) {
-				missions_in_current_row = 0;
-				current_y_offset += 300.0f; // Move down for the next row
-			}
+		pos_x_attr.value(mission_pos_x);
+		pos_y_attr.value(mission_pos_y);
+		test_node.attrs()["pos_x"] = pos_x_attr;
+		test_node.attrs()["pos_y"] = pos_y_attr;
+
+		// Update layout counters
+		missions_in_current_row++;
+		if (missions_in_current_row >= 3) {
+			missions_in_current_row = 0;
+			current_y_offset += 300.0f; // Move down for the next row
 		}
-		// fixed coords for SAM testing - need to match with robot's camera view
-		else {
-			// create node with RT edge
-			test_node.attrs()["pos_x"].value(596.0f);
-			test_node.attrs()["pos_y"].value(589.0f);
-		}
+
 		G->insert_node(test_node);
-		if (bullshit_publisher_ui.sam_checkBox->isChecked()) {
-			auto robot_optional = G->get_node("robot");
-			if (robot_optional.has_value()) {
-				DSR::Node robot_node = robot_optional.value();
-				rt->insert_or_assign_edge_RT(robot_node, test_node.id(), {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
-			}
-		}
 		
 		// Add the new node name to the list box (existing test nodes) if it doesn't already exist
 		int index = bullshit_publisher_ui.node_name_list_box->findText(q_node_name);

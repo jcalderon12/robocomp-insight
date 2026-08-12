@@ -419,9 +419,20 @@ class SpecificWorker(GenericWorker):
                             for rec in res:
                                 self.logger.log(f"\tRecording{rec[0]} with score {rec[1]}", style="blue")
                                 items.append(historicals[h][rec[0]]) #stores the whole recording (ts, acc and gyro) of the historical with id rec[0]
-                            
+
                             row = {"cause_definition": self.causes_data[i], "top_five": items}
                             sim_out["registers"].append(row)
+
+                            # Some causes (e.g. "bump") search a grid of candidate positions around
+                            # the estimated problem location (see CauseBump.bump_distributed_positions).
+                            # For those, the winning recording's id doubles as the index into that
+                            # grid, so we can recover the 3D position of the best match and persist
+                            # it to the DSR. Causes with no spatial grid (e.g. "wheel") simply have no
+                            # "distributed_positions" entry and are skipped here.
+                            if res:
+                                best_rec_id, best_score = res[0]
+                                self.update_problem_position_in_dsr(items[0], best_rec_id)
+
                             i += 1
 
                     # Write results to JSON file
@@ -780,7 +791,32 @@ class SpecificWorker(GenericWorker):
             imu_node.attrs["imu_gyroscope"].value = angular_vel.tolist()
         self.graphs["work"].update_node(imu_node)
 
-    
+
+    def update_problem_position_in_dsr(self, best_recording: dict, position_index: int) -> None:
+        """
+        Persist the estimated 3D position of the detected problem (e.g. a bump) onto
+        the 'problem' node, using the winning grid cell from the best-matching simulation.
+
+        :param best_recording: The best-matching simulation recording (includes 'generated_instances').
+        :param position_index: Id/repetition index of the best-matching simulation, which
+                                doubles as the index into 'distributed_positions'.
+        """
+        distributed_positions = best_recording.get("generated_instances", {}).get("distributed_positions")
+        if not distributed_positions or position_index >= len(distributed_positions):
+            return  # This cause has no spatial grid (e.g. "wheel"); nothing to store.
+
+        position = distributed_positions[position_index]
+
+        problem_node = self.graphs["work"].get_node("problem")
+        if problem_node is None:
+            self.logger.log("'problem' node not found in DSR graph, cannot store problem_position.", style="bold red")
+            return
+
+        problem_node.attrs["problem_position"] = Attribute(list(position), self.agent_id)
+        self.graphs["work"].update_node(problem_node)
+        self.logger.log(f"Stored problem_position {position} (mm) on 'problem' node.", style="bold green")
+
+
     def create_edge_in_dsr(self, fr_node, to_node, edge_type):
         """
         Create an edge in the DSR graph
