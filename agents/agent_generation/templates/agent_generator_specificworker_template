@@ -2,6 +2,14 @@ import os
 import sys
 import time
 
+# Make the shared agent_generation package (agents/agent_generation/) importable.
+# This generated agent lives at agents/<concept_name>/src/, so agent_generation
+# is two directories up; add it before importing from it below.
+_dir_name = os.path.dirname(os.path.abspath(__file__))
+_agents_dir = os.path.dirname(os.path.dirname(_dir_name))
+if _agents_dir not in sys.path:
+    sys.path.append(_agents_dir)
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from rich.console import Console
@@ -10,8 +18,8 @@ from genericworker import *
 import pybullet as p
 import pybullet_data as pd
 import pybullet_utils.bullet_client as bc
-from agent_training.yolo_dataset import YoloDataset
-from agent_training.yolo_trainer import YoloTrainer
+from agent_generation.yolo_dataset import YoloDataset
+from agent_generation.yolo_trainer import YoloTrainer
 import cv2
 import random
 import multiprocessing as mp

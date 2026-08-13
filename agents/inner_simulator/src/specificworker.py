@@ -66,6 +66,12 @@ agent_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if agent_root not in sys.path:
     sys.path.insert(0, agent_root)
 
+# Get the path to 'agents' (one level up from 'inner_simulator') to reach the
+# shared agent_generation package (agent scaffolding + templates + training).
+agents_root = os.path.dirname(agent_root)
+if agents_root not in sys.path:
+    sys.path.insert(0, agents_root)
+
 from src.simulation_scene import SimulationScene
 from src.logger import Logger
 
@@ -76,7 +82,7 @@ import numpy as np
 import locale
 
 from concurrent.futures import ProcessPoolExecutor
-from .agent_generator import *
+from agent_generation.agent_generator import *
 
 from pybullet_imu import IMU
 from pydsr import *

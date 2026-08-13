@@ -131,11 +131,11 @@ void SpecificWorker::initialize()
 		agent_generator_ui.agent_status_label->setText("<font color ='orange'><b>Generating agent...</b></font>");
 
 		QDir dir(QCoreApplication::applicationDirPath());
-		dir.cdUp(); // Move up to the parent directory
-		QString script_path = dir.absolutePath() + "/src/agent_generator.py";
-		dir.cdUp(); // Move up to agents directory
+		dir.cdUp(); // bin/ -> bullshit_publisher/
+		dir.cdUp(); // bullshit_publisher/ -> agents/
 		QString output_path = dir.absolutePath();
-		current_agent_name = output_path + "/" + cause_name;
+		QString script_path = output_path + "/agent_generation/agent_generator.py";
+		current_agent_name = output_path + "/concept_" + cause_name;
 		QStringList args;
 		args << script_path << cause_name << output_path;
 

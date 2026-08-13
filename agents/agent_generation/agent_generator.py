@@ -5,7 +5,7 @@ from pathlib import Path
 from jinja2 import Template
 
 # Setup paths
-BASE_DIR = Path(__file__).parent.resolve() # "bullshit_publisher/src/"
+BASE_DIR = Path(__file__).parent.resolve() # "agents/agent_generation/"
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 # Templates
@@ -19,13 +19,16 @@ config_template = load_template("agent_generator_config_template")
 
 def generate_agent(cause_name: str, output_path: str) -> bool:
     base_dir = Path(output_path).resolve()
-    out_dir = (base_dir / cause_name).resolve()
+    # Agent directory and component both use the "concept_<name>" convention,
+    # so the folder name always matches the component/binary generated inside it.
+    agent_name = f"concept_{cause_name}"
+    out_dir = (base_dir / agent_name).resolve()
 
     try:
         # Validate cause_name to prevent empty or malicious input
         if not cause_name or not cause_name.strip() or any(c in cause_name for c in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']):
             raise ValueError(f"Invalid cause name provided: '{cause_name}'")
-        
+
         # Validate output_path to ensure it's a subdirectory of the base directory
         if not out_dir.is_relative_to(base_dir) or out_dir == base_dir:
             raise ValueError(f"Output path must be a subdirectory of the base directory: '{base_dir}'")
@@ -39,12 +42,12 @@ def generate_agent(cause_name: str, output_path: str) -> bool:
         (out_dir / "src").mkdir(parents=True, exist_ok=True)
         (out_dir / "etc").mkdir(parents=True, exist_ok=True)
 
-        # Generate cdsl    
-        with open( out_dir / f"concept_{cause_name}.cdsl", "w", encoding="utf-8") as f:
+        # Generate cdsl
+        with open( out_dir / f"{agent_name}.cdsl", "w", encoding="utf-8") as f:
             f.write(cdsl_template.render(concept_name=cause_name))
 
         # Compile cdsl
-        subprocess.run(["robocompdsl", f"concept_{cause_name}.cdsl", "."], cwd=out_dir, check=True)
+        subprocess.run(["robocompdsl", f"{agent_name}.cdsl", "."], cwd=out_dir, check=True)
         subprocess.run(["cmake", "-B", "build"], cwd=out_dir, check=True)
         subprocess.run(["make", "-j8", "-C", "build"], cwd=out_dir, check=True)
 

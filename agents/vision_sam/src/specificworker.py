@@ -57,6 +57,10 @@ ZED_MOUNT_ROTATION_ANGLE_RAD = 1.57  # ~90 deg about Z, robot-local frame
 # back to mm on read so this module stays consistent with the rest of the DSR.
 ROOM_ROBOT_RT_TRANSLATION_IS_METERS = True
 
+# Each generated concept_X agent trains a single-concept detector, so class 0
+# always means "the concept this agent was generated for" (e.g. the bump).
+SAM_LABEL_CLASS_ID = 0
+
 
 def _rotation_matrix_from_axis_angle(axis, angle):
     """Rodrigues' formula: 3x3 rotation matrix from an axis-angle rotation."""
@@ -377,19 +381,35 @@ class SpecificWorker(GenericWorker):
 
 
     def save_segmented_object(self, mask, image_rgb):
+        """Save a YOLO-format training example: the full, unmasked image plus a
+        label file with a bounding box derived from the SAM mask. The image must
+        stay unmasked (real background) since inference will run on real scenes,
+        not black-background crops.
+        """
         os.makedirs("segmented_objects", exist_ok=True)
-        # Mask into uint8 format
+
         mask_uint8 = (mask * 255).astype(np.uint8)
+        x, y, w, h = cv2.boundingRect(mask_uint8)
+        if w == 0 or h == 0:
+            print("Cannot save: SAM mask is empty, no bounding box to derive a label from.")
+            return
 
-        # Keep object and cut background
-        result = cv2.bitwise_and(image_rgb, image_rgb, mask=mask_uint8)
-        result_bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+        img_h, img_w = image_rgb.shape[:2]
+        cx = (x + w / 2) / img_w
+        cy = (y + h / 2) / img_h
+        norm_w = w / img_w
+        norm_h = h / img_h
 
-        # Save into file
-        filename = f"bump_{int(time.time())}.jpg"
-        filepath = os.path.join("segmented_objects", filename)
-        cv2.imwrite(filepath, result_bgr)
-        print(f"Segmented object saved as {filepath}")        
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        basename = f"bump_{int(time.time())}"
+        image_path = os.path.join("segmented_objects", f"{basename}.jpg")
+        label_path = os.path.join("segmented_objects", f"{basename}.txt")
+
+        cv2.imwrite(image_path, image_bgr)
+        with open(label_path, "w") as f:
+            f.write(f"{SAM_LABEL_CLASS_ID} {cx:.6f} {cy:.6f} {norm_w:.6f} {norm_h:.6f}\n")
+
+        print(f"Saved training image {image_path} with label {label_path}")
 
 
     def startup_check(self):
