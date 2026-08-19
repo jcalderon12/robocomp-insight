@@ -118,6 +118,7 @@ private:
      */
 	bool startup_check_flag;
 	bool string_check_flag = true;
+	bool print_extra_info = false;
  
 	// Historic window, graph, viewer and manager
 	QMainWindow *historic_window;

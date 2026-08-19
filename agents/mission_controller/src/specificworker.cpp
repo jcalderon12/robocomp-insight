@@ -161,7 +161,7 @@ void SpecificWorker::initialize()
 					create_search_problem_cause_mission();
 				}
 			}
-			else if (autopilot_enabled && mission_type == "search_problem_cause") {
+			else if (autopilot_enabled && mission_type == "Search Problem Cause") {
 				std::cout << "[AUTOPILOT] Resetting autopilot." << std::endl;
 				disable_autopilot_and_reset();
 			}
@@ -252,7 +252,7 @@ void SpecificWorker::initialize()
 		}
 	});
 
-	// Connect "Add Mission" button
+	// UI ADD MISSION button
 	connect(mission_controller_ui.add_mission_button, &QPushButton::clicked, this, [this]()
 	{
 		// Open a dialog to add a new mission
@@ -303,7 +303,7 @@ void SpecificWorker::initialize()
 	connect(historic_debugger_ui.global_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::global_changes_management);
 	connect(historic_debugger_ui.time_input, &QLineEdit::returnPressed, this, &SpecificWorker::on_time_search);
 	
-	// Connect load_in_debugger button if it exists
+	// UI LOAD IN DEBUGGER button 
 	if (mission_controller_ui.load_in_debugger_button)
 	{
 		// Always enabled - check mission status when clicked
@@ -323,7 +323,7 @@ void SpecificWorker::initialize()
 		});
 	}
 	
-	// Connect autopilot toggle button
+	// UI AUTOPILOT toggle button
 	connect(mission_controller_ui.autopilot_toggle_button, &QPushButton::clicked, this, [this]()
 	{
 		autopilot_enabled = !autopilot_enabled;
@@ -458,7 +458,13 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 			std::cout << "[SCHEDULER] Mission completed: id=" << event.mission_id << std::endl;
 			{
 				const std::string completed_type = get_mission_type_from_id(event.mission_id);
-				if (completed_type == "follow_person" || completed_type == "Search Problem Cause") {
+				// Two distinct chain endings: "follow_person" completing cleanly means no
+				// problem ever occurred (nothing more to do); "Take Photos" completing means
+				// a problem was investigated and resolved (also nothing more to do, for now).
+				// "Search Problem Cause" completing is NOT an ending: it's immediately followed
+				// by "Take Photos" (see monitor_mission_execution_state), which needs autopilot
+				// to stay on to be auto-activated by the scheduler.
+				if (completed_type == "follow_person" || completed_type == "Take Photos") {
 					disable_autopilot_and_reset();
 				}
 			}
@@ -572,17 +578,18 @@ void SpecificWorker::on_setMission_clicked()
 	}
 }
 
-void SpecificWorker::on_startMission_clicked()
+bool SpecificWorker::on_startMission_clicked()
 {
 	if (std::optional<DSR::Node> optional_node = G->get_node("follow_me"); optional_node.has_value())
-	{	
+	{
 		mission_start_time = std::chrono::steady_clock::now();
 		DSR::Node follow_me_node = optional_node.value();
 		G->add_or_modify_attrib_local<aff_interacting_att>(follow_me_node, true);
 		G->update_node(follow_me_node);
+		return true;
 	}
-	else{
-	}
+	// "follow_me" not created yet (concept_person hasn't caught up). Caller should retry.
+	return false;
 }
 
 void SpecificWorker::on_stopMission_clicked()
@@ -1277,6 +1284,38 @@ void SpecificWorker::create_search_problem_cause_mission()
 	std::cout << "[AUTOPILOT] Search Problem Cause mission created" << std::endl;
 }
 
+void SpecificWorker::create_take_photos_mission()
+{
+	// Check if a "Take Photos" mission already exists and is PENDING
+	for (int i = 0; i < model->rowCount(); i++)
+	{
+		Mission m = model->getMission(i);
+		if (m.type == "Take Photos" && m.status != MissionStatus::COMPLETED) {
+			return;
+		}
+	}
+
+	// Create a new "Take Photos" mission with unique name
+	static int take_photos_attempt_count = 1;
+	QString customName = QString("take_photos_attempt_%1").arg(take_photos_attempt_count++);
+	QString missionType = "Take Photos";
+	int priority_value = 5; // Critical priority: direct continuation of the causal investigation
+
+	// Create the mission and add it to the model
+	Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};
+	int row = model->rowCount();
+	model->addMission(newMission);
+
+	// Insert the mission node into the episodic graph
+	auto mission_id_opt = insert_mission_node_episodic(customName.toStdString(), row, priority_value, ControlType::AUTONOMOUS);
+	if (!mission_id_opt.has_value()) {
+		std::cerr << "[TAKE_PHOTOS_ERROR] Failed to insert mission node" << std::endl;
+		return;
+	}
+
+	std::cout << "[AUTOPILOT] Take Photos mission created" << std::endl;
+}
+
 bool SpecificWorker::problem_node_exists() const
 {
 	if (!G) {
@@ -1406,6 +1445,25 @@ void SpecificWorker::monitor_mission_execution_state()
 		return;
 	}
 
+	// Cause resolved: inner_simulator wrote a 3D position on the "problem" node.
+	// Spawn the photo-taking mission and clear "problem" so a future incident can
+	// be detected again (nothing else currently deletes this node).
+	if (auto problem_node = G->get_node("problem"); problem_node.has_value())
+	{
+		if (problem_node.value().attrs().find("problem_position") != problem_node.value().attrs().end())
+		{
+			create_take_photos_mission();
+			G->delete_node(problem_node.value().id());
+		}
+	}
+
+	// "Search Problem Cause" completes once "problem" is gone, however that happens
+	// (today: cleared above; in the future: once semantic validates and clears it).
+	if (get_mission_type_from_id(active_id) == "Search Problem Cause" && !problem_node_exists())
+	{
+		mission_scheduler.requestMissionCompletion(active_id);
+	}
+
 	// Monitor "aff_interacting" finalization condition in the episodic graph
 	if (!follow_person_active) return;
 	
@@ -1517,16 +1575,21 @@ void SpecificWorker::check_recording_handshake()
 				// ✓ Handshake successful: episodic_memory detected TARGET and completed initialization
 				std::cout << "[HANDSHAKE] ✓ Phase-1: initialization_started=true" << std::endl;
 				std::cout << "[HANDSHAKE] ✓ Phase-2: recording=true (episodic_memory ready)" << std::endl;
-				
-				// Signal scheduler that affordance is ready (completes handshake)
-				std::cout << "[HANDSHAKE_SUCCESS] Both phases complete! Notifying scheduler that mission " 
-				          << handshake_waiting_mission_id << " is ready." << std::endl;
-				
+
 				// Note: mission status was already set to "running" in the activation callback
 				// Just activate affordances here - agents will react immediately
-				on_startMission_clicked();
+				if (!on_startMission_clicked()) {
+					// "follow_me" not created yet by concept_person (race with its own state
+					// machine). Don't consume the handshake: retry on the next compute cycle.
+					std::cout << "[HANDSHAKE] Waiting for \"follow_me\" node to exist, will retry..." << std::endl;
+					return;
+				}
+
+				// Signal scheduler that affordance is ready (completes handshake)
+				std::cout << "[HANDSHAKE_SUCCESS] Both phases complete! Notifying scheduler that mission "
+				          << handshake_waiting_mission_id << " is ready." << std::endl;
 				mission_scheduler.setAffordanceReady(handshake_waiting_mission_id, true);
-				
+
 				// Reset handshake state
 				handshake_waiting_mission_id = 0;
 

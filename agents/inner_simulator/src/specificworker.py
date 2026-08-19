@@ -700,9 +700,12 @@ class SpecificWorker(GenericWorker):
         spc_node = None
         fp_node = None
         for node in self.graphs["episodic"].get_nodes():
-            if node.name.startswith("Search Problem Cause"):  # TODO: Should be a better way to identify the correct node.
+            # mission_controller names episodic mission nodes after the mission's
+            # customName ("search_cause_attempt_N" / "follow_person_attempt_N"),
+            # not its type string - match on that instead.
+            if node.name.startswith("search_cause_attempt"):  # TODO: Should be a better way to identify the correct node.
                 spc_node = node
-            if node.name.startswith("Follow Person"):  # TODO: Should be a better way to identify the correct node.
+            if node.name.startswith("follow_person_attempt"):  # TODO: Should be a better way to identify the correct node.
                 fp_node = node
 
         if (spc_node is not None 

@@ -118,7 +118,7 @@ public slots:
 	 * \param desired_distance: Desired distance to the target in meters.
 	 * 
 	 */
-	void follow_target(float max_forward_speed_factor = 0.6f, float max_angular_speed_factor = 0.6f, float desired_distance = 0.5f, bool print_only = false);
+	void follow_target(float max_forward_speed_factor = 0.6f, float max_angular_speed_factor = 0.6f, float desired_distance = 0.5f);
 
 	/**
 	 * \brief This method calculates the robot position in the actual room and update the DSR graph with this information. 

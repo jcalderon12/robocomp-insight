@@ -122,11 +122,10 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	auto_localization();
-	follow_target(1.0f, 1.0f, desired_distance, true);
 
     if (queck_affordance_active())
 	{
-		follow_target(1.0f, 1.0f, desired_distance, false);
+		follow_target(1.0f, 1.0f, desired_distance);
 	}
 	else{
 		stop_robot();
@@ -178,7 +177,7 @@ int SpecificWorker::startup_check()
 
 #pragma region ROBOT_METHODS
 
-void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance, bool print_only)
+void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance)
 {
     auto robot_node_opt = G->get_node("robot");
     if (!robot_node_opt.has_value())
@@ -288,11 +287,9 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 	 	//		  << "RT target translation -> x: " << x << " | y: " << y 
 		//		  << std::endl;
 
-	if (!print_only) {
-		G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
-		G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
-	    G->update_node(robot_node);
-	}
+	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
+	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
+	G->update_node(robot_node);
 }
 
 std::vector<float> SpecificWorker::auto_localization()

@@ -41,7 +41,8 @@ class SpecificWorker(GenericWorker):
     def __init__(self, proxy_map, configData, startup_check=False):
         super(SpecificWorker, self).__init__(proxy_map, configData)
         self.Period = configData["Period"]["Compute"]
-        
+        self.print_dsr_signals = False
+
         try:
             signals.connect(self.g, signals.UPDATE_NODE_ATTR, self.update_node_att)
             signals.connect(self.g, signals.UPDATE_NODE, self.update_node)
@@ -52,7 +53,7 @@ class SpecificWorker(GenericWorker):
             console.print("signals connected")
         except RuntimeError as e:
             print(e)
-    
+
         if startup_check:
             self.startup_check()
         else:
@@ -60,7 +61,6 @@ class SpecificWorker(GenericWorker):
             self.timer.start(self.Period)
 
             self.rt_api = rt_api(self.g)
-            self.print_dsr_signals = False
 
     def __del__(self):
         """Destructor"""

@@ -71,7 +71,7 @@ public:
 	std::vector<std::string> getAvailableMissions() const
 	{
 		return {
-			"Follow Person",
+			"follow_person",
 			"Search Problem Cause"
 		};
 	}
@@ -115,7 +115,7 @@ public slots:
 	/**
 	 * \brief Slot triggered when the "Start Mission" button is clicked.
 	 */
-	void on_startMission_clicked();
+	bool on_startMission_clicked();  // Returns true only if "follow_me" existed and aff_interacting was set
 	
 	// Historic debugger slots
 	void local_changes_management(int value);
@@ -220,6 +220,7 @@ private:
 	void monitor_mission_execution_state();           // Monitor aff_interacting and mission status
 	void create_or_check_follow_person_mission();     // Create follow_person if it doesn't exist
 	void create_search_problem_cause_mission();       // Create search_cause once after a failure stop
+	void create_take_photos_mission();                // Create take-photos mission once the cause is resolved (problem_position set)
 	void disable_autopilot_and_reset();               // Reset autopilot state and UI
 	bool bottle_rt_exists() const;                    // Minimal structural check
 	bool problem_node_exists() const;                 // Check if problem node exists in DSR graph
