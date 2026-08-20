@@ -7,13 +7,13 @@
     <x>0</x>
     <y>0</y>
     <width>400</width>
-    <height>333</height>
+    <height>486</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Form</string>
   </property>
-  <widget class="QLineEdit" name="node_name_text_box">
+  <widget class="QLineEdit" name="node_name">
    <property name="geometry">
     <rect>
      <x>10</x>
@@ -26,7 +26,7 @@
     <string>bump</string>
    </property>
   </widget>
-  <widget class="QComboBox" name="node_name_list_box">
+  <widget class="QComboBox" name="node_list">
    <property name="geometry">
     <rect>
      <x>218</x>
@@ -42,7 +42,7 @@
     </size>
    </property>
   </widget>
-  <widget class="QLabel" name="node_name_text_label">
+  <widget class="QLabel" name="node_name_label">
    <property name="geometry">
     <rect>
      <x>10</x>
@@ -52,10 +52,10 @@
     </rect>
    </property>
    <property name="text">
-    <string>Current node name:</string>
+    <string>Node name:</string>
    </property>
   </widget>
-  <widget class="QLabel" name="node_name_list_label">
+  <widget class="QLabel" name="node_list_label">
    <property name="geometry">
     <rect>
      <x>220</x>
@@ -72,72 +72,298 @@
    <property name="geometry">
     <rect>
      <x>9</x>
-     <y>70</y>
+     <y>250</y>
      <width>381</width>
-     <height>251</height>
+     <height>71</height>
     </rect>
    </property>
-   <layout class="QGridLayout" name="gridLayout">
-    <item row="2" column="1">
+   <layout class="QGridLayout" name="edge_buttons_layout">
+    <item row="1" column="1">
      <widget class="QPushButton" name="delete_edge_RT_button">
       <property name="text">
        <string>Delete Edge RT</string>
       </property>
      </widget>
     </item>
-    <item row="1" column="1">
-     <widget class="QPushButton" name="delete_edge_button">
-      <property name="text">
-       <string>Delete Edge</string>
-      </property>
-     </widget>
-    </item>
-    <item row="2" column="2">
-     <widget class="QPushButton" name="modify_edge_RT_button">
-      <property name="text">
-       <string>Modify Edge RT</string>
-      </property>
-     </widget>
-    </item>
-    <item row="0" column="1">
-     <widget class="QPushButton" name="delete_node_button">
-      <property name="text">
-       <string>Delete Node</string>
-      </property>
-     </widget>
-    </item>
-    <item row="0" column="2">
-     <widget class="QPushButton" name="modify_node_button">
-      <property name="text">
-       <string>Modify Node</string>
-      </property>
-     </widget>
-    </item>
     <item row="0" column="0">
-     <widget class="QPushButton" name="create_node_button">
-      <property name="text">
-       <string>Create Node</string>
-      </property>
-     </widget>
-    </item>
-    <item row="1" column="2">
-     <widget class="QPushButton" name="modify_edge_button">
-      <property name="text">
-       <string>Modify Edge</string>
-      </property>
-     </widget>
-    </item>
-    <item row="1" column="0">
      <widget class="QPushButton" name="create_edge_button">
       <property name="text">
        <string>Create Edge</string>
       </property>
      </widget>
     </item>
-    <item row="2" column="0">
+    <item row="1" column="0">
      <widget class="QPushButton" name="create_edge_RT_button">
       <property name="text">
        <string>Create Edge RT</string>
+      </property>
+     </widget>
+    </item>
+    <item row="1" column="2">
+     <widget class="QPushButton" name="modify_edge_RT_button">
+      <property name="text">
+       <string>Modify Edge RT</string>
+      </property>
+     </widget>
+    </item>
+    <item row="0" column="2">
+     <widget class="QPushButton" name="modify_edge_button">
+      <property name="text">
+       <string>Modify Edge</string>
+      </property>
+     </widget>
+    </item>
+    <item row="0" column="1">
+     <widget class="QPushButton" name="delete_edge_button">
+      <property name="text">
+       <string>Delete Edge</string>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QLabel" name="attr_name_label">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>360</y>
+     <width>161</width>
+     <height>17</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Attr name (from_node):</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="attr_list_label">
+   <property name="geometry">
+    <rect>
+     <x>210</x>
+     <y>360</y>
+     <width>161</width>
+     <height>17</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Attr list (from_node):</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="attr_name">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>390</y>
+     <width>171</width>
+     <height>25</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+  </widget>
+  <widget class="QComboBox" name="attr_list">
+   <property name="geometry">
+    <rect>
+     <x>210</x>
+     <y>390</y>
+     <width>171</width>
+     <height>25</height>
+    </rect>
+   </property>
+   <property name="minimumSize">
+    <size>
+     <width>150</width>
+     <height>0</height>
+    </size>
+   </property>
+  </widget>
+  <widget class="Line" name="upper_line">
+   <property name="geometry">
+    <rect>
+     <x>140</x>
+     <y>120</y>
+     <width>118</width>
+     <height>3</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="Line" name="middle_line">
+   <property name="geometry">
+    <rect>
+     <x>140</x>
+     <y>330</y>
+     <width>118</width>
+     <height>3</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="Line" name="downer_line">
+   <property name="geometry">
+    <rect>
+     <x>140</x>
+     <y>470</y>
+     <width>118</width>
+     <height>3</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QWidget" name="layoutWidget_2">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>180</y>
+     <width>381</width>
+     <height>27</height>
+    </rect>
+   </property>
+   <layout class="QHBoxLayout" name="node_to_layout">
+    <item>
+     <widget class="QLabel" name="node_to_list_label">
+      <property name="text">
+       <string>Node to:</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QComboBox" name="node_to_list">
+      <property name="minimumSize">
+       <size>
+        <width>150</width>
+        <height>0</height>
+       </size>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QWidget" name="layoutWidget_3">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>150</y>
+     <width>381</width>
+     <height>27</height>
+    </rect>
+   </property>
+   <layout class="QHBoxLayout" name="node_from_layout">
+    <item>
+     <widget class="QLabel" name="node_from_list_label">
+      <property name="text">
+       <string>Node from:</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QComboBox" name="node_from_list">
+      <property name="minimumSize">
+       <size>
+        <width>150</width>
+        <height>0</height>
+       </size>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QWidget" name="">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>80</y>
+     <width>381</width>
+     <height>27</height>
+    </rect>
+   </property>
+   <layout class="QHBoxLayout" name="node_buttons_layout">
+    <item>
+     <widget class="QPushButton" name="create_node_button">
+      <property name="text">
+       <string>Create Node</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QPushButton" name="delete_node_button">
+      <property name="text">
+       <string>Delete Node</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QPushButton" name="modify_node_button">
+      <property name="text">
+       <string>Modify Node</string>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QWidget" name="">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>210</y>
+     <width>381</width>
+     <height>27</height>
+    </rect>
+   </property>
+   <layout class="QHBoxLayout" name="edge_type_layout">
+    <item>
+     <widget class="QLabel" name="edge_type_list_label">
+      <property name="text">
+       <string>Edge type:</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QComboBox" name="edge_type_list">
+      <property name="minimumSize">
+       <size>
+        <width>150</width>
+        <height>0</height>
+       </size>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QWidget" name="">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>430</y>
+     <width>381</width>
+     <height>27</height>
+    </rect>
+   </property>
+   <layout class="QHBoxLayout" name="attr_buttons_layout">
+    <item>
+     <widget class="QPushButton" name="create_attr_button">
+      <property name="text">
+       <string>Create Attr</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QPushButton" name="delete_attr_button">
+      <property name="text">
+       <string>Delete Attr</string>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QPushButton" name="modify_attr_button">
+      <property name="text">
+       <string>Modify Attr</string>
       </property>
      </widget>
     </item>

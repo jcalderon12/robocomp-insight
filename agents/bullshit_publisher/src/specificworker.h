@@ -39,6 +39,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <vector>
+#include <utility>
 
 /**
  * \brief Class SpecificWorker implements the core functionality of the component.
@@ -105,8 +106,7 @@ public slots:
 	void add_node();
 	void delete_node();
 	void modify_node();
-	void test_vector_attribute();
-	
+
 	// Edges
 	void add_edge();
 	void add_RT_edge();
@@ -114,8 +114,13 @@ public slots:
 	void delete_RT_edge();
 	void modify_edge();
 	void modify_edge_RT();
-	
+
+private slots:
+	void refresh_attr_list();  // repopulates attr_list from node_from_list's currently selected node
+
 private:
+	void refresh_node_combos();  // repopulates node_list/node_from_list/node_to_list from the DSR
+	std::pair<float, float> next_layout_position();  // next pos_x/pos_y for a newly created test node
 
 	/**
      * \brief Flag indicating whether startup checks are enabled.

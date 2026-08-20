@@ -111,8 +111,12 @@ void SpecificWorker::initialize()
 	connect(bullshit_publisher_ui.delete_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::delete_RT_edge);
 	connect(bullshit_publisher_ui.modify_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::modify_edge_RT);
 
-	// Connect the node name list box to update the text box when a selection is made
-	connect(bullshit_publisher_ui.node_name_list_box, &QComboBox::currentTextChanged, bullshit_publisher_ui.node_name_text_box, &QLineEdit::setText);
+	// Selecting from a list box updates its paired text box
+	connect(bullshit_publisher_ui.node_list, &QComboBox::currentTextChanged, bullshit_publisher_ui.node_name, &QLineEdit::setText);
+	connect(bullshit_publisher_ui.attr_list, &QComboBox::currentTextChanged, bullshit_publisher_ui.attr_name, &QLineEdit::setText);
+
+	// Attr list reflects whichever node is selected as "from"
+	connect(bullshit_publisher_ui.node_from_list, &QComboBox::currentTextChanged, this, &SpecificWorker::refresh_attr_list);
 
 	agent_process = new QProcess(this);
 
@@ -215,12 +219,8 @@ void SpecificWorker::initialize()
 				DSR::Node robot_node = robot_optional.value();
 				rt->insert_or_assign_edge_RT(robot_node, concept_node.id(), {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
 
-				int index = bullshit_publisher_ui.node_name_list_box->findText(concept_name);
-				if (index == -1) {
-					bullshit_publisher_ui.node_name_list_box->addItem(concept_name);
-					index = bullshit_publisher_ui.node_name_list_box->findText(concept_name);
-				}
-				bullshit_publisher_ui.node_name_list_box->setCurrentText(index != -1 ? bullshit_publisher_ui.node_name_list_box->itemText(index) : concept_name);
+				refresh_node_combos();
+				bullshit_publisher_ui.node_list->setCurrentText(concept_name);
 				agent_generator_ui.agent_status_label->setText("<font color ='green'><b>Concept created successfully!</b></font>");
 			} else {
 				agent_generator_ui.agent_status_label->setText("<font color ='red'><b>Error: Robot node not found</b></font>");
@@ -238,6 +238,10 @@ void SpecificWorker::initialize()
 
 	rt = G->get_rt_api();
 
+	// Edge types this widget can create generically (RT is handled by its own buttons)
+	bullshit_publisher_ui.edge_type_list->addItems({"has", "has_intention", "TARGET"});
+	refresh_node_combos();
+
     /////////GET PARAMS, OPEND DEVICES....////////
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
@@ -248,8 +252,6 @@ void SpecificWorker::initialize()
 
 void SpecificWorker::compute()
 {
-	// Test vector attribute modification
-	// test_vector_attribute();
 }
 
 
@@ -286,213 +288,125 @@ int SpecificWorker::startup_check()
 void SpecificWorker::add_node(){
 	// Create a new node with a default name if the text box is empty, otherwise use the name from the text box
 	QString q_node_name = "test_node";
-	if (!bullshit_publisher_ui.node_name_text_box->text().isEmpty()) {
-		q_node_name = bullshit_publisher_ui.node_name_text_box->text();
+	if (!bullshit_publisher_ui.node_name->text().isEmpty()) {
+		q_node_name = bullshit_publisher_ui.node_name->text();
 	}
 
 	// Check if the node already exists in the graph
 	std::string node_name = q_node_name.toStdString();
-	auto test_optional_node = G->get_node(node_name);
+	if (G->get_node(node_name).has_value())
+		return;
 
-	// If the node does not exist, create it and add it to the graph
-	if(!test_optional_node.has_value()) {
-		// Create the node and calculate it position for visualization
-		DSR::Node test_node = DSR::Node::create<object_node_type>(node_name);
-		float robot_pos_x = 0.0f, robot_pos_y = 0.0f;
-		try {
-			auto robot_opt = G->get_node("robot");
-			if (robot_opt.has_value()) {
-				auto robot_node = robot_opt.value();
-				auto pos_x_it = robot_node.attrs().find("pos_x");
-				auto pos_y_it = robot_node.attrs().find("pos_y");
-				if (pos_x_it != robot_node.attrs().end()) {
-					if (auto* pf = std::get_if<float>(&pos_x_it->second.value())) {
-						robot_pos_x = *pf;
-					}
-				}
-				if (pos_y_it != robot_node.attrs().end()) {
-					if (auto* pf = std::get_if<float>(&pos_y_it->second.value())) {
-						robot_pos_y = *pf;
-					}
-				}
-			}
-		} catch (const std::exception& e) {
-			std::cerr << "Error getting robot position: " << e.what() << std::endl;
-		}
+	// Create the node and give it a position for visualization
+	DSR::Node test_node = DSR::Node::create<object_node_type>(node_name);
+	auto [pos_x, pos_y] = next_layout_position();
+	DSR::Attribute pos_x_attr, pos_y_attr;
+	pos_x_attr.value(pos_x);
+	pos_y_attr.value(pos_y);
+	test_node.attrs()["pos_x"] = pos_x_attr;
+	test_node.attrs()["pos_y"] = pos_y_attr;
 
-		// Positions arranged in rows of 3 missions
-		float mission_pos_x = robot_pos_x + (missions_in_current_row * 300.0f);
-		float mission_pos_y = robot_pos_y + current_y_offset;
-
-		// Add positions
-		DSR::Attribute pos_x_attr, pos_y_attr;
-
-		pos_x_attr.value(mission_pos_x);
-		pos_y_attr.value(mission_pos_y);
-		test_node.attrs()["pos_x"] = pos_x_attr;
-		test_node.attrs()["pos_y"] = pos_y_attr;
-
-		// Update layout counters
-		missions_in_current_row++;
-		if (missions_in_current_row >= 3) {
-			missions_in_current_row = 0;
-			current_y_offset += 300.0f; // Move down for the next row
-		}
-
-		G->insert_node(test_node);
-		
-		// Add the new node name to the list box (existing test nodes) if it doesn't already exist
-		int index = bullshit_publisher_ui.node_name_list_box->findText(q_node_name);
-		if (index == -1) {
-			bullshit_publisher_ui.node_name_list_box->addItem(q_node_name);
-			index = bullshit_publisher_ui.node_name_list_box->findText(q_node_name);
-		}
-
-		// Update the list box with the new node name
-		bullshit_publisher_ui.node_name_list_box->setCurrentText(index != -1 ? bullshit_publisher_ui.node_name_list_box->itemText(index) : q_node_name);
-	}
-
+	G->insert_node(test_node);
+	refresh_node_combos();
+	bullshit_publisher_ui.node_list->setCurrentText(q_node_name);
 }
 
 
 void SpecificWorker::delete_node(){
 	// Delete the node with current text box name if it exists in the graph
 	QString q_node_name = "test_node";
-	if (!bullshit_publisher_ui.node_name_text_box->text().isEmpty()) {
-		q_node_name = bullshit_publisher_ui.node_name_text_box->text();
+	if (!bullshit_publisher_ui.node_name->text().isEmpty()) {
+		q_node_name = bullshit_publisher_ui.node_name->text();
 	}
 
 	// Check if the node exists in the graph
-	std::string node_name = q_node_name.toStdString();
-	auto test_optional_node = G->get_node(node_name);
+	auto test_optional_node = G->get_node(q_node_name.toStdString());
 
 	// If the node exists, delete it from the graph
 	if(test_optional_node.has_value()) {
-		DSR::Node test_node = test_optional_node.value();
-		G->delete_node(test_node.id());
-
-		// Remove the node name from the list box (existing test nodes)
-		int index = bullshit_publisher_ui.node_name_list_box->findText(q_node_name);
-		if (index != -1) {
-			bullshit_publisher_ui.node_name_list_box->removeItem(index);
-		}
+		G->delete_node(test_optional_node.value().id());
+		refresh_node_combos();
 	}
 }
 
 
 void SpecificWorker::add_edge(){
-	// Create a new edge from the robot to the specified node with a random x position if the edge does not already exist
-	QString q_node_name = "test_node";
-	if (!bullshit_publisher_ui.node_name_text_box->text().isEmpty()) {
-		q_node_name = bullshit_publisher_ui.node_name_text_box->text();
-	}
+	// Create a new edge from "from" to "to", with the selected type, if it does not already exist
+	auto test_optional_from = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	auto test_optional_to = G->get_node(bullshit_publisher_ui.node_to_list->currentText().toStdString());
+	std::string edge_type = bullshit_publisher_ui.edge_type_list->currentText().toStdString();
 
-	// Check if the node exists in the graph
-	std::string node_name = q_node_name.toStdString();
-	auto test_optional_node = G->get_node(node_name);
-	auto test_optional_robot = G->get_node("robot");
-
-	// If both the node and robot exist, create the edge if it does not already exist
-	if(test_optional_node.has_value() and test_optional_robot.has_value()) {
-		DSR::Node test_node = test_optional_node.value();
-		DSR::Node test_robot = test_optional_robot.value();
-		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "has");
+	if(test_optional_from.has_value() and test_optional_to.has_value()) {
+		DSR::Node node_from = test_optional_from.value();
+		DSR::Node node_to = test_optional_to.value();
+		auto test_optional_edge = G->get_edge(node_from.id(), node_to.id(), edge_type);
 		if(!test_optional_edge.has_value()) {
 			DSR::Edge test_edge;
-			test_edge.from(test_robot.id());
-			test_edge.to(test_node.id());
-			test_edge.type("has");
+			test_edge.from(node_from.id());
+			test_edge.to(node_to.id());
+			test_edge.type(edge_type);
 			G->add_or_modify_attrib_local<robot_target_x_att>(test_edge, (float)std::experimental::randint(-200, 200));
 			G->insert_or_assign_edge(test_edge);
 		}
-
 	}
-
 }
 
 
 void SpecificWorker::delete_edge(){
-	// Delete the edge from the robot to the specified node if it exists
-	QString q_node_name = "test_node";
-	if (!bullshit_publisher_ui.node_name_text_box->text().isEmpty()) {
-		q_node_name = bullshit_publisher_ui.node_name_text_box->text();
-	}
-	
-	// Check if the node exists in the graph
-	std::string node_name = q_node_name.toStdString();
-	auto test_optional_node = G->get_node(node_name);
-	auto test_optional_robot = G->get_node("robot");
+	// Delete the "from"->"to" edge of the selected type if it exists
+	auto test_optional_from = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	auto test_optional_to = G->get_node(bullshit_publisher_ui.node_to_list->currentText().toStdString());
+	std::string edge_type = bullshit_publisher_ui.edge_type_list->currentText().toStdString();
 
-	// If both the node and robot exist, delete the edge if it exists
-	if(test_optional_node.has_value() and test_optional_robot.has_value()) {
-		DSR::Node test_node = test_optional_node.value();
-		DSR::Node test_robot = test_optional_robot.value();
-		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "has");
+	if(test_optional_from.has_value() and test_optional_to.has_value()) {
+		DSR::Node node_from = test_optional_from.value();
+		DSR::Node node_to = test_optional_to.value();
+		auto test_optional_edge = G->get_edge(node_from.id(), node_to.id(), edge_type);
 		if(test_optional_edge.has_value()){
-			G->delete_edge(test_robot.id(), test_node.id(), "has");
+			G->delete_edge(node_from.id(), node_to.id(), edge_type);
 		}
 	}
-
 }
 
 void SpecificWorker::add_RT_edge(){
-	// Create a new RT edge from the robot to the specified node if it does not already exist
-	QString q_node_name = "test_node";
-	if (!bullshit_publisher_ui.node_name_text_box->text().isEmpty()) {
-		q_node_name = bullshit_publisher_ui.node_name_text_box->text();
-	}
+	// Create a new RT edge from "from" to "to" if it does not already exist
+	auto test_optional_from = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	auto test_optional_to = G->get_node(bullshit_publisher_ui.node_to_list->currentText().toStdString());
 
-	// Check if the node exists in the graph
-	std::string node_name = q_node_name.toStdString();
-	auto test_optional_node = G->get_node(node_name);
-	auto test_optional_robot = G->get_node("robot");
-
-	// If both the node and robot exist, create the RT edge if it does not already exist
-	if(test_optional_node.has_value() and test_optional_robot.has_value())
+	if(test_optional_from.has_value() and test_optional_to.has_value())
 	{
-		DSR::Node test_node = test_optional_node.value();
-		DSR::Node test_robot = test_optional_robot.value();
-		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "RT");
+		DSR::Node node_from = test_optional_from.value();
+		DSR::Node node_to = test_optional_to.value();
+		auto test_optional_edge = G->get_edge(node_from.id(), node_to.id(), "RT");
 		if(!test_optional_edge.has_value())
 		{
-			rt->insert_or_assign_edge_RT(test_robot, test_node.id(), {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
+			rt->insert_or_assign_edge_RT(node_from, node_to.id(), {0.f, 0.f, 0.f}, {0.f, 0.f, 0.f});
 		}
-
 	}
-
 }
 
 
 void SpecificWorker::delete_RT_edge(){
-	// Delete the RT edge from the robot to the specified node if it exists
-	QString q_node_name = "test_node";
-	if (!bullshit_publisher_ui.node_name_text_box->text().isEmpty()) {
-		q_node_name = bullshit_publisher_ui.node_name_text_box->text();
-	}
-	
-	// Check if the node exists in the graph
-	std::string node_name = q_node_name.toStdString();
-	auto test_optional_node = G->get_node(node_name);
-	auto test_optional_robot = G->get_node("robot");
+	// Delete the "from"->"to" RT edge if it exists
+	auto test_optional_from = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	auto test_optional_to = G->get_node(bullshit_publisher_ui.node_to_list->currentText().toStdString());
 
-	// If both the node and robot exist, delete the RT edge if it exists
-	if(test_optional_node.has_value() and test_optional_robot.has_value())
+	if(test_optional_from.has_value() and test_optional_to.has_value())
 	{
-		DSR::Node test_node = test_optional_node.value();
-		DSR::Node test_robot = test_optional_robot.value();
-		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "RT");
+		DSR::Node node_from = test_optional_from.value();
+		DSR::Node node_to = test_optional_to.value();
+		auto test_optional_edge = G->get_edge(node_from.id(), node_to.id(), "RT");
 		if(test_optional_edge.has_value()){
-			G->delete_edge(test_robot.id(), test_node.id(), "RT");
+			G->delete_edge(node_from.id(), node_to.id(), "RT");
 		}
 	}
-
 }
 
 void SpecificWorker::modify_node(){
 	// Modify the position of the specified node if it exists in the graph
 	QString q_node_name = "test_node";
-	if (!bullshit_publisher_ui.node_name_text_box->text().isEmpty()) {
-		q_node_name = bullshit_publisher_ui.node_name_text_box->text();
+	if (!bullshit_publisher_ui.node_name->text().isEmpty()) {
+		q_node_name = bullshit_publisher_ui.node_name->text();
 	}
 
 	// Check if the node exists in the graph
@@ -520,22 +434,15 @@ void SpecificWorker::modify_node(){
 
 
 void SpecificWorker::modify_edge(){
-	// Modify the attribute of the edge from the robot to the specified node if it exists
-	QString q_node_name = "test_node";
-	if (!bullshit_publisher_ui.node_name_text_box->text().isEmpty()) {
-		q_node_name = bullshit_publisher_ui.node_name_text_box->text();
-	}
+	// Modify the attribute of the "from"->"to" edge of the selected type if it exists
+	auto test_optional_from = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	auto test_optional_to = G->get_node(bullshit_publisher_ui.node_to_list->currentText().toStdString());
+	std::string edge_type = bullshit_publisher_ui.edge_type_list->currentText().toStdString();
 
-	// Check if the node exists in the graph
-	std::string node_name = q_node_name.toStdString();
-	auto test_optional_node = G->get_node(node_name);
-	auto test_optional_robot = G->get_node("robot");
-
-	// If both the node and robot exist, modify the edge attribute if the edge exists
-	if(test_optional_node.has_value() and test_optional_robot.has_value()) {
-		DSR::Node test_node = test_optional_node.value();
-		DSR::Node test_robot = test_optional_robot.value();
-		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "has");
+	if(test_optional_from.has_value() and test_optional_to.has_value()) {
+		DSR::Node node_from = test_optional_from.value();
+		DSR::Node node_to = test_optional_to.value();
+		auto test_optional_edge = G->get_edge(node_from.id(), node_to.id(), edge_type);
 		if(test_optional_edge.has_value()) {
 			auto test_edge = test_optional_edge.value();
 			G->add_or_modify_attrib_local<robot_target_x_att>(test_edge, (float)std::experimental::randint(-200, 200));
@@ -545,74 +452,83 @@ void SpecificWorker::modify_edge(){
 }
 
 void SpecificWorker::modify_edge_RT(){
-	// Modify the RT edge from the robot to the specified node if it exists
-	QString q_node_name = "test_node";
-	if (!bullshit_publisher_ui.node_name_text_box->text().isEmpty()) {
-		q_node_name = bullshit_publisher_ui.node_name_text_box->text();
-	}
+	// Modify the "from"->"to" RT edge if it exists
+	auto test_optional_from = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	auto test_optional_to = G->get_node(bullshit_publisher_ui.node_to_list->currentText().toStdString());
 
-	// Check if the node exists in the graph
-	std::string node_name = q_node_name.toStdString();
-	auto test_optional_node = G->get_node(node_name);
-	auto test_optional_robot = G->get_node("robot");
-	
-	// If both the node and robot exist, modify the RT edge if it exists
-	if(test_optional_node.has_value() and test_optional_robot.has_value()) {
-		DSR::Node test_node = test_optional_node.value();
-		DSR::Node test_robot = test_optional_robot.value();
-		auto test_optional_edge = G->get_edge(test_robot.id(), test_node.id(), "RT");
+	if(test_optional_from.has_value() and test_optional_to.has_value()) {
+		DSR::Node node_from = test_optional_from.value();
+		DSR::Node node_to = test_optional_to.value();
+		auto test_optional_edge = G->get_edge(node_from.id(), node_to.id(), "RT");
 		if(test_optional_edge.has_value()) {
-			rt->insert_or_assign_edge_RT(test_robot, test_node.id(), 
+			rt->insert_or_assign_edge_RT(node_from, node_to.id(),
 				{
-				(float)std::experimental::randint(-200, 200), 
-				(float)std::experimental::randint(-200, 200), 
-				(float)std::experimental::randint(-200, 200)}, 
+				(float)std::experimental::randint(-200, 200),
+				(float)std::experimental::randint(-200, 200),
+				(float)std::experimental::randint(-200, 200)},
 				{
-				(float)std::experimental::randint(-200, 200), 
-				(float)std::experimental::randint(-200, 200), 
+				(float)std::experimental::randint(-200, 200),
+				(float)std::experimental::randint(-200, 200),
 				(float)std::experimental::randint(-200, 200)}
 			);
 		}
 	}
 }
 
-void SpecificWorker::test_vector_attribute(){
-	// Test: Create/modify a 3-float vector attribute in robot node
-	auto robot_optional = G->get_node("robot");
-	
-	if (robot_optional.has_value()) {
-		DSR::Node robot = robot_optional.value();
-		
-		// Create or modify a vector of 3 floats
-		std::vector<float> test_vector = {
-			(float)std::experimental::randint(0, 100) / 10.0f,  // Random 0.0-10.0
-			(float)std::experimental::randint(0, 100) / 10.0f,  // Random 0.0-10.0
-			(float)std::experimental::randint(0, 100) / 10.0f   // Random 0.0-10.0
-		};
-		
-		std::cout << "[VECTOR_TEST] Creating vector: [" 
-		          << test_vector[0] << ", " 
-		          << test_vector[1] << ", " 
-		          << test_vector[2] << "]" << std::endl;
-		
-		// Add or modify the attribute locally
-		G->add_or_modify_attrib_local<person_velocity_att>(robot, test_vector);
-		
-		// Sync with graph
-		G->update_node(robot);
-		
-		// Read back to verify
-		try {
-			auto read_back = G->get_attrib_by_name<person_velocity_att>(robot);
-			if (read_back.has_value()) {
-				auto read_back_value = read_back.value();
-				std::cout << "[VECTOR_TEST] Read back vector: [" 
-				          << read_back_value[0] << ", " 
-				          << read_back_value[1] << ", " 
-				          << read_back_value[2] << "]" << std::endl;
-			}
-		} catch (const std::exception &e) {
-			std::cout << "[VECTOR_TEST] Error reading back: " << e.what() << std::endl;
+std::pair<float, float> SpecificWorker::next_layout_position()
+{
+	// Positions new test nodes in rows of 3, relative to the robot's own position
+	float robot_pos_x = 0.0f, robot_pos_y = 0.0f;
+	try {
+		auto robot_opt = G->get_node("robot");
+		if (robot_opt.has_value()) {
+			auto robot_node = robot_opt.value();
+			auto pos_x_it = robot_node.attrs().find("pos_x");
+			auto pos_y_it = robot_node.attrs().find("pos_y");
+			if (pos_x_it != robot_node.attrs().end())
+				if (auto* pf = std::get_if<float>(&pos_x_it->second.value()))
+					robot_pos_x = *pf;
+			if (pos_y_it != robot_node.attrs().end())
+				if (auto* pf = std::get_if<float>(&pos_y_it->second.value()))
+					robot_pos_y = *pf;
 		}
+	} catch (const std::exception& e) {
+		std::cerr << "Error getting robot position: " << e.what() << std::endl;
+	}
+
+	float pos_x = robot_pos_x + (missions_in_current_row * 300.0f);
+	float pos_y = robot_pos_y + current_y_offset;
+
+	missions_in_current_row++;
+	if (missions_in_current_row >= 3) {
+		missions_in_current_row = 0;
+		current_y_offset += 300.0f;
+	}
+
+	return {pos_x, pos_y};
+}
+
+void SpecificWorker::refresh_node_combos()
+{
+	bullshit_publisher_ui.node_list->clear();
+	bullshit_publisher_ui.node_from_list->clear();
+	bullshit_publisher_ui.node_to_list->clear();
+	for (const auto& node : G->get_nodes())
+	{
+		QString name = QString::fromStdString(node.name());
+		bullshit_publisher_ui.node_list->addItem(name);
+		bullshit_publisher_ui.node_from_list->addItem(name);
+		bullshit_publisher_ui.node_to_list->addItem(name);
 	}
 }
+
+void SpecificWorker::refresh_attr_list()
+{
+	bullshit_publisher_ui.attr_list->clear();
+	auto node_opt = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	if (!node_opt.has_value())
+		return;
+	for (const auto& attr : node_opt.value().attrs())
+		bullshit_publisher_ui.attr_list->addItem(QString::fromStdString(attr.first));
+}
+
