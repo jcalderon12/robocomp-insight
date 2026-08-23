@@ -115,7 +115,10 @@ public slots:
 	/**
 	 * \brief Slot triggered when the "Start Mission" button is clicked.
 	 */
-	bool on_startMission_clicked();  // Returns true only if "follow_me" existed and aff_interacting was set
+	bool on_startMission_clicked();  // Returns true only if the active affordance existed and aff_interacting was set
+	// Structural lookup, no hardcoded node names: active TARGET edge -> its "has_intention"
+	// edge -> the affordance node. Same algorithm as concept_robot::queck_affordance_active().
+	std::optional<DSR::Node> get_active_affordance_node(const std::shared_ptr<DSR::DSRGraph>& graph) const;
 	
 	// Historic debugger slots
 	void local_changes_management(int value);
@@ -213,6 +216,7 @@ private:
 	void update_mission_status_episodic(uint64_t mission_id, const std::string &status);
 	void create_mission_target_edge(uint64_t mission_id);
 	void delete_mission_target_edge(uint64_t mission_id);
+	void delete_active_target_edge();  // removes robot->X "TARGET" edge in the work graph, unlike delete_mission_target_edge (episodic)
 	std::optional<uint64_t> find_mission_node_by_name(const std::string &mission_name);
 	
 	// Affordance and mission monitoring

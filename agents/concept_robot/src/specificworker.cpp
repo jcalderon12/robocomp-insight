@@ -123,9 +123,18 @@ void SpecificWorker::compute()
 {
 	auto_localization();
 
-    if (queck_affordance_active())
+	auto affordance_node_opt = get_active_affordance_node();
+	bool active = affordance_node_opt.has_value()
+		&& G->get_attrib_by_name<aff_interacting_att>(affordance_node_opt.value().id()).value_or(false);
+
+	if (active)
 	{
-		follow_target(1.0f, 1.0f, desired_distance);
+		// "photograph_me" circles the target instead of approaching it; anything else
+		// (e.g. "follow_me") keeps the original approach-and-hold behavior.
+		if (affordance_node_opt.value().name() == "photograph_me")
+			orbit_target();
+		else
+			follow_target(1.0f, 1.0f, desired_distance);
 	}
 	else{
 		stop_robot();
@@ -177,13 +186,13 @@ int SpecificWorker::startup_check()
 
 #pragma region ROBOT_METHODS
 
-void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance)
+std::optional<std::pair<float, float>> SpecificWorker::get_target_relative_position()
 {
     auto robot_node_opt = G->get_node("robot");
     if (!robot_node_opt.has_value())
     {
         std::cerr << "Robot node not found in DSR." << std::endl;
-        return;
+        return std::nullopt;
     }
     DSR::Node robot_node = robot_node_opt.value();
 
@@ -191,7 +200,7 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     if (target_edges.empty())
     {
         std::cerr << "No target edges found in DSR." << std::endl;
-        return;
+        return std::nullopt;
     }
     DSR::Edge target_edge = target_edges[0];
 
@@ -199,7 +208,7 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     if (!rt_edge_opt.has_value())
     {
         std::cerr << "RT edge not found." << std::endl;
-        return;
+        return std::nullopt;
     }
     DSR::Edge rt_edge = rt_edge_opt.value();
 
@@ -207,14 +216,16 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     if (!rt_translation_opt.has_value())
     {
         std::cerr << "RT translation missing." << std::endl;
-        return;
+        return std::nullopt;
     }
 
     std::vector<float> t = rt_translation_opt.value();
+    return std::make_pair(t[0], t[1]);
+}
 
-    float x = t[0];
-    float y = t[1];
-
+std::pair<float, float> SpecificWorker::compute_approach_velocities(float x, float y, float desired_distance,
+                                                                      float max_forward_speed_factor, float max_angular_speed_factor)
+{
     float distance_to_target = std::sqrt(x*x + y*y);
     float angle_to_target    = std::atan2(y, x);
 
@@ -238,17 +249,16 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 		float angle_diff = angle_to_target - prev_angle_error;
 		angle_diff = std::atan2(std::sin(angle_diff), std::cos(angle_diff));
 		d_angle_error = angle_diff / dt;
-		// d_angle_error    = (angle_to_target - prev_angle_error)   / dt;
 	}
 
 	prev_distance_error = distance_error;
 	prev_angle_error    = angle_to_target;
 
     const float Kp_lin = 0.8f;
-    const float Kd_lin = 0.1f;   
+    const float Kd_lin = 0.1f;
 
     const float Kp_ang = 1.0f;
-    const float Kd_ang = 0.1f;   
+    const float Kd_ang = 0.1f;
 
 	float linear_velocity  = Kp_lin * distance_error + Kd_lin * d_distance_error;
 	float angular_velocity = Kp_ang * angle_to_target + Kd_ang * d_angle_error;
@@ -271,21 +281,64 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     if (print_extra_info){
 		auto ts_robot = std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count();
-	
+
 		std::cout << "[" << ts_robot << "] RT target translation -> x: " << x << " | y: " << y
 				  << " | angle_to_target: " << angle_to_target
 				  << " | linear_v: " << linear_velocity
 				  << " | angular_v: " << angular_velocity << std::endl;
-	}    
-	
-	// std::cout << "Distance: "    << distance_to_target
-        //          << "  Error: "     << distance_error
-        //          << "  dError/dt: " << d_distance_error
-        //          << "  Angle: "     << angle_to_target
-        //          << "  Linear Vel: "<< linear_velocity
-        //          << "  Angular Vel:"<< angular_velocity
-	 	//		  << "RT target translation -> x: " << x << " | y: " << y 
-		//		  << std::endl;
+	}
+
+	return {linear_velocity, angular_velocity};
+}
+
+void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance)
+{
+	auto target_pos = get_target_relative_position();
+	if (!target_pos.has_value())
+		return;
+
+	auto robot_node_opt = G->get_node("robot");
+	if (!robot_node_opt.has_value())
+		return;
+	DSR::Node robot_node = robot_node_opt.value();
+
+	auto [x, y] = target_pos.value();
+	auto [linear_velocity, angular_velocity] = compute_approach_velocities(x, y, desired_distance, max_forward_speed_factor, max_angular_speed_factor);
+
+	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
+	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
+	G->update_node(robot_node);
+}
+
+void SpecificWorker::orbit_target(float max_forward_speed_factor, float max_angular_speed_factor, float orbit_radius, float orbit_angular_speed)
+{
+	auto target_pos = get_target_relative_position();
+	if (!target_pos.has_value())
+		return;
+
+	auto robot_node_opt = G->get_node("robot");
+	if (!robot_node_opt.has_value())
+		return;
+	DSR::Node robot_node = robot_node_opt.value();
+
+	auto [target_x, target_y] = target_pos.value();
+
+	// Advance the chase point's phase around the target. Own dt/timer, separate from
+	// compute_approach_velocities' PID timing, so switching between follow_target and
+	// orbit_target across ticks doesn't corrupt either one's derivative terms.
+	auto now = std::chrono::steady_clock::now();
+	float dt = std::chrono::duration<float>(now - last_orbit_time).count();
+	last_orbit_time = now;
+	if (dt > 1e-4f && dt < 1.0f)
+		orbit_phase += orbit_angular_speed * dt;
+
+	// Virtual point on a circle of radius orbit_radius around the real target, expressed
+	// in the robot's current relative frame. Chasing it (desired_distance=0) makes the
+	// robot circle the real target instead of approaching it.
+	float x = target_x + orbit_radius * std::cos(orbit_phase);
+	float y = target_y + orbit_radius * std::sin(orbit_phase);
+
+	auto [linear_velocity, angular_velocity] = compute_approach_velocities(x, y, 0.0f, max_forward_speed_factor, max_angular_speed_factor);
 
 	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
 	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
@@ -486,7 +539,7 @@ void SpecificWorker::update_or_create_imu_node()
 	}
 }
 
-bool SpecificWorker::queck_affordance_active()
+std::optional<DSR::Node> SpecificWorker::get_active_affordance_node()
 {
 	auto target_edges = G->get_edges_by_type("TARGET");
 	auto has_intention_edges = G->get_edges_by_type("has_intention");
@@ -498,16 +551,20 @@ bool SpecificWorker::queck_affordance_active()
 			{
 				auto affordance_node_opt = G->get_node(intention_edge.to());
 				if (affordance_node_opt.has_value())
-				{
-					DSR::Node affordance_node = affordance_node_opt.value();
-					bool aff_interacting = G->get_attrib_by_name<aff_interacting_att>(affordance_node.id()).value();
-					
-					return aff_interacting;
-				}
+					return affordance_node_opt.value();
 			}
 		}
 	}
-	return false;
+	return std::nullopt;
+}
+
+bool SpecificWorker::queck_affordance_active()
+{
+	auto affordance_node_opt = get_active_affordance_node();
+	if (!affordance_node_opt.has_value())
+		return false;
+	auto aff_interacting_opt = G->get_attrib_by_name<aff_interacting_att>(affordance_node_opt.value().id());
+	return aff_interacting_opt.value_or(false);
 }
 
 void SpecificWorker::stop_robot()

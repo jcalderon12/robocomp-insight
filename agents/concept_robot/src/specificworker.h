@@ -34,6 +34,8 @@
 #include <genericworker.h>
 #include <vector>
 #include <cmath>
+#include <optional>
+#include <utility>
 
 // Robot maximum speeds
 static constexpr float WEBOTS_MAX_LINEAR_SPEED  = 1.5f; //meters per second
@@ -121,7 +123,23 @@ public slots:
 	void follow_target(float max_forward_speed_factor = 0.6f, float max_angular_speed_factor = 0.6f, float desired_distance = 0.5f);
 
 	/**
-	 * \brief This method calculates the robot position in the actual room and update the DSR graph with this information. 
+	 * \brief Sibling of follow_target: instead of approaching the target, keeps circling it at
+	 * a fixed radius by chasing a virtual point that sweeps around the target over time.
+	 * \param max_forward_speed_factor: Maximum forward speed factor to apply to the robot (between 0 and 1).
+	 * \param max_angular_speed_factor: Maximum angular speed factor to apply to the robot (between 0 and 1).
+	 * \param orbit_radius: Desired distance to keep from the target while circling, in meters.
+	 * \param orbit_angular_speed: How fast the virtual chase point sweeps around the target, in radians/second.
+	 */
+	void orbit_target(float max_forward_speed_factor = 0.6f, float max_angular_speed_factor = 0.6f, float orbit_radius = 1.8f, float orbit_angular_speed = 0.3f);
+
+	/**
+	 * \brief Structural lookup, no hardcoded node names: active TARGET edge -> its "has_intention"
+	 * edge -> the affordance node. Same algorithm used by mission_controller.
+	 */
+	std::optional<DSR::Node> get_active_affordance_node();
+
+	/**
+	 * \brief This method calculates the robot position in the actual room and update the DSR graph with this information.
 	 * It uses the auto_localization method to get the robot position and orientation, and then updates the corresponding attributes in the DSR graph. 
 	 * If the robot node does not exist in the DSR graph, it creates it.
 	 * \return The robot pose in the format {x, y, z, qx, qy, qz, qw}.
@@ -168,6 +186,13 @@ private:
 	float prev_distance_error;
 	float prev_angle_error;
 	std::chrono::steady_clock::time_point last_follow_time;
+
+	float orbit_phase = 0.0f;
+	std::chrono::steady_clock::time_point last_orbit_time;
+
+	std::optional<std::pair<float, float>> get_target_relative_position();
+	std::pair<float, float> compute_approach_velocities(float x, float y, float desired_distance,
+	                                                     float max_forward_speed_factor, float max_angular_speed_factor);
 
 	bool print_extra_info = true;
 	bool simulated = configLoader.get<bool>("Simulated");

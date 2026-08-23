@@ -567,6 +567,7 @@ void SpecificWorker::on_setMission_clicked()
 	auto person_node = G->get_node("person");
 	
 	if (robot_node.has_value() && person_node.has_value()) {
+		delete_active_target_edge();
 		DSR::Edge new_target_edge;
 		new_target_edge.from(robot_node.value().id());
 		new_target_edge.to(person_node.value().id());
@@ -578,29 +579,46 @@ void SpecificWorker::on_setMission_clicked()
 	}
 }
 
+std::optional<DSR::Node> SpecificWorker::get_active_affordance_node(const std::shared_ptr<DSR::DSRGraph>& graph) const
+{
+	auto target_edges = graph->get_edges_by_type("TARGET");
+	auto has_intention_edges = graph->get_edges_by_type("has_intention");
+	for (const auto& target_edge : target_edges)
+	{
+		for (const auto& intention_edge : has_intention_edges)
+		{
+			if (intention_edge.from() == target_edge.to())
+			{
+				auto affordance_node_opt = graph->get_node(intention_edge.to());
+				if (affordance_node_opt.has_value())
+					return affordance_node_opt.value();
+			}
+		}
+	}
+	return std::nullopt;
+}
+
 bool SpecificWorker::on_startMission_clicked()
 {
-	if (std::optional<DSR::Node> optional_node = G->get_node("follow_me"); optional_node.has_value())
+	if (auto affordance_node_opt = get_active_affordance_node(G); affordance_node_opt.has_value())
 	{
 		mission_start_time = std::chrono::steady_clock::now();
-		DSR::Node follow_me_node = optional_node.value();
-		G->add_or_modify_attrib_local<aff_interacting_att>(follow_me_node, true);
-		G->update_node(follow_me_node);
+		DSR::Node affordance_node = affordance_node_opt.value();
+		G->add_or_modify_attrib_local<aff_interacting_att>(affordance_node, true);
+		G->update_node(affordance_node);
 		return true;
 	}
-	// "follow_me" not created yet (concept_person hasn't caught up). Caller should retry.
+	// Affordance not created yet (its owning agent hasn't caught up). Caller should retry.
 	return false;
 }
 
 void SpecificWorker::on_stopMission_clicked()
 {
-	if (std::optional<DSR::Node> optional_node = G->get_node("follow_me"); optional_node.has_value())
-	{	
-		DSR::Node follow_me_node = optional_node.value();
-		G->add_or_modify_attrib_local<aff_interacting_att>(follow_me_node, false);
-		G->update_node(follow_me_node);
-	}
-	else{
+	if (auto affordance_node_opt = get_active_affordance_node(G); affordance_node_opt.has_value())
+	{
+		DSR::Node affordance_node = affordance_node_opt.value();
+		G->add_or_modify_attrib_local<aff_interacting_att>(affordance_node, false);
+		G->update_node(affordance_node);
 	}
 }
 
@@ -1148,6 +1166,17 @@ void SpecificWorker::create_mission_target_edge(uint64_t mission_id) {
 	}
 }
 
+void SpecificWorker::delete_active_target_edge() {
+	auto robot_opt = G->get_node("robot");
+	if (!robot_opt.has_value())
+		return;
+	for (const auto& target_edge : G->get_edges_by_type("TARGET"))
+	{
+		if (target_edge.from() == robot_opt.value().id())
+			G->delete_edge(target_edge.from(), target_edge.to(), "TARGET");
+	}
+}
+
 void SpecificWorker::delete_mission_target_edge(uint64_t mission_id) {
 	try {
 		auto robot_opt = mission_graph->get_node("robot");
@@ -1237,6 +1266,7 @@ void SpecificWorker::create_or_check_follow_person_mission()
 		
 		if (robot_opt.has_value() && person_opt.has_value())
 		{
+			delete_active_target_edge();
 			DSR::Edge new_target_edge;
 			new_target_edge.from(robot_opt.value().id());
 			new_target_edge.to(person_opt.value().id());
@@ -1467,7 +1497,7 @@ void SpecificWorker::monitor_mission_execution_state()
 	// Monitor "aff_interacting" finalization condition in the episodic graph
 	if (!follow_person_active) return;
 	
-	auto affordance_opt = mission_graph->get_node("follow_me");
+	auto affordance_opt = get_active_affordance_node(mission_graph);
 	if (!affordance_opt.has_value()) return;
 	
 	auto affordance = affordance_opt.value();
