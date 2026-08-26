@@ -57,10 +57,6 @@ ZED_MOUNT_ROTATION_ANGLE_RAD = 1.57  # ~90 deg about Z, robot-local frame
 # back to mm on read so this module stays consistent with the rest of the DSR.
 ROOM_ROBOT_RT_TRANSLATION_IS_METERS = True
 
-# Each generated concept_X agent trains a single-concept detector, so class 0
-# always means "the concept this agent was generated for" (e.g. the bump).
-SAM_LABEL_CLASS_ID = 0
-
 
 def _rotation_matrix_from_axis_angle(axis, angle):
     """Rodrigues' formula: 3x3 rotation matrix from an axis-angle rotation."""
@@ -135,6 +131,9 @@ class SpecificWorker(GenericWorker):
         self.selected_point = None
         self.ui.segment_button.clicked.connect(self.on_segment_button_clicked)
 
+        self.current_save_dir = "segmented_objects"
+        self.ui.save_new_folder_button.clicked.connect(self.on_save_new_folder_button_clicked)
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.qimage = None
         # self.sam = SAM("sam_b.pt")
@@ -163,6 +162,11 @@ class SpecificWorker(GenericWorker):
 
     def __del__(self):
         """Destructor"""
+
+    def log(self, msg):
+        """Print to terminal and mirror the same message in the UI's debug log."""
+        print(msg)
+        self.ui.debug_log.appendPlainText(str(msg))
 
 
     @QtCore.Slot()
@@ -262,48 +266,69 @@ class SpecificWorker(GenericWorker):
     def on_segment_button_clicked(self):
         if self.selected_point is not None:
             x, y = self.selected_point
-            print(f"Segment button clicked. Processing SAM on point: ({x}, {y})")
+            self.log(f"Segment button clicked. Processing SAM on point: ({x}, {y})")
             self.process_sam_on_point(x, y)
         else:
-            print("No point selected. Please click on the image to select a point before segmenting.")
+            self.log("No point selected. Please click on the image to select a point before segmenting.")
 
-    def get_current_rgb_image(self):
+    def on_save_new_folder_button_clicked(self):
+        folder_name = f"session_{time.strftime('%Y%m%d_%H%M%S')}"
+        self.current_save_dir = os.path.join("segmented_objects", folder_name)
+        os.makedirs(self.current_save_dir, exist_ok=True)
+        self.ui.current_folder_label.setText(f"Saving to: {self.current_save_dir}")
+        self.log(f"New save folder: {self.current_save_dir}")
+
+    def get_current_rgbd(self):
+        """Fetch the current RGB image and depth (meters) from the live "camera",
+        aligned to the same resolution.
+        """
         try:
-            image_struct = self.camerargbdsimple_proxy.getImage("camera")
-            if not image_struct.image:
-                return None
-            
+            rgbd = self.camerargbdsimple_proxy.getAll("camera")
+            image_struct = rgbd.image
+            depth_struct = rgbd.depth
+            if not image_struct.image or not depth_struct.depth:
+                return None, None
+
             image_np = np.frombuffer(image_struct.image, dtype=np.uint8)
             image_np = image_np.reshape((image_struct.height, image_struct.width, 3))
-            return cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+            image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+
+            depth_np = np.frombuffer(depth_struct.depth, dtype=np.float32)
+            depth_np = depth_np.reshape((depth_struct.height, depth_struct.width))
+            depth_m = depth_np * depth_struct.depthFactor
+
+            if depth_m.shape != image_rgb.shape[:2]:
+                depth_m = cv2.resize(depth_m, (image_rgb.shape[1], image_rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+            return image_rgb, depth_m
         except Exception as e:
-            print(f"ERROR getting current RGB image: {e}")
-            return None
+            self.log(f"ERROR getting current RGBD image: {e}")
+            return None, None
 
 
     def process_sam_on_point(self, x, y):
         # Load SAM
         if not hasattr(self, 'sam') or self.sam is None:
-            print("Loading SAM model...")
+            self.log("Loading SAM model...")
             from ultralytics import SAM # import here for lazy loading
-            self.sam = SAM("sam_b.pt")
+            self.sam = SAM("sam2.1_l.pt")
 
-        # Get current RGB image
-        image_rgb = self.get_current_rgb_image()
+        # Get current RGBD
+        image_rgb, depth_m = self.get_current_rgbd()
         if image_rgb is None:
-            print("No image available to process.")
+            self.log("No image available to process.")
             return
-        
+
         # Process the image with SAM
-        print(f"Processing SAM on point: ({x}, {y})")
+        self.log(f"Processing SAM on point: ({x}, {y})")
         results = self.sam(image_rgb, points=[(x, y)], labels=[1], device=self.device, verbose=False)
 
         # Get mask and save results
         if results[0].masks is not None:
             mask = results[0].masks.data.cpu().numpy()[0]
-            self.save_segmented_object(mask, image_rgb)
+            self.save_segmented_rgbd(mask, image_rgb, depth_m)
         else:
-            print("No mask detected by SAM for the given point.")
+            self.log("No mask detected by SAM for the given point.")
 
 
     def get_room_to_camera_transform(self):
@@ -380,36 +405,44 @@ class SpecificWorker(GenericWorker):
         return int(u), int(v)
 
 
-    def save_segmented_object(self, mask, image_rgb):
-        """Save a YOLO-format training example: the full, unmasked image plus a
-        label file with a bounding box derived from the SAM mask. The image must
-        stay unmasked (real background) since inference will run on real scenes,
-        not black-background crops.
+    def save_segmented_rgbd(self, mask, image_rgb, depth_m):
+        """Save a segmented RGBD crop at the selected point: background zeroed out
+        (both color and depth) and cropped to the mask's bounding box. No detection
+        label - just the segmented RGB (.jpg) + depth in meters (.npy). Also updates
+        the right-hand "segmented" viewer with the result.
         """
-        os.makedirs("segmented_objects", exist_ok=True)
+        os.makedirs(self.current_save_dir, exist_ok=True)
 
         mask_uint8 = (mask * 255).astype(np.uint8)
+        if mask_uint8.shape != image_rgb.shape[:2]:
+            mask_uint8 = cv2.resize(mask_uint8, (image_rgb.shape[1], image_rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
         x, y, w, h = cv2.boundingRect(mask_uint8)
         if w == 0 or h == 0:
-            print("Cannot save: SAM mask is empty, no bounding box to derive a label from.")
+            self.log("Cannot save: SAM mask is empty, nothing to crop.")
             return
 
-        img_h, img_w = image_rgb.shape[:2]
-        cx = (x + w / 2) / img_w
-        cy = (y + h / 2) / img_h
-        norm_w = w / img_w
-        norm_h = h / img_h
+        mask_bool = mask_uint8 > 0
+        masked_rgb = image_rgb.copy()
+        masked_rgb[~mask_bool] = 0
+        masked_depth = depth_m.copy()
+        masked_depth[~mask_bool] = 0.0
 
-        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        rgb_crop = np.ascontiguousarray(masked_rgb[y:y + h, x:x + w])
+        depth_crop = np.ascontiguousarray(masked_depth[y:y + h, x:x + w])
+
         basename = f"bump_{int(time.time())}"
-        image_path = os.path.join("segmented_objects", f"{basename}.jpg")
-        label_path = os.path.join("segmented_objects", f"{basename}.txt")
+        image_path = os.path.join(self.current_save_dir, f"{basename}_rgb.jpg")
+        depth_path = os.path.join(self.current_save_dir, f"{basename}_depth.npy")
 
-        cv2.imwrite(image_path, image_bgr)
-        with open(label_path, "w") as f:
-            f.write(f"{SAM_LABEL_CLASS_ID} {cx:.6f} {cy:.6f} {norm_w:.6f} {norm_h:.6f}\n")
+        cv2.imwrite(image_path, cv2.cvtColor(rgb_crop, cv2.COLOR_RGB2BGR))
+        np.save(depth_path, depth_crop)
 
-        print(f"Saved training image {image_path} with label {label_path}")
+        crop_h, crop_w, crop_ch = rgb_crop.shape
+        if crop_h > 0 and crop_w > 0:
+            qimage = QImage(rgb_crop.data, crop_w, crop_h, crop_w * crop_ch, QImage.Format_RGB888).copy()
+            self.ui.segmented_image_label.setPixmap(QPixmap.fromImage(qimage))
+
+        self.log(f"Saved segmented RGBD: {image_path}, {depth_path}")
 
 
     def startup_check(self):
@@ -449,7 +482,7 @@ class SpecificWorker(GenericWorker):
         pixel = self.project_point_3d_to_2d(point_room_mm)
         if pixel is not None:
             x, y = pixel
-            print(f"Projected 3D point {point_room_mm} to pixel ({x}, {y}) on node {id}. Processing SAM.")
+            self.log(f"Projected 3D point {point_room_mm} to pixel ({x}, {y}) on node {id}. Processing SAM.")
             self.ui.image_sel_coords_label.setText(f"Selected point: ({x}, {y})")
             self.process_sam_on_point(x, y)
 
