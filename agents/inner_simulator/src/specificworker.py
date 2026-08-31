@@ -514,16 +514,13 @@ class SpecificWorker(GenericWorker):
                     output.close()
                     
                     self.logger.log("Simulations finished. Results written to sim_output.json!", style="bold blue")
-                    
-                    
-                    # Create agent template (CDSL) for each cause
-                    # for cause in self.causes_data:
-                    #     if not generate_agent(cause["name"], AGENTS_FOLDER):
-                    #         print("Error while generating agent template for cause", cause["name"])
-                        
-                    # print("Agents templated generated at folder", AGENTS_FOLDER)
 
-                    self.state = "IDLE"      
+                    # Signal "semantic" that the causal search concluded and problem_position (if
+                    # any) is final. semantic owns validating the result, creating "bump" +
+                    # "photograph_me" + has_intention, deleting "problem" and generating the agent.
+                    self.mark_cause_confirmed_in_dsr()
+
+                    self.state = "IDLE"
 
                 case "TERMINATED":
                     pass
@@ -826,6 +823,20 @@ class SpecificWorker(GenericWorker):
         self.logger.log(f"Stored problem_position {position} (mm) on 'problem' node.", style="bold green")
 
 
+    def mark_cause_confirmed_in_dsr(self) -> None:
+        """
+        Flag on 'problem' that the causal search concluded, for "semantic" to react to.
+        """
+        problem_node = self.graphs["work"].get_node("problem")
+        if problem_node is None:
+            self.logger.log("'problem' node not found in DSR graph, cannot set cause_confirmed.", style="bold red")
+            return
+
+        problem_node.attrs["cause_confirmed"] = Attribute(True, self.agent_id)
+        self.graphs["work"].update_node(problem_node)
+        self.logger.log("Stored cause_confirmed=True on 'problem' node.", style="bold green")
+
+
     def create_edge_in_dsr(self, fr_node, to_node, edge_type):
         """
         Create an edge in the DSR graph
@@ -1047,6 +1058,7 @@ class SpecificWorker(GenericWorker):
 
             last_position_before_problem_data = positions_before_problem[-1]
             last_position_before_problem = list(last_position_before_problem_data.attributes["rt_translation"].value)
+            self.logger.log(f"[DEBUG] RAW rt_translation (room->robot) before conversion: {last_position_before_problem}", style="bold yellow")
 
             self.logger.log("Robot positions loaded from episodic memory", style="bold blue")
             return {

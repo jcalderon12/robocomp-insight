@@ -129,7 +129,15 @@ public slots:
 	std::vector<float> auto_localization();
 
 	/**
-	 * \brief Method to check if there is an active affordance in the DSR graph. 
+	 * \brief For a TARGET pointing to a node with a static global "problem_position" (e.g.
+	 * "bump"), computes and writes a live RT robot->target edge each cycle, so follow_target()
+	 * has something to read. No-op if the target has no "problem_position" (e.g. "person",
+	 * whose RT robot->target is already maintained live by concept_person).
+	 */
+	void update_static_target_rt();
+
+	/**
+	 * \brief Method to check if there is an active affordance in the DSR graph.
 	 * An active affordance is an affordance node that comes from the person node target and has the attribute aff_interacting_att to true.
 	 * \return Return true if there is an active affordance. false otherwise.
 	 */
@@ -168,6 +176,7 @@ private:
 	float prev_distance_error;
 	float prev_angle_error;
 	std::chrono::steady_clock::time_point last_follow_time;
+	bool was_following = false;  // skip the PID D-term on the first cycle after (re)starting to follow a target
 
 	bool print_extra_info = true;
 	bool simulated = configLoader.get<bool>("Simulated");

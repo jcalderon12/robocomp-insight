@@ -115,6 +115,12 @@ public slots:
 	void modify_edge();
 	void modify_edge_RT();
 
+	// Attributes (on the node selected in node_from_list). No type/value UI fields yet:
+	// create/modify store a placeholder bool.
+	void add_attr();
+	void delete_attr();
+	void modify_attr();
+
 private slots:
 	void refresh_attr_list();  // repopulates attr_list from node_from_list's currently selected node
 

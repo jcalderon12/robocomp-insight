@@ -134,6 +134,11 @@ class SpecificWorker(GenericWorker):
         self.current_save_dir = "segmented_objects"
         self.ui.save_new_folder_button.clicked.connect(self.on_save_new_folder_button_clicked)
 
+        # Full-frame classifier dataset (no SAM, no crop): the robot's raw view, labeled by
+        # the person capturing depending on whether the bump happens to be in frame or not.
+        self.ui.bump_present_button.clicked.connect(lambda: self.save_full_frame("con_bache"))
+        self.ui.bump_absent_button.clicked.connect(lambda: self.save_full_frame("sin_bache"))
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.qimage = None
         # self.sam = SAM("sam_b.pt")
@@ -443,6 +448,32 @@ class SpecificWorker(GenericWorker):
             self.ui.segmented_image_label.setPixmap(QPixmap.fromImage(qimage))
 
         self.log(f"Saved segmented RGBD: {image_path}, {depth_path}")
+
+    def save_full_frame(self, label):
+        """Save the raw, unmodified RGBD frame (no SAM, no crop) into <save_dir>/<label>/,
+        for the presence/absence floor classifier: same image format either way, the only
+        difference is whether the bump happens to be in view when this is clicked.
+        """
+        image_rgb, depth_m = self.get_current_rgbd()
+        if image_rgb is None:
+            self.log("No image available to save.")
+            return
+
+        save_dir = os.path.join(self.current_save_dir, label)
+        os.makedirs(save_dir, exist_ok=True)
+
+        basename = f"floor_{int(time.time())}"
+        image_path = os.path.join(save_dir, f"{basename}_rgb.jpg")
+        depth_path = os.path.join(save_dir, f"{basename}_depth.npy")
+
+        cv2.imwrite(image_path, cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
+        np.save(depth_path, depth_m)
+
+        h, w, ch = image_rgb.shape
+        qimage = QImage(image_rgb.data, w, h, w * ch, QImage.Format_RGB888).copy()
+        self.ui.segmented_image_label.setPixmap(QPixmap.fromImage(qimage))
+
+        self.log(f"Saved '{label}' frame: {image_path}, {depth_path}")
 
 
     def startup_check(self):

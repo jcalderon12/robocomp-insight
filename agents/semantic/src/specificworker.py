@@ -98,6 +98,50 @@ class SpecificWorker(GenericWorker):
 
     def update_node_att(self, id: int, attribute_names: [str]):
         console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
+        if "cause_confirmed" in attribute_names:
+            node = self.g.get_node(id)
+            if node is not None and node.name == "problem" and node.attrs["cause_confirmed"].value:
+                self.handle_cause_confirmed()
+
+    def handle_cause_confirmed(self):
+        # Validates inner_simulator's causal search result: replaces "problem" with "bump" +
+        # "photograph_me" (has_intention), the take_photos counterpart of follow_me/person.
+        problem_node = self.g.get_node("problem")
+        if problem_node is None:
+            return
+
+        if self.g.get_node("bump") is not None:
+            return  # Already handled (avoid double creation on repeated signals)
+
+        if "problem_position" not in problem_node.attrs:
+            console.print("cause_confirmed but no problem_position (non-spatial cause); dropping 'problem'.", style='yellow')
+            self.g.delete_node(problem_node.id)
+            return
+        position_value = problem_node.attrs["problem_position"].value
+
+        bump_node = Node(self.agent_id, "object", name="bump")
+        bump_node.attrs["pos_x"] = Attribute(problem_node.attrs["pos_x"].value, self.agent_id)
+        bump_node.attrs["pos_y"] = Attribute(problem_node.attrs["pos_y"].value, self.agent_id)
+        bump_node.attrs["problem_position"] = Attribute(position_value, self.agent_id)  # global mm; will move to RT robot->bump later
+        self.g.insert_node(bump_node)
+        bump_node = self.g.get_node("bump")
+
+        photograph_me_node = Node(self.agent_id, "affordance", name="photograph_me")
+        photograph_me_node.attrs["pos_x"] = Attribute(bump_node.attrs["pos_x"].value, self.agent_id)
+        photograph_me_node.attrs["pos_y"] = Attribute(bump_node.attrs["pos_y"].value - 100.0, self.agent_id)
+        photograph_me_node.attrs["parent"] = Attribute(bump_node.id, self.agent_id)
+        photograph_me_node.attrs["aff_interacting"] = Attribute(False, self.agent_id)
+        self.g.insert_node(photograph_me_node)
+        photograph_me_node = self.g.get_node("photograph_me")
+
+        intention_edge = Edge(photograph_me_node.id, bump_node.id, "has_intention", self.agent_id)
+        self.g.insert_or_assign_edge(intention_edge)
+
+        # TODO: generate + launch the concept_bump agent here (agent_generation), once its
+        # template creates create_affordance()-style logic mirroring concept_person.
+
+        self.g.delete_node(problem_node.id)
+        console.print("Created 'bump' + 'photograph_me' from resolved 'problem'.", style='bold green')
 
     def update_node(self, id: int, type: str):
         console.print(f"UPDATE NODE: {id} {type}", style='green')

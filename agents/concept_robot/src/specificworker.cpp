@@ -122,6 +122,7 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	auto_localization();
+	update_static_target_rt();
 
     if (queck_affordance_active())
 	{
@@ -129,6 +130,7 @@ void SpecificWorker::compute()
 	}
 	else{
 		stop_robot();
+		was_following = false;  // next follow_target() call starts a fresh D-term baseline
 	}
 
 	std::vector<float> actual_velocities = getVelocitiesFromDSR();
@@ -232,7 +234,11 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 	float dt = std::chrono::duration<float>(now - last_follow_time).count();
 	last_follow_time = now;
 
-	if (dt > 1e-4f)
+	// Skip the derivative term on the first cycle after (re)starting to follow a target:
+	// prev_distance_error/prev_angle_error/last_follow_time are otherwise stale (from
+	// whatever target was last tracked, possibly a different mission), producing a bogus
+	// error jump that briefly kicks linear_velocity/angular_velocity hard at start.
+	if (dt > 1e-4f && was_following)
 	{
 		d_distance_error = (distance_error - prev_distance_error) / dt;
 		float angle_diff = angle_to_target - prev_angle_error;
@@ -243,6 +249,7 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 
 	prev_distance_error = distance_error;
 	prev_angle_error    = angle_to_target;
+	was_following = true;
 
     const float Kp_lin = 0.8f;
     const float Kd_lin = 0.1f;   
@@ -290,6 +297,57 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
 	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
 	G->update_node(robot_node);
+}
+
+void SpecificWorker::update_static_target_rt()
+{
+	auto target_edges = G->get_edges_by_type("TARGET");
+	if (target_edges.empty())
+		return;
+
+	auto target_node_opt = G->get_node(target_edges[0].to());
+	if (!target_node_opt.has_value())
+		return;
+	DSR::Node target_node = target_node_opt.value();
+
+	auto pos_it = target_node.attrs().find("problem_position");
+	if (pos_it == target_node.attrs().end())
+		return;  // Not a static-position target (e.g. "person"): its RT is maintained elsewhere.
+
+	auto* pos_mm = std::get_if<std::vector<float>>(&pos_it->second.value());
+	if (!pos_mm || pos_mm->size() < 3)
+		return;
+
+	auto robot_node_opt = G->get_node("robot");
+	auto room_node_opt = G->get_node("room");
+	if (!robot_node_opt.has_value() || !room_node_opt.has_value())
+		return;
+
+	auto room_robot_rt_opt = rt->get_edge_RT(room_node_opt.value(), robot_node_opt.value().id());
+	if (!room_robot_rt_opt.has_value())
+		return;
+	DSR::Edge room_robot_rt = room_robot_rt_opt.value();
+
+	auto t_rr_opt = G->get_attrib_by_name<rt_translation_att>(room_robot_rt);
+	auto q_rr_opt = G->get_attrib_by_name<rt_quaternion_att>(room_robot_rt);
+	if (!t_rr_opt.has_value() || !q_rr_opt.has_value())
+		return;
+
+	std::vector<float> t_rr = t_rr_opt.value();
+	std::vector<float> q_rr = q_rr_opt.value();
+
+	Eigen::Vector3f room_robot_t(t_rr[0], t_rr[1], t_rr[2]);
+	Eigen::Quaternionf room_robot_q(q_rr[3], q_rr[0], q_rr[1], q_rr[2]);  // stored as [x,y,z,w]
+
+	// problem_position is mm (project-wide convention); room->robot here is meters
+	// (concept_robot's own convention, see mm_m_unit_mismatch).
+	Eigen::Vector3f room_target_t((*pos_mm)[0] / 1000.f, (*pos_mm)[1] / 1000.f, (*pos_mm)[2] / 1000.f);
+
+	Eigen::Vector3f local_t = room_robot_q.inverse() * (room_target_t - room_robot_t);
+
+	rt->insert_or_assign_edge_RT(robot_node_opt.value(), target_node.id(),
+		{local_t.x(), local_t.y(), local_t.z()},
+		{0.f, 0.f, 0.f});
 }
 
 std::vector<float> SpecificWorker::auto_localization()

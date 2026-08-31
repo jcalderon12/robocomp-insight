@@ -110,6 +110,9 @@ void SpecificWorker::initialize()
 	connect(bullshit_publisher_ui.create_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::add_RT_edge);
 	connect(bullshit_publisher_ui.delete_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::delete_RT_edge);
 	connect(bullshit_publisher_ui.modify_edge_RT_button, &QPushButton::clicked, this, &SpecificWorker::modify_edge_RT);
+	connect(bullshit_publisher_ui.create_attr_button, &QPushButton::clicked, this, &SpecificWorker::add_attr);
+	connect(bullshit_publisher_ui.delete_attr_button, &QPushButton::clicked, this, &SpecificWorker::delete_attr);
+	connect(bullshit_publisher_ui.modify_attr_button, &QPushButton::clicked, this, &SpecificWorker::modify_attr);
 
 	// Selecting from a list box updates its paired text box
 	connect(bullshit_publisher_ui.node_list, &QComboBox::currentTextChanged, bullshit_publisher_ui.node_name, &QLineEdit::setText);
@@ -530,5 +533,59 @@ void SpecificWorker::refresh_attr_list()
 		return;
 	for (const auto& attr : node_opt.value().attrs())
 		bullshit_publisher_ui.attr_list->addItem(QString::fromStdString(attr.first));
+}
+
+void SpecificWorker::add_attr(){
+	// Create the attribute (default bool placeholder) on node_from_list's selected node.
+	// Uses runtime_checked_add_or_modify_attrib_local (not a raw attrs()[] write) so the
+	// Attribute gets a real timestamp/agent_id, required for the CRDT delta to propagate
+	// to other agents' replicas.
+	auto node_opt = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	QString q_attr_name = bullshit_publisher_ui.attr_name->text();
+	if (!node_opt.has_value() || q_attr_name.isEmpty())
+		return;
+
+	DSR::Node node = node_opt.value();
+	G->runtime_checked_add_or_modify_attrib_local(node, q_attr_name.toStdString(), true);
+	G->update_node(node);
+
+	refresh_attr_list();
+	bullshit_publisher_ui.attr_list->setCurrentText(q_attr_name);
+}
+
+void SpecificWorker::delete_attr(){
+	// Remove the named attribute from node_from_list's selected node if it exists
+	auto node_opt = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	QString q_attr_name = bullshit_publisher_ui.attr_name->text();
+	if (!node_opt.has_value() || q_attr_name.isEmpty())
+		return;
+
+	DSR::Node node = node_opt.value();
+	if (G->remove_attrib_local(node, q_attr_name.toStdString())) {
+		G->update_node(node);
+		refresh_attr_list();
+	}
+}
+
+void SpecificWorker::modify_attr(){
+	// Toggle the (bool placeholder) value of an already-existing attribute
+	auto node_opt = G->get_node(bullshit_publisher_ui.node_from_list->currentText().toStdString());
+	QString q_attr_name = bullshit_publisher_ui.attr_name->text();
+	if (!node_opt.has_value() || q_attr_name.isEmpty())
+		return;
+
+	DSR::Node node = node_opt.value();
+	auto attr_it = node.attrs().find(q_attr_name.toStdString());
+	if (attr_it == node.attrs().end())
+		return;
+
+	bool current_value = false;
+	if (auto* pb = std::get_if<bool>(&attr_it->second.value()))
+		current_value = *pb;
+
+	G->runtime_checked_add_or_modify_attrib_local(node, q_attr_name.toStdString(), !current_value);
+	G->update_node(node);
+
+	refresh_attr_list();
 }
 

@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1300</width>
-    <height>700</height>
+    <height>720</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -110,13 +110,39 @@
     <string>Saving to: segmented_objects</string>
    </property>
   </widget>
+  <widget class="QPushButton" name="bump_present_button">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>525</y>
+     <width>190</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Con bache</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="bump_absent_button">
+   <property name="geometry">
+    <rect>
+     <x>210</x>
+     <y>525</y>
+     <width>190</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Sin bache</string>
+   </property>
+  </widget>
   <widget class="QPlainTextEdit" name="debug_log">
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>530</y>
+     <y>565</y>
      <width>1280</width>
-     <height>150</height>
+     <height>145</height>
     </rect>
    </property>
    <property name="readOnly">
