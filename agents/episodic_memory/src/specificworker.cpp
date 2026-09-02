@@ -19,8 +19,11 @@
  */
 #include "specificworker.h"
 
+#include <clocale>
+
 SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx, bool startup_check)
     : GenericWorker(configLoader, tprx) {
+	std::setlocale(LC_ALL, "C");
 	std::cout << "--- SpecificWorker CONSTRUCTOR START ---" << std::endl;
 	this->startup_check_flag = startup_check;
 	if (this->startup_check_flag) {

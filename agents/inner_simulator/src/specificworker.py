@@ -553,7 +553,7 @@ class SpecificWorker(GenericWorker):
         self.actual_time = time.time()
         if time.time() - self.print_time > 5:
             self.print_time = time.time()
-            self.logger.log(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
+            # self.logger.log(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
             
         return time_step
     

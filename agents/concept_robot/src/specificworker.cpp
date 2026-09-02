@@ -342,6 +342,7 @@ void SpecificWorker::update_static_target_rt()
 	// problem_position is mm (project-wide convention); room->robot here is meters
 	// (concept_robot's own convention, see mm_m_unit_mismatch).
 	Eigen::Vector3f room_target_t((*pos_mm)[0] / 1000.f, (*pos_mm)[1] / 1000.f, (*pos_mm)[2] / 1000.f);
+	// Eigen::Vector3f room_target_t((*pos_mm)[0], (*pos_mm)[1], (*pos_mm)[2]);
 
 	Eigen::Vector3f local_t = room_robot_q.inverse() * (room_target_t - room_robot_t);
 

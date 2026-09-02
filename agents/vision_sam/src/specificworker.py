@@ -192,8 +192,8 @@ class SpecificWorker(GenericWorker):
 
             # convert the image from BGR to RGB and get its dimensions
             image_np = image_np.reshape((image_struct.height, image_struct.width, 3))
-            image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
-            h, w, ch = image_rgb.shape
+            # image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+            h, w, ch = image_np.shape
 
             # process the image with SAM
             # if self.sam_masks is None:
@@ -219,7 +219,7 @@ class SpecificWorker(GenericWorker):
             # Show the image in the GUI
             # if self.sam_masks is not None:
 
-            qimage = QImage(image_rgb.data, w, h, w * ch, QImage.Format_RGB888).copy()
+            qimage = QImage(image_np.data, w, h, w * ch, QImage.Format_RGB888).copy()
             self.ui.image_label.setPixmap(QPixmap.fromImage(qimage))
 
         except RuntimeError as e:
@@ -466,7 +466,7 @@ class SpecificWorker(GenericWorker):
         image_path = os.path.join(save_dir, f"{basename}_rgb.jpg")
         depth_path = os.path.join(save_dir, f"{basename}_depth.npy")
 
-        cv2.imwrite(image_path, cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(image_path, image_rgb)
         np.save(depth_path, depth_m)
 
         h, w, ch = image_rgb.shape
