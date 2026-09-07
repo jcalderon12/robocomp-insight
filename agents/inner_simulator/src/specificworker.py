@@ -236,6 +236,7 @@ class SpecificWorker(GenericWorker):
         if robot_positions is not None and robot_positions.get("last_position_before_problem") is not None:
             problem_position_fixed = [robot_positions["last_position_before_problem"][1], robot_positions["last_position_before_problem"][0], robot_positions["last_position_before_problem"][2]]
             self.sim_scene.problem_position = problem_position_fixed
+            self.logger.log(f"Problem position set for simulation: {problem_position_fixed}", style="green")
         else:
             self.sim_scene.problem_position = PROBLEM_POS
         self.sim_scene.problem_orientation = [0,0,0,1]
@@ -243,6 +244,7 @@ class SpecificWorker(GenericWorker):
         if robot_positions is not None and robot_positions.get("first_position") is not None:
             robot_position_fixed = [robot_positions["first_position"][1], robot_positions["first_position"][0], robot_positions["first_position"][2]]
             self.sim_scene.initial_robot_position = robot_position_fixed
+            self.logger.log(f"Initial robot position set for simulation: {robot_position_fixed}", style="green")
         else:
             self.logger.log("Could not read initial robot position from episodic memory, using default ROBOT_POS", style="yellow")
             self.sim_scene.initial_robot_position = ROBOT_POS
@@ -946,7 +948,6 @@ class SpecificWorker(GenericWorker):
             initial_gyro = [0.0,0.0,0.0]
             
             self.logger.log(f"Found {len(imu_events)} IMU events in episodic memory with modification type MNA.", style="bold blue")
-
             # Correct each ts of the event list
             for event in imu_events:
                 corrected_ts = event.timestamp - initial_ts
@@ -1020,7 +1021,7 @@ class SpecificWorker(GenericWorker):
             Get robot position data from episodic memory.
             Returns both:
                 - the first robot position recorded in the history,
-                - the last robot position before the first problem appearance.
+                - the last robot position before the first problget_robot_positions_relative_to_problemem appearance.
         """
         if self.mem_api.is_ready():
             room_node = self.graphs["work"].get_node("room")
@@ -1044,6 +1045,8 @@ class SpecificWorker(GenericWorker):
                     return None
                 
             first_position = list(first_position_data.attributes["rt_translation"].value)
+            self.logger.log(f"[DEBUG] RAW first rt_translation (room->robot) before conversion: {first_position}", style="bold yellow")
+
 
             problem_events = self.mem_api.get_node_history_by_name("problem")
             if not problem_events:
@@ -1058,7 +1061,7 @@ class SpecificWorker(GenericWorker):
 
             last_position_before_problem_data = positions_before_problem[-1]
             last_position_before_problem = list(last_position_before_problem_data.attributes["rt_translation"].value)
-            self.logger.log(f"[DEBUG] RAW rt_translation (room->robot) before conversion: {last_position_before_problem}", style="bold yellow")
+            self.logger.log(f"[DEBUG] RAW last rt_translation (room->robot) before conversion: {last_position_before_problem}", style="bold yellow")
 
             self.logger.log("Robot positions loaded from episodic memory", style="bold blue")
             return {

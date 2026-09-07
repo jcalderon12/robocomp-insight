@@ -21,8 +21,8 @@
                     }
                 },
                 "id": "100",
-                "name": "room",
-                "type": "room",
+                "name": "root",
+                "type": "root",
                 "links": [
                     {
                         "dst": "200",

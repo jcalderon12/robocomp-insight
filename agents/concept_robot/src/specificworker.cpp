@@ -319,32 +319,32 @@ void SpecificWorker::update_static_target_rt()
 		return;
 
 	auto robot_node_opt = G->get_node("robot");
-	auto room_node_opt = G->get_node("room");
-	if (!robot_node_opt.has_value() || !room_node_opt.has_value())
+	auto root_node_opt = G->get_node("root");
+	if (!robot_node_opt.has_value() || !root_node_opt.has_value())
 		return;
 
-	auto room_robot_rt_opt = rt->get_edge_RT(room_node_opt.value(), robot_node_opt.value().id());
-	if (!room_robot_rt_opt.has_value())
+	auto root_robot_rt_opt = rt->get_edge_RT(root_node_opt.value(), robot_node_opt.value().id());
+	if (!root_robot_rt_opt.has_value())
 		return;
-	DSR::Edge room_robot_rt = room_robot_rt_opt.value();
+	DSR::Edge root_robot_rt = root_robot_rt_opt.value();
 
-	auto t_rr_opt = G->get_attrib_by_name<rt_translation_att>(room_robot_rt);
-	auto q_rr_opt = G->get_attrib_by_name<rt_quaternion_att>(room_robot_rt);
+	auto t_rr_opt = G->get_attrib_by_name<rt_translation_att>(root_robot_rt);
+	auto q_rr_opt = G->get_attrib_by_name<rt_quaternion_att>(root_robot_rt);
 	if (!t_rr_opt.has_value() || !q_rr_opt.has_value())
 		return;
 
 	std::vector<float> t_rr = t_rr_opt.value();
 	std::vector<float> q_rr = q_rr_opt.value();
 
-	Eigen::Vector3f room_robot_t(t_rr[0], t_rr[1], t_rr[2]);
-	Eigen::Quaternionf room_robot_q(q_rr[3], q_rr[0], q_rr[1], q_rr[2]);  // stored as [x,y,z,w]
+	Eigen::Vector3f root_robot_t(t_rr[0], t_rr[1], t_rr[2]);
+	Eigen::Quaternionf root_robot_q(q_rr[3], q_rr[0], q_rr[1], q_rr[2]);  // stored as [x,y,z,w]
 
-	// problem_position is mm (project-wide convention); room->robot here is meters
+	// problem_position is mm (project-wide convention); root->robot here is meters
 	// (concept_robot's own convention, see mm_m_unit_mismatch).
-	Eigen::Vector3f room_target_t((*pos_mm)[0] / 1000.f, (*pos_mm)[1] / 1000.f, (*pos_mm)[2] / 1000.f);
-	// Eigen::Vector3f room_target_t((*pos_mm)[0], (*pos_mm)[1], (*pos_mm)[2]);
+	Eigen::Vector3f root_target_t((*pos_mm)[0] / 1000.f, (*pos_mm)[1] / 1000.f, (*pos_mm)[2] / 1000.f);
+	// Eigen::Vector3f root_target_t((*pos_mm)[0], (*pos_mm)[1], (*pos_mm)[2]);
 
-	Eigen::Vector3f local_t = room_robot_q.inverse() * (room_target_t - room_robot_t);
+	Eigen::Vector3f local_t = root_robot_q.inverse() * (root_target_t - root_robot_t);
 
 	rt->insert_or_assign_edge_RT(robot_node_opt.value(), target_node.id(),
 		{local_t.x(), local_t.y(), local_t.z()},
@@ -356,8 +356,8 @@ std::vector<float> SpecificWorker::auto_localization()
 	std::vector<float> robot_pose = {0,0,0,0,0,0,1}; // {x, y, z, qx, qy, qz, qw}
 	if (simulated){
 		auto webots_pose = this->webots2robocomp_proxy->getObjectPose(robot_DEF);
-		robot_pose[0] = webots_pose.position.x / 1000.f;
-		robot_pose[1] = webots_pose.position.y / 1000.f;
+		robot_pose[0] = webots_pose.position.y / 1000.f;
+		robot_pose[1] = webots_pose.position.x / 1000.f;
 		robot_pose[2] = webots_pose.position.z / 1000.f;
 		Eigen::Quaternionf quat(webots_pose.orientation.w, webots_pose.orientation.x, webots_pose.orientation.y, webots_pose.orientation.z);
 		quat.normalize();
@@ -388,9 +388,9 @@ std::vector<float> SpecificWorker::auto_localization()
 	}
 
 	auto robot_node_opt = G->get_node("robot");
-    auto room_node_opt = G->get_node("room");
+    auto root_node_opt = G->get_node("root");
 
-	DSR::Node room_node, robot_node;
+	DSR::Node root_node, robot_node;
 
 	if (!robot_node_opt.has_value())
 	{
@@ -401,21 +401,21 @@ std::vector<float> SpecificWorker::auto_localization()
 	else 
 		robot_node = robot_node_opt.value();
 
-	if (!room_node_opt.has_value())
+	if (!root_node_opt.has_value())
 	{
-		std::cerr << "Room node not found in DSR. Creating new room node." << std::endl;
-		room_node = DSR::Node::create<room_node_type>("room");
-		G->insert_node(room_node);
+		std::cerr << "Root node not found in DSR. Creating new root node." << std::endl;
+		root_node = DSR::Node::create<root_node_type>("root");
+		G->insert_node(root_node);
 	}
 	else
-		room_node = room_node_opt.value();
+		root_node = root_node_opt.value();
 
-	auto rt_edge_opt = rt->get_edge_RT(room_node, robot_node.id());
+	auto rt_edge_opt = rt->get_edge_RT(root_node, robot_node.id());
 	if (!rt_edge_opt.has_value())
 	{
-		std::cerr << "RT edge between room and robot not found. Creating new RT edge." << std::endl;
+		std::cerr << "RT edge between root and robot not found. Creating new RT edge." << std::endl;
 		DSR::Edge new_rt_edge;
-		new_rt_edge.from(room_node.id());
+		new_rt_edge.from(root_node.id());
 		new_rt_edge.to(robot_node.id());
 		new_rt_edge.type("RT");
 		G->add_or_modify_attrib_local<rt_translation_att>(new_rt_edge, (std::vector<float>){robot_pose[0], robot_pose[1], robot_pose[2]});
