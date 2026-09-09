@@ -88,36 +88,79 @@ from pybullet_imu import IMU
 from pydsr import *
 
 
-def extract_signals_worker(imu_history: dict) -> tuple[np.ndarray, np.ndarray]:
-    acc = np.array(imu_history[ACCELEROMETER], dtype=np.float64)
-    gyro = np.array(imu_history[GYROSCOPE], dtype=np.float64)
-    return acc, gyro
+# ===================== CAUSE-SELECTION PIPELINE (Phase 1) =====================
+# Config for the gates / ranking / confidence. Per-cause "t_abs" can be overridden
+# from causes.json (field "t_abs"). See docstring of select_best_cause().
+SELECTION_CFG = {
+    "t_abs_default": 0.6,     # normalized-DTW ceiling for "a known cause explains it"
+    "t_keep": 1.5,            # coarse per-recording prune (looser than t_abs)
+    "top_k": 3,               # robust representative score = mean of k lowest survivors
+    "k_margin": 1.0,          # runner_up/winner ratio that counts as full margin confidence
+    "scale_abs": 0.15,        # steepness of c_abs sigmoid
+    "frac_ref": 0.05,         # frac_good expected when a (spatial) cause is right
+    "w_disp_m": 1.0,          # bottle-disturbance weight: displacement (meters)
+    "w_tilt_rad": 1.0,        # bottle-disturbance weight: tilt (radians)
+    "d_max_traj_m": 1.0,      # max distance (m) from a grid cell to the robot trajectory
+    "enforce_position_gate": False,  # hard-reject grid cells far from the robot path
+    "enforce_verdict": False,        # withhold problem_position / cause_confirmed on "unknown"
+    "c_floor": 0.0,                  # inner's own min confidence to bother confirming (enforce mode)
+}
 
 
-def dtw_score_worker(a: np.ndarray, b: np.ndarray) -> float:
-    return np.mean([dtw.distance_fast(a[:, axis], b[:, axis]) for axis in range(3)])
+def _znorm(arr: np.ndarray) -> np.ndarray:
+    """Z-normalize each column (axis) independently: (x - mean) / std, std guarded."""
+    arr = np.asarray(arr, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[0] < 2:
+        return arr
+    mean = arr.mean(axis=0)
+    std = arr.std(axis=0)
+    std = np.where(std < 1e-9, 1.0, std)
+    return (arr - mean) / std
 
 
-def find_matching_imu_recordings_worker(rimu: dict, simu: list) -> list[tuple]:
-    """Module-level worker function for multiprocessing (picklable).
-    Returns top-5 matches as (simulation_id, score).
-    """
-    rimu_acc, rimu_gyro = extract_signals_worker(rimu)
+def _axis_dtw_mean(a: np.ndarray, b: np.ndarray) -> float:
+    """Mean over the 3 axes of the DTW distance, normalized by warping-path length so
+    the value is a per-step average (comparable across runs of different duration)."""
+    n = float(max(len(a), len(b))) or 1.0
+    vals = []
+    for axis in range(3):
+        d = dtw.distance_fast(np.ascontiguousarray(a[:, axis]),
+                              np.ascontiguousarray(b[:, axis]))
+        vals.append(d / n)
+    return float(np.mean(vals))
 
-    print(f"[worker] Rimu acc shape: {rimu_acc.shape}, gyro shape: {rimu_gyro.shape}")
 
-    scores = {}
-    for s, sim in enumerate(simu):
-        sim_acc, sim_gyro = extract_signals_worker(sim[HISTORY])
+def score_all_recordings_worker(rimu: dict, simu: list) -> list:
+    """Picklable pool worker. Returns the normalized DTW score of EVERY recording,
+    indexed by recording id. Non-finite / malformed recordings get float('inf')."""
+    r_acc = _znorm(np.array(rimu[ACCELEROMETER], dtype=np.float64))
+    r_gyro = _znorm(np.array(rimu[GYROSCOPE], dtype=np.float64))
+    scores = []
+    for sim in simu:
+        try:
+            s_acc = np.array(sim[HISTORY][ACCELEROMETER], dtype=np.float64)
+            s_gyro = np.array(sim[HISTORY][GYROSCOPE], dtype=np.float64)
+            if s_acc.ndim != 2 or s_acc.shape[1] != 3 or s_gyro.shape[1] != 3 or len(s_acc) < 2:
+                scores.append(float("inf"))
+                continue
+            score = 0.5 * (_axis_dtw_mean(r_acc, _znorm(s_acc)) + _axis_dtw_mean(r_gyro, _znorm(s_gyro)))
+            scores.append(score if np.isfinite(score) else float("inf"))
+        except Exception:
+            scores.append(float("inf"))
+    return scores
 
-        score_acc = dtw_score_worker(rimu_acc, sim_acc)
-        score_gyro = dtw_score_worker(rimu_gyro, sim_gyro)
-        scores[s] = (score_acc + score_gyro) / 2
 
-        print(f"[worker] Simu {s}: acc_dtw={score_acc:.4f} gyro_dtw={score_gyro:.4f} total={scores[s]:.4f}")
-
-    sorted_scores = sorted(scores.items(), key=lambda item: item[1])
-    return sorted_scores[:5]
+def _quat_tilt_rad(quat) -> float:
+    """Angle (rad) between the body's local +Z axis and world +Z, from an [x,y,z,w] quaternion.
+    0 = upright, pi/2 = lying on its side."""
+    try:
+        x, y, z, w = [float(v) for v in quat]
+    except Exception:
+        return 0.0
+    # world-Z component of the rotated local-Z axis (rotation matrix element R[2,2])
+    zz = 1.0 - 2.0 * (x * x + y * y)
+    zz = max(-1.0, min(1.0, zz))
+    return float(np.arccos(zz))
 
 
 class SpecificWorker(GenericWorker):
@@ -408,40 +451,40 @@ class SpecificWorker(GenericWorker):
                     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
                     plt.show()
 
-                    # Check for any possible matches between causes and real IMU's
-                    threads = []
-                    sim_out = {}
-                    sim_out["sim_scene"] = self.sim_scene.model_dump()
-                    sim_out["registers"] = []
-                    # {cause_definition: "asdasdasdas", top_five:[]}, {cause_definition: "asdas", top_five:[]}
+                    # ---- score EVERY recording of EVERY cause (normalized DTW), in parallel ----
+                    cause_defs = list(self.causes_data)
+                    recordings_by_cause = [historicals[pids[i][0]] for i in range(len(pids))]
                     with ProcessPoolExecutor(max_workers=2) as executor:
-                        # Launch proccesses
-                        for h in historicals:
-                            threads.append(executor.submit(find_matching_imu_recordings_worker, self.imu_history, historicals[h]))
-                        # Wait for processes and check results
-                        i = 0
-                        for h in historicals:
-                            res = threads[i].result()
-                            items = []
-                            print("Top 5 best recordings for cause", self.causes_data[i]["name"], ":")
-                            for rec in res:
-                                self.logger.log(f"\tRecording{rec[0]} with score {rec[1]}", style="blue")
-                                items.append(historicals[h][rec[0]]) #stores the whole recording (ts, acc and gyro) of the historical with id rec[0]
+                        score_futures = [executor.submit(score_all_recordings_worker, self.imu_history, recs)
+                                         for recs in recordings_by_cause]
+                        all_scores = [f.result() for f in score_futures]
 
-                            row = {"cause_definition": self.causes_data[i], "top_five": items}
-                            sim_out["registers"].append(row)
+                    sim_out = {"sim_scene": self.sim_scene.model_dump(), "registers": []}
+                    causes_for_selection = []
+                    for i, recs in enumerate(recordings_by_cause):
+                        scores = all_scores[i]
+                        order = sorted(range(len(scores)), key=lambda r: scores[r])
+                        top_ids = order[:5]
+                        top_five = [recs[r] for r in top_ids]
+                        print(f"Top 5 recordings for cause {cause_defs[i]['name']}: "
+                              + ", ".join(f"{r}({scores[r]:.4f})" for r in top_ids))
+                        sim_out["registers"].append({
+                            "cause_definition": cause_defs[i],
+                            "scores": scores,                       # normalized DTW per recording id
+                            "top": [[r, scores[r]] for r in top_ids],
+                            "top_five": top_five,
+                        })
+                        causes_for_selection.append({"cause_definition": cause_defs[i],
+                                                     "recordings": recs, "scores": scores})
 
-                            # Some causes (e.g. "bump") search a grid of candidate positions around
-                            # the estimated problem location (see CauseBump.bump_distributed_positions).
-                            # For those, the winning recording's id doubles as the index into that
-                            # grid, so we can recover the 3D position of the best match and persist
-                            # it to the DSR. Causes with no spatial grid (e.g. "wheel") simply have no
-                            # "distributed_positions" entry and are skipped here.
-                            if res:
-                                best_rec_id, best_score = res[0]
-                                self.update_problem_position_in_dsr(items[0], best_rec_id)
-
-                            i += 1
+                    # ---- gates -> ranking -> confidence -> location ----
+                    selection = self.select_best_cause(causes_for_selection, SELECTION_CFG)
+                    sim_out["selection"] = selection
+                    self.logger.log(
+                        "[selection] "
+                        + json.dumps({k: v for k, v in selection.items() if k != "per_cause"},
+                                     default=str),
+                        style="bold magenta")
 
                     # Write results to JSON file
                     
@@ -511,16 +554,15 @@ class SpecificWorker(GenericWorker):
                         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
                         plt.show()
 
-                    output = open(f"sim_output.json", "w")
-                    output.write(json.dumps(sim_out, indent=4, default=lambda o: o.item() if hasattr(o, 'item') else float(o)))
-                    output.close()
-                    
-                    self.logger.log("Simulations finished. Results written to sim_output.json!", style="bold blue")
+                    # Write the full result to a timestamped file (+ refresh stable sim_output.json),
+                    # fully flushed before we touch the DSR so semantic never opens a half file.
+                    sim_output_path = self._write_sim_output_file(sim_out)
+                    self.logger.log(f"Simulations finished. Results -> {sim_output_path}", style="bold blue")
 
-                    # Signal "semantic" that the causal search concluded and problem_position (if
-                    # any) is final. semantic owns validating the result, creating "bump" +
-                    # "photograph_me" + has_intention, deleting "problem" and generating the agent.
-                    self.mark_cause_confirmed_in_dsr()
+                    # Persist onto 'problem': always sim_output_path (semantic's trigger; verdict +
+                    # detail live in the file). Phase-1 back-compat: also problem_position +
+                    # cause_confirmed unless enforce_verdict withholds them on an "unknown" verdict.
+                    self.persist_selection_in_dsr(selection, sim_output_path)
 
                     self.state = "IDLE"
 
@@ -837,6 +879,220 @@ class SpecificWorker(GenericWorker):
         problem_node.attrs["cause_confirmed"] = Attribute(True, self.agent_id)
         self.graphs["work"].update_node(problem_node)
         self.logger.log("Stored cause_confirmed=True on 'problem' node.", style="bold green")
+
+
+    # ===================== CAUSE-SELECTION PIPELINE (Phase 1) =====================
+
+    def _recording_disturbance(self, recording: dict) -> float | None:
+        """How much the bottle was disturbed in a simulated recording: weighted sum of
+        its horizontal displacement (m) from the scene start and its tilt (rad)."""
+        bp = recording.get("bottle_position")
+        bo = recording.get("bottle_orientation")
+        if bp is None or len(bp) < 3:
+            return None
+        disp_mm = float(np.hypot(float(bp[0]) - BOTTLE_POS[0], float(bp[1]) - BOTTLE_POS[1]))
+        tilt = _quat_tilt_rad(bo) if bo is not None else 0.0
+        return SELECTION_CFG["w_disp_m"] * (disp_mm / 1000.0) + SELECTION_CFG["w_tilt_rad"] * tilt
+
+    def _real_bottle_disturbance(self) -> float | None:
+        """Real bottle disturbance at problem onset (from episodic memory). Not evaluated
+        in Phase 1 (manual knocks / weak bump) -> None keeps c_outcome neutral."""
+        return None
+
+    def _robot_trajectory(self) -> list | None:
+        """Best-effort (x, y) of the robot during follow_person, from episodic 'room->robot'
+        RT history. Units follow that edge (concept_robot writes meters). None if missing.
+        Only used by the (opt-in, default-off) position-plausibility gate."""
+        try:
+            room = self.graphs["work"].get_node("room")
+            robot = self.graphs["work"].get_node("robot")
+            if room is None or robot is None:
+                return None
+            pts = []
+            for pos in self.mem_api.get_edge_history(room.id, robot.id, "RT"):
+                if pos.modification_type != "MEA" or "rt_translation" not in pos.attributes:
+                    continue
+                t = list(pos.attributes["rt_translation"].value)
+                if len(t) >= 2:
+                    pts.append((float(t[0]), float(t[1])))
+            return pts or None
+        except Exception as e:
+            self.logger.log(f"[selection] robot trajectory unavailable: {e}", style="yellow")
+            return None
+
+    def select_best_cause(self, causes: list, cfg: dict) -> dict:
+        """Pick the winning cause from the simulation results.
+
+        causes: [{'cause_definition': {...}, 'recordings': [...], 'scores': [float per rec id]}]
+
+        Pipeline:
+          1. per-recording gates (validity, coarse score prune, opt-in position gate)
+             -> survivors per cause; a cause with 0 survivors is 'excluded'.
+          2. per-cause representative score: min (spatial) or mean of the k lowest (non-spatial).
+          3. cross-cause ranking = argmin representative score among non-excluded causes.
+          4. absolute gate: representative score > t_abs -> verdict 'unknown'.
+          5. confidence = c_abs * c_margin * c_consistency * c_outcome  (about the winner only).
+          6. location = winning grid cell (spatial winner) or None.
+        Per-cause 't_abs' can be overridden in causes.json; else cfg['t_abs_default'].
+        """
+        traj = self._robot_trajectory()
+        per_cause, candidates = {}, {}
+        for c in causes:
+            name = c["cause_definition"]["name"]
+            t_abs = float(c["cause_definition"].get("t_abs", cfg["t_abs_default"]))
+            recs, scores = c["recordings"], c["scores"]
+            grid = recs[0].get("generated_instances", {}).get("distributed_positions") if recs else None
+            spatial = bool(grid)
+
+            survivors = []
+            for rid, sc in enumerate(scores):
+                if not np.isfinite(sc) or sc > cfg["t_keep"]:          # validity + coarse prune
+                    continue
+                pos = grid[rid] if (spatial and rid < len(grid)) else None
+                d_traj = None
+                if pos is not None and traj:
+                    d_traj = min(float(np.hypot(pos[0] - tx, pos[1] - ty)) for tx, ty in traj)
+                    if cfg["enforce_position_gate"] and d_traj > cfg["d_max_traj_m"]:
+                        continue                                       # position-plausibility gate
+                survivors.append({
+                    "rec_id": rid, "score": float(sc), "d_traj": d_traj,
+                    "position": list(pos) if pos is not None else None,
+                    "disturbance": self._recording_disturbance(recs[rid] if rid < len(recs) else {}),
+                })
+
+            finite = sorted(s["score"] for s in survivors)
+            k = cfg["top_k"]
+            top = finite[:k]
+            s_repr = (finite[0] if spatial else float(np.mean(top))) if finite else float("inf")
+            spread = float(np.std(top) / np.mean(top)) if len(top) >= 2 and np.mean(top) > 0 else 0.0
+            frac_good = (sum(1 for x in scores if np.isfinite(x) and x < t_abs) / len(scores)) if scores else 0.0
+            per_cause[name] = {
+                "spatial": spatial, "n": len(scores), "n_survivors": len(survivors),
+                "s_best": finite[0] if finite else float("inf"), "s_repr": s_repr,
+                "spread": spread, "frac_good": frac_good, "t_abs": t_abs,
+                "excluded": len(survivors) == 0,
+            }
+            candidates[name] = survivors
+
+        ranked = sorted(((n, m["s_repr"]) for n, m in per_cause.items() if not m["excluded"]),
+                        key=lambda kv: kv[1])
+
+        # fallback location = best grid cell of the best-ranked spatial cause, regardless of verdict
+        fb_loc, fb_src = None, None
+        for n, _ in ranked:
+            with_pos = [s for s in candidates[n] if s["position"] is not None]
+            if with_pos:
+                fb_loc = min(with_pos, key=lambda s: s["score"])["position"]
+                fb_src = "grid_cell"
+                break
+
+        selection = {
+            "cause": "unknown", "score": None, "runner_up": None,
+            "confidence": 0.0, "confidence_breakdown": {},
+            "location": None, "location_source": None,
+            "fallback_location": fb_loc, "fallback_location_source": fb_src,
+            "enforce_verdict": bool(cfg["enforce_verdict"]),
+            "per_cause": per_cause,
+        }
+        if not ranked:
+            selection["reason"] = "all causes excluded (no surviving recordings)"
+            return selection
+
+        winner, s_win = ranked[0]
+        runner = ranked[1] if len(ranked) > 1 else None
+        selection["score"] = s_win
+        selection["runner_up"] = list(runner) if runner else None
+        wm = per_cause[winner]
+
+        if s_win > wm["t_abs"]:
+            selection["reason"] = f"best cause '{winner}' s_repr={s_win:.4f} > t_abs={wm['t_abs']:.4f}"
+            return selection                                            # verdict stays 'unknown'
+
+        c_abs = float(1.0 / (1.0 + np.exp(-(wm["t_abs"] - s_win) / cfg["scale_abs"])))
+        ratio = (runner[1] / s_win) if (runner and s_win > 0) else float("inf")
+        c_margin = float(np.clip((ratio - 1.0) / cfg["k_margin"], 0.0, 1.0)) if np.isfinite(ratio) else 1.0
+        c_consistency = (float(np.clip(wm["frac_good"] / max(cfg["frac_ref"], 1e-9), 0.0, 1.0))
+                         * (1.0 - float(np.clip(wm["spread"], 0.0, 1.0))))
+        c_outcome = 1.0
+        real_dist = self._real_bottle_disturbance()
+        if real_dist is not None and real_dist > 1e-6:
+            wsurv = candidates[winner]
+            best = min(wsurv, key=lambda s: s["score"]) if wsurv else None
+            if best and best["disturbance"] is not None:
+                c_outcome = float(np.clip(1.0 - abs(best["disturbance"] - real_dist) / real_dist, 0.0, 1.0))
+        confidence = float(c_abs * c_margin * c_consistency * c_outcome)
+
+        with_pos = [s for s in candidates[winner] if s["position"] is not None]
+        location = min(with_pos, key=lambda s: s["score"])["position"] if with_pos else None
+
+        selection.update({
+            "cause": winner, "confidence": confidence,
+            "confidence_breakdown": {"c_abs": c_abs, "c_margin": c_margin,
+                                     "c_consistency": c_consistency, "c_outcome": c_outcome},
+            "location": list(location) if location is not None else None,
+            "location_source": "grid_cell" if location is not None else None,
+        })
+        return selection
+
+    @staticmethod
+    def _json_safe(o):
+        """Recursively replace non-finite floats (inf/nan) with None so the dumped file
+        is strict, portable JSON for any consumer."""
+        if isinstance(o, float):
+            return o if np.isfinite(o) else None
+        if isinstance(o, dict):
+            return {k: SpecificWorker._json_safe(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [SpecificWorker._json_safe(v) for v in o]
+        return o
+
+    def _write_sim_output_file(self, sim_out: dict) -> str:
+        """Dump sim_out to a timestamped JSON (history) and refresh the stable
+        'sim_output.json'. Fully flushed/fsynced before returning. Returns the abs path
+        of the timestamped file."""
+        payload = json.dumps(
+            self._json_safe(sim_out), indent=4, allow_nan=False,
+            default=lambda o: (o.item() if hasattr(o, "item") else float(o)))
+        path = os.path.abspath(f"sim_output_{time.strftime('%Y%m%d_%H%M%S')}.json")
+        for p in (path, os.path.abspath("sim_output.json")):
+            with open(p, "w") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+        return path
+
+    def persist_selection_in_dsr(self, selection: dict, sim_output_path: str) -> None:
+        """Write the causal-search outputs onto the 'problem' node.
+
+        Always: 'sim_output_path' (its update is semantic's trigger; verdict + all detail
+        live in that file).
+        Phase-1 back-compat (current semantic still reads these): 'problem_position' +
+        'cause_confirmed'. Withheld only when cfg['enforce_verdict'] and the verdict is
+        'unknown' (or confidence < cfg['c_floor']).
+        """
+        problem_node = self.graphs["work"].get_node("problem")
+        if problem_node is None:
+            self.logger.log("'problem' node not found; cannot persist selection.", style="bold red")
+            return
+
+        problem_node.attrs["sim_output_path"] = Attribute(str(sim_output_path), self.agent_id)
+
+        cfg = SELECTION_CFG
+        withhold = cfg["enforce_verdict"] and (
+            selection["cause"] == "unknown" or selection["confidence"] < cfg["c_floor"]
+        )
+        if not withhold:
+            loc = selection.get("location") or selection.get("fallback_location")
+            if loc is not None:
+                problem_node.attrs["problem_position"] = Attribute([float(v) for v in loc], self.agent_id)
+            problem_node.attrs["cause_confirmed"] = Attribute(True, self.agent_id)
+
+        self.graphs["work"].update_node(problem_node)
+        self.logger.log(
+            f"[selection] cause={selection['cause']} conf={selection['confidence']:.3f} "
+            f"loc={selection.get('location') or selection.get('fallback_location')} "
+            f"withhold={withhold} sim_output_path={sim_output_path}",
+            style="bold green")
 
 
     def create_edge_in_dsr(self, fr_node, to_node, edge_type):
