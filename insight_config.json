@@ -103,5 +103,12 @@
         "command": "bin/python_xbox_controller etc/config",
         "restart": false,
         "buildable": true
+    },
+    {
+        "name": "vision_sam",
+        "directory": "$ROBOCOMP/components/robocomp-insight/agents/vision_sam",
+        "command": "bin/vision_sam etc/config",
+        "restart": false,
+        "buildable": true
     }
 ]
