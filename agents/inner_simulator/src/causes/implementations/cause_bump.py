@@ -42,8 +42,15 @@ class CauseBump(BaseModel, Cause):
             origin_x, origin_y, origin_z = self.bump_origin(engine)
             x_count, y_count = self.bump_grid_dimensions()
             num_positions = x_count * y_count
-            x_spacing = self.bump_x_range / (x_count - 1) if x_count > 1 else 0.0
-            y_spacing = self.bump_y_range / (y_count - 1) if y_count > 1 else 0.0
+            # bump_origin() is in METERS (PyBullet-native, see CausesSimulator.apply_simulation_params);
+            # bump_x_range/bump_y_range come from causes.json in MILLIMETERS (project-wide convention,
+            # same as problem_position). Convert the range to meters before using it as an offset from
+            # a meters-scale origin, otherwise the grid ends up centered on raw zero instead of the
+            # real problem position.
+            bump_x_range_m = self.bump_x_range / 1000.0
+            bump_y_range_m = self.bump_y_range / 1000.0
+            x_spacing = bump_x_range_m / (x_count - 1) if x_count > 1 else 0.0
+            y_spacing = bump_y_range_m / (y_count - 1) if y_count > 1 else 0.0
             x_start = origin_x - x_spacing * (x_count - 1) / 2
             y_start = origin_y - y_spacing * (y_count - 1) / 2
             positions = []

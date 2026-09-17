@@ -15,14 +15,14 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QFont, QFontDatabase, QGradient, QIcon,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWidgets import (QApplication, QLabel, QPlainTextEdit, QPushButton,
-    QSizePolicy, QWidget)
+from PySide6.QtWidgets import (QApplication, QLabel, QLineEdit, QPlainTextEdit,
+    QPushButton, QSizePolicy, QWidget)
 
 class Ui_guiDlg(object):
     def setupUi(self, guiDlg):
         if not guiDlg.objectName():
             guiDlg.setObjectName(u"guiDlg")
-        guiDlg.resize(1300, 720)
+        guiDlg.resize(1300, 732)
         self.image_label = QLabel(guiDlg)
         self.image_label.setObjectName(u"image_label")
         self.image_label.setGeometry(QRect(0, 0, 640, 480))
@@ -39,22 +39,31 @@ class Ui_guiDlg(object):
         self.image_sel_coords_label.setGeometry(QRect(210, 490, 221, 17))
         self.segment_button = QPushButton(guiDlg)
         self.segment_button.setObjectName(u"segment_button")
-        self.segment_button.setGeometry(QRect(490, 480, 131, 31))
+        self.segment_button.setGeometry(QRect(500, 490, 131, 31))
+        self.save_folder_name_edit = QLineEdit(guiDlg)
+        self.save_folder_name_edit.setObjectName(u"save_folder_name_edit")
+        self.save_folder_name_edit.setGeometry(QRect(640, 490, 140, 31))
         self.save_new_folder_button = QPushButton(guiDlg)
         self.save_new_folder_button.setObjectName(u"save_new_folder_button")
-        self.save_new_folder_button.setGeometry(QRect(650, 490, 200, 31))
+        self.save_new_folder_button.setGeometry(QRect(790, 490, 180, 31))
         self.current_folder_label = QLabel(guiDlg)
         self.current_folder_label.setObjectName(u"current_folder_label")
-        self.current_folder_label.setGeometry(QRect(860, 490, 430, 31))
+        self.current_folder_label.setGeometry(QRect(980, 490, 320, 31))
+        self.bump_present_count_label = QLabel(guiDlg)
+        self.bump_present_count_label.setObjectName(u"bump_present_count_label")
+        self.bump_present_count_label.setGeometry(QRect(320, 540, 111, 30))
         self.bump_present_button = QPushButton(guiDlg)
         self.bump_present_button.setObjectName(u"bump_present_button")
-        self.bump_present_button.setGeometry(QRect(10, 525, 190, 30))
+        self.bump_present_button.setGeometry(QRect(440, 540, 190, 30))
         self.bump_absent_button = QPushButton(guiDlg)
         self.bump_absent_button.setObjectName(u"bump_absent_button")
-        self.bump_absent_button.setGeometry(QRect(210, 525, 190, 30))
+        self.bump_absent_button.setGeometry(QRect(640, 540, 190, 30))
+        self.bump_absent_count_label = QLabel(guiDlg)
+        self.bump_absent_count_label.setObjectName(u"bump_absent_count_label")
+        self.bump_absent_count_label.setGeometry(QRect(860, 540, 101, 30))
         self.debug_log = QPlainTextEdit(guiDlg)
         self.debug_log.setObjectName(u"debug_log")
-        self.debug_log.setGeometry(QRect(10, 565, 1280, 145))
+        self.debug_log.setGeometry(QRect(10, 580, 1280, 145))
         self.debug_log.setReadOnly(True)
 
         self.retranslateUi(guiDlg)
@@ -69,9 +78,12 @@ class Ui_guiDlg(object):
         self.image_coords_label.setText(QCoreApplication.translate("guiDlg", u"Hover coords", None))
         self.image_sel_coords_label.setText(QCoreApplication.translate("guiDlg", u"Selected coords", None))
         self.segment_button.setText(QCoreApplication.translate("guiDlg", u"segment", None))
+        self.save_folder_name_edit.setPlaceholderText(QCoreApplication.translate("guiDlg", u"nombre carpeta", None))
         self.save_new_folder_button.setText(QCoreApplication.translate("guiDlg", u"save on new folder", None))
         self.current_folder_label.setText(QCoreApplication.translate("guiDlg", u"Saving to: segmented_objects", None))
+        self.bump_present_count_label.setText(QCoreApplication.translate("guiDlg", u"Con bache: 0", None))
         self.bump_present_button.setText(QCoreApplication.translate("guiDlg", u"Con bache", None))
         self.bump_absent_button.setText(QCoreApplication.translate("guiDlg", u"Sin bache", None))
+        self.bump_absent_count_label.setText(QCoreApplication.translate("guiDlg", u"Sin bache: 0", None))
     # retranslateUi
 

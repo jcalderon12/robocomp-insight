@@ -37,6 +37,10 @@ ROBOT_POS = [-3700.0, -300.0, 32.5]
 PROBLEM_POS = [0.0, 40.0, 1.0]
 BOTTLE_POS = [0.0, 50.0, 795.0]
 
+# episodic memory's root->robot RT (concept_robot) is in METERS; SimulationScene/sim_scene.json
+# is contracted in MILLIMETERS (see ROBOT_POS/PROBLEM_POS/BOTTLE_POS above). Convert on the way in.
+M_TO_MM = 1000.0
+
 import os
 import sys
 import matplotlib.pyplot as plt
@@ -277,17 +281,20 @@ class SpecificWorker(GenericWorker):
         """
         robot_positions = self.get_robot_positions_relative_to_problem()
         if robot_positions is not None and robot_positions.get("last_position_before_problem") is not None:
-            problem_position_fixed = [robot_positions["last_position_before_problem"][1], robot_positions["last_position_before_problem"][0], robot_positions["last_position_before_problem"][2]]
+            lpbp = robot_positions["last_position_before_problem"]
+            # lpbp comes from episodic's root->robot RT, in METERS; sim_scene wants mm.
+            problem_position_fixed = [lpbp[1] * M_TO_MM, lpbp[0] * M_TO_MM, lpbp[2] * M_TO_MM]
             self.sim_scene.problem_position = problem_position_fixed
-            self.logger.log(f"Problem position set for simulation: {problem_position_fixed}", style="green")
+            self.logger.log(f"Problem position set for simulation: {problem_position_fixed} (mm)", style="green")
         else:
             self.sim_scene.problem_position = PROBLEM_POS
         self.sim_scene.problem_orientation = [0,0,0,1]
-        
+
         if robot_positions is not None and robot_positions.get("first_position") is not None:
-            robot_position_fixed = [robot_positions["first_position"][1], robot_positions["first_position"][0], robot_positions["first_position"][2]]
+            fp = robot_positions["first_position"]
+            robot_position_fixed = [fp[1] * M_TO_MM, fp[0] * M_TO_MM, fp[2] * M_TO_MM]
             self.sim_scene.initial_robot_position = robot_position_fixed
-            self.logger.log(f"Initial robot position set for simulation: {robot_position_fixed}", style="green")
+            self.logger.log(f"Initial robot position set for simulation: {robot_position_fixed} (mm)", style="green")
         else:
             self.logger.log("Could not read initial robot position from episodic memory, using default ROBOT_POS", style="yellow")
             self.sim_scene.initial_robot_position = ROBOT_POS
@@ -311,15 +318,18 @@ class SpecificWorker(GenericWorker):
        
        robot_positions = self.get_robot_positions_relative_to_problem()
        if robot_positions is not None and robot_positions.get("last_position_before_problem") is not None:
-           problem_position_fixed = [robot_positions["last_position_before_problem"][1], robot_positions["last_position_before_problem"][0], robot_positions["last_position_before_problem"][2]]
+           lpbp = robot_positions["last_position_before_problem"]
+           # lpbp comes from episodic's root->robot RT, in METERS; sim_scene wants mm.
+           problem_position_fixed = [lpbp[1] * M_TO_MM, lpbp[0] * M_TO_MM, lpbp[2] * M_TO_MM]
            self.sim_scene.problem_position = problem_position_fixed
        else:
            self.sim_scene.problem_position = PROBLEM_POS
-       
+
        self.sim_scene.problem_orientation = [0,0,0,1]
-       
+
        if robot_positions is not None and robot_positions.get("first_position") is not None:
-           robot_position_fixed = [robot_positions["first_position"][1], robot_positions["first_position"][0], robot_positions["first_position"][2]]
+           fp = robot_positions["first_position"]
+           robot_position_fixed = [fp[1] * M_TO_MM, fp[0] * M_TO_MM, fp[2] * M_TO_MM]
            self.sim_scene.initial_robot_position = robot_position_fixed
        else:
            self.sim_scene.initial_robot_position = ROBOT_POS
@@ -900,16 +910,16 @@ class SpecificWorker(GenericWorker):
         return None
 
     def _robot_trajectory(self) -> list | None:
-        """Best-effort (x, y) of the robot during follow_person, from episodic 'room->robot'
+        """Best-effort (x, y) of the robot during follow_person, from episodic 'root->robot'
         RT history. Units follow that edge (concept_robot writes meters). None if missing.
         Only used by the (opt-in, default-off) position-plausibility gate."""
         try:
-            room = self.graphs["work"].get_node("room")
+            root = self.graphs["work"].get_node("root")
             robot = self.graphs["work"].get_node("robot")
-            if room is None or robot is None:
+            if root is None or robot is None:
                 return None
             pts = []
-            for pos in self.mem_api.get_edge_history(room.id, robot.id, "RT"):
+            for pos in self.mem_api.get_edge_history(root.id, robot.id, "RT"):
                 if pos.modification_type != "MEA" or "rt_translation" not in pos.attributes:
                     continue
                 t = list(pos.attributes["rt_translation"].value)
@@ -1069,6 +1079,11 @@ class SpecificWorker(GenericWorker):
         Phase-1 back-compat (current semantic still reads these): 'problem_position' +
         'cause_confirmed'. Withheld only when cfg['enforce_verdict'] and the verdict is
         'unknown' (or confidence < cfg['c_floor']).
+
+        selection['location']/['fallback_location'] come straight from CauseBump's grid,
+        which is PyBullet-native METERS; 'problem_position' on the DSR is contracted in
+        MILLIMETERS (same as ROBOT_POS/PROBLEM_POS/BOTTLE_POS) and concept_robot divides
+        it by 1000 on read -> convert m -> mm here, at the DSR-writing boundary.
         """
         problem_node = self.graphs["work"].get_node("problem")
         if problem_node is None:
@@ -1084,7 +1099,7 @@ class SpecificWorker(GenericWorker):
         if not withhold:
             loc = selection.get("location") or selection.get("fallback_location")
             if loc is not None:
-                problem_node.attrs["problem_position"] = Attribute([float(v) for v in loc], self.agent_id)
+                problem_node.attrs["problem_position"] = Attribute([float(v) * M_TO_MM for v in loc], self.agent_id)
             problem_node.attrs["cause_confirmed"] = Attribute(True, self.agent_id)
 
         self.graphs["work"].update_node(problem_node)
@@ -1280,13 +1295,13 @@ class SpecificWorker(GenericWorker):
                 - the last robot position before the first problget_robot_positions_relative_to_problemem appearance.
         """
         if self.mem_api.is_ready():
-            room_node = self.graphs["work"].get_node("room")
+            root_node = self.graphs["work"].get_node("root")
             robot_node = self.graphs["work"].get_node("robot")
-            if room_node is None or robot_node is None:
-                self.logger.log("Room or robot node not found in work graph!", style="bold red")
+            if root_node is None or robot_node is None:
+                self.logger.log("Root or robot node not found in work graph!", style="bold red")
                 return None
 
-            robot_positions = [pos for pos in self.mem_api.get_edge_history(room_node.id, robot_node.id, "RT") if pos.modification_type == "MEA"]
+            robot_positions = [pos for pos in self.mem_api.get_edge_history(root_node.id, robot_node.id, "RT") if pos.modification_type == "MEA"]
             if not robot_positions:
                 self.logger.log("No robot position measurements found in episodic memory!", style="bold red")
                 return None

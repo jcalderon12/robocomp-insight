@@ -114,15 +114,19 @@ class SpecificWorker(GenericWorker):
             return  # Already handled (avoid double creation on repeated signals)
 
         if "problem_position" not in problem_node.attrs:
+            # Just a spatial-cause gate (does inner_simulator's grid search apply here?);
+            # the value itself isn't used anymore, see comment below.
             console.print("cause_confirmed but no problem_position (non-spatial cause); dropping 'problem'.", style='yellow')
             self.g.delete_node(problem_node.id)
             return
-        position_value = problem_node.attrs["problem_position"].value
 
         bump_node = Node(self.agent_id, "object", name="bump")
         bump_node.attrs["pos_x"] = Attribute(problem_node.attrs["pos_x"].value, self.agent_id)
         bump_node.attrs["pos_y"] = Attribute(problem_node.attrs["pos_y"].value, self.agent_id)
-        bump_node.attrs["problem_position"] = Attribute(position_value, self.agent_id)  # global mm; will move to RT robot->bump later
+        # No problem_position aqui: la posicion real del bache la publica concept_bump como
+        # una RT robot->bump viva (igual que concept_person con person), no como un atributo
+        # global estatico. Evita que concept_robot::update_static_target_rt() y concept_bump
+        # escriban esa RT a la vez.
         self.g.insert_node(bump_node)
         bump_node = self.g.get_node("bump")
 

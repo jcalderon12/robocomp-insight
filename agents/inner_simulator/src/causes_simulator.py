@@ -270,12 +270,11 @@ class CausesSimulator:
         while len(robot_init_pos_mm) < 3:
             robot_init_pos_mm.append(0.0)
         robot_init_pos_mm[2] = robot_init_pos_mm[2] + getattr(self, 'robot_z_offset_mm', 0.004)
-        # self.initial_position = self.mm_to_m(robot_init_pos_mm)
-        self.initial_position = robot_init_pos_mm #####################################################################3
+        self.initial_position = self.mm_to_m(robot_init_pos_mm)
         self.initial_orientation = self.simulation_scene.initial_robot_orientation
         self.bottle_position = self.mm_to_m(self.simulation_scene.bottle_position)
         self.bottle_orientation = self.simulation_scene.bottle_orientation
-        self.problem_position = self.simulation_scene.problem_position
+        self.problem_position = self.mm_to_m(self.simulation_scene.problem_position)
         self.problem_orientation = self.simulation_scene.problem_orientation
         self.simulation_length = self.simulation_scene.simulation_length
         # If cause uses grid-based generation, derive repetitions from grid dimensions

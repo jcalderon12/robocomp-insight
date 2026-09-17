@@ -27,6 +27,7 @@ from genericworker import *
 import interfaces as ifaces
 import numpy as np
 import os
+import re
 import cv2
 # from ultralytics import SAM
 import torch
@@ -50,12 +51,12 @@ ZED_MOUNT_OFFSET_MM = [0.0, -75.0, 945.0]
 ZED_MOUNT_ROTATION_AXIS = [0.0, 0.0, 1.0]
 ZED_MOUNT_ROTATION_ANGLE_RAD = 1.57  # ~90 deg about Z, robot-local frame
 
-# concept_robot writes the live room->robot RT translation in METERS (it
+# concept_robot writes the live root->robot RT translation in METERS (it
 # divides the raw Webots pose by 1000 before storing it), while every other
 # position in this project (sim_scene.json, causes.json, problem_position) is
 # in MILLIMETERS. Pre-existing unit mismatch, not introduced here: converted
 # back to mm on read so this module stays consistent with the rest of the DSR.
-ROOM_ROBOT_RT_TRANSLATION_IS_METERS = True
+ROOT_ROBOT_RT_TRANSLATION_IS_METERS = True
 
 
 def _rotation_matrix_from_axis_angle(axis, angle):
@@ -136,8 +137,11 @@ class SpecificWorker(GenericWorker):
 
         # Full-frame classifier dataset (no SAM, no crop): the robot's raw view, labeled by
         # the person capturing depending on whether the bump happens to be in frame or not.
-        self.ui.bump_present_button.clicked.connect(lambda: self.save_full_frame("con_bache"))
-        self.ui.bump_absent_button.clicked.connect(lambda: self.save_full_frame("sin_bache"))
+        # The two count labels are just photo counters for this session, reset on new folder.
+        self.bump_present_count = 0
+        self.bump_absent_count = 0
+        self.ui.bump_present_button.clicked.connect(self.on_bump_present_clicked)
+        self.ui.bump_absent_button.clicked.connect(self.on_bump_absent_clicked)
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.qimage = None
@@ -276,8 +280,27 @@ class SpecificWorker(GenericWorker):
         else:
             self.log("No point selected. Please click on the image to select a point before segmenting.")
 
+    def on_bump_present_clicked(self):
+        self.save_full_frame("con_bache")
+        self.bump_present_count += 1
+        self.ui.bump_present_count_label.setText(f"Con bache: {self.bump_present_count}")
+
+    def on_bump_absent_clicked(self):
+        self.save_full_frame("sin_bache")
+        self.bump_absent_count += 1
+        self.ui.bump_absent_count_label.setText(f"Sin bache: {self.bump_absent_count}")
+
     def on_save_new_folder_button_clicked(self):
-        folder_name = f"session_{time.strftime('%Y%m%d_%H%M%S')}"
+        self.bump_present_count = 0
+        self.bump_absent_count = 0
+        self.ui.bump_present_count_label.setText("Con bache: 0")
+        self.ui.bump_absent_count_label.setText("Sin bache: 0")
+
+        typed_name = self.ui.save_folder_name_edit.text().strip()
+        if typed_name:
+            folder_name = re.sub(r"[^\w\-]+", "_", typed_name)  # sanitize: no path separators/traversal
+        else:
+            folder_name = f"session_{time.strftime('%Y%m%d_%H%M%S')}"
         self.current_save_dir = os.path.join("segmented_objects", folder_name)
         os.makedirs(self.current_save_dir, exist_ok=True)
         self.ui.current_folder_label.setText(f"Saving to: {self.current_save_dir}")
@@ -296,7 +319,11 @@ class SpecificWorker(GenericWorker):
 
             image_np = np.frombuffer(image_struct.image, dtype=np.uint8)
             image_np = image_np.reshape((image_struct.height, image_struct.width, 3))
-            image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+            # camerargbdsimple_proxy already gives RGB-ordered bytes (see compute(), where
+            # the same cvtColor(BGR2RGB) was removed for the same reason) - converting again
+            # here re-swapped it into BGR while still calling it "image_rgb", which is why
+            # segmented_image_label ended up showing BGR.
+            image_rgb = image_np
 
             depth_np = np.frombuffer(depth_struct.depth, dtype=np.float32)
             depth_np = depth_np.reshape((depth_struct.height, depth_struct.width))
@@ -336,52 +363,52 @@ class SpecificWorker(GenericWorker):
             self.log("No mask detected by SAM for the given point.")
 
 
-    def get_room_to_camera_transform(self):
-        """Compose the fixed zed mount transform with the live room->robot RT edge
-        to get the room->camera transform (4x4 homogeneous, millimeters).
+    def get_root_to_camera_transform(self):
+        """Compose the fixed zed mount transform with the live root->robot RT edge
+        to get the root->camera transform (4x4 homogeneous, millimeters).
             Returns:
-                - np.ndarray | None: 4x4 transform, or None if robot/room/RT missing.
+                - np.ndarray | None: 4x4 transform, or None if robot/root/RT missing.
         """
         robot_node = self.g.get_node("robot")
-        room_node = self.g.get_node("room")
-        if robot_node is None or room_node is None:
+        root_node = self.g.get_node("root")
+        if robot_node is None or root_node is None:
             return None
 
-        rt_edge = self.g.get_edge(room_node.id, robot_node.id, "RT")
+        rt_edge = self.g.get_edge(root_node.id, robot_node.id, "RT")
         if rt_edge is None or "rt_translation" not in rt_edge.attrs or "rt_quaternion" not in rt_edge.attrs:
             return None
 
         translation = list(rt_edge.attrs["rt_translation"].value)
-        if ROOM_ROBOT_RT_TRANSLATION_IS_METERS:
+        if ROOT_ROBOT_RT_TRANSLATION_IS_METERS:
             translation = [v * 1000.0 for v in translation]
         qx, qy, qz, qw = rt_edge.attrs["rt_quaternion"].value
-        print(f"[DEBUG] room->robot translation (mm): {translation}, quaternion (x,y,z,w): {(qx, qy, qz, qw)}")
+        print(f"[DEBUG] root->robot translation (mm): {translation}, quaternion (x,y,z,w): {(qx, qy, qz, qw)}")
 
-        room_to_robot = _homogeneous_transform(_rotation_matrix_from_quaternion(qx, qy, qz, qw), translation)
+        root_to_robot = _homogeneous_transform(_rotation_matrix_from_quaternion(qx, qy, qz, qw), translation)
         robot_to_camera = _homogeneous_transform(
             _rotation_matrix_from_axis_angle(ZED_MOUNT_ROTATION_AXIS, ZED_MOUNT_ROTATION_ANGLE_RAD),
             ZED_MOUNT_OFFSET_MM,
         )
-        return room_to_robot @ robot_to_camera
+        return root_to_robot @ robot_to_camera
 
-    def project_point_3d_to_2d(self, point_room_mm):
-        """Project a 3D point expressed in the 'room' frame (millimeters) onto the
+    def project_point_3d_to_2d(self, point_root_mm):
+        """Project a 3D point expressed in the 'root' frame (millimeters) onto the
         zed camera's image plane.
             Parameters:
-                - point_room_mm (list[float]): [x, y, z] in the 'room' frame, mm.
+                - point_root_mm (list[float]): [x, y, z] in the 'root' frame, mm.
             Returns:
                 - tuple[int, int] | None: (u, v) pixel coordinates, or None if the
                   point is behind the camera, out of frame, or data is unavailable.
         """
-        room_to_camera = self.get_room_to_camera_transform()
-        if room_to_camera is None:
-            print("Cannot project: room->camera transform unavailable (missing robot/room/RT).")
+        root_to_camera = self.get_root_to_camera_transform()
+        if root_to_camera is None:
+            print("Cannot project: root->camera transform unavailable (missing robot/root/RT).")
             return None
 
-        camera_to_room = np.linalg.inv(room_to_camera)
-        point_room_h = np.array([point_room_mm[0], point_room_mm[1], point_room_mm[2], 1.0])
-        point_camera = camera_to_room @ point_room_h
-        print(f"[DEBUG] point in room frame (mm): {point_room_mm}, point in camera frame (mm): {point_camera[:3].tolist()}")
+        camera_to_root = np.linalg.inv(root_to_camera)
+        point_root_h = np.array([point_root_mm[0], point_root_mm[1], point_root_mm[2], 1.0])
+        point_camera = camera_to_root @ point_root_h
+        print(f"[DEBUG] point in root frame (mm): {point_root_mm}, point in camera frame (mm): {point_camera[:3].tolist()}")
 
         # Webots device convention (Camera/RangeFinder/Lidar): looks down local +X,
         # with +Y left and +Z up (ROS-style body axes, not OpenGL -Z-forward).
@@ -466,7 +493,9 @@ class SpecificWorker(GenericWorker):
         image_path = os.path.join(save_dir, f"{basename}_rgb.jpg")
         depth_path = os.path.join(save_dir, f"{basename}_depth.npy")
 
-        cv2.imwrite(image_path, image_rgb)
+        # cv2.imwrite expects BGR-ordered bytes; image_rgb is genuinely RGB now (see
+        # get_current_rgbd), so it needs the swap it wasn't getting before.
+        cv2.imwrite(image_path, cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
         np.save(depth_path, depth_m)
 
         h, w, ch = image_rgb.shape
@@ -505,15 +534,15 @@ class SpecificWorker(GenericWorker):
         if node is None or "problem_position" not in node.attrs:
             return
 
-        point_room_mm = list(node.attrs["problem_position"].value)
-        if self._projected_problem_positions.get(id) == point_room_mm:
+        point_root_mm = list(node.attrs["problem_position"].value)
+        if self._projected_problem_positions.get(id) == point_root_mm:
             return  # Already processed this exact value for this node.
-        self._projected_problem_positions[id] = point_room_mm
+        self._projected_problem_positions[id] = point_root_mm
 
-        pixel = self.project_point_3d_to_2d(point_room_mm)
+        pixel = self.project_point_3d_to_2d(point_root_mm)
         if pixel is not None:
             x, y = pixel
-            self.log(f"Projected 3D point {point_room_mm} to pixel ({x}, {y}) on node {id}. Processing SAM.")
+            self.log(f"Projected 3D point {point_root_mm} to pixel ({x}, {y}) on node {id}. Processing SAM.")
             self.ui.image_sel_coords_label.setText(f"Selected point: ({x}, {y})")
             self.process_sam_on_point(x, y)
 
