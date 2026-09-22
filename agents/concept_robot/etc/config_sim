@@ -2,7 +2,7 @@
 Proxies.TopicManager = "IceStorm/TopicManager:default -p 9999"
 
 # Proxies for required interfaces
-Proxies.Camera360RGB = "camera360rgb:tcp -h localhost -p 10098"
+Proxies.CameraRGBDSimple = "camerargbdsimple:tcp -h localhost -p 10096"
 Proxies.IMU = "imu:tcp -h localhost -p 10007"
 Proxies.Lidar3D = "lidar3d:tcp -h localhost -p 11988"
 Proxies.OmniRobot = "omnirobot:tcp -h localhost -p 10004"
@@ -48,3 +48,10 @@ Ice.MessageSizeMax = "20004800"
 
 Simulated = True
 Desired_distance = 1800.0
+
+# Photo-orbit session (concept_robot::orbit_target(), only for a "bump" TARGET)
+Photo_distance = 1700.0
+Orbit_points = 4
+Photos_per_point = 3
+Photo_angular_step = 10.0
+Photo_save_dir = "photos"

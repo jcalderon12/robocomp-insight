@@ -117,7 +117,7 @@ public slots:
 	 */
 	bool on_startMission_clicked();  // Returns true only if the active affordance existed and aff_interacting was set
 	// Structural lookup, no hardcoded node names: active TARGET edge -> its "has_intention"
-	// edge -> the affordance node. Same algorithm as concept_robot::queck_affordance_active().
+	// edge -> the affordance node. Same algorithm as concept_robot::check_affordance_active().
 	std::optional<DSR::Node> get_active_affordance_node(const std::shared_ptr<DSR::DSRGraph>& graph) const;
 	
 	// Historic debugger slots

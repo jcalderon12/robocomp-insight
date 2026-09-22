@@ -19,6 +19,8 @@
 #    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+import subprocess
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from rich.console import Console
@@ -27,6 +29,16 @@ import interfaces as ifaces
 
 sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
+
+# Get the path to 'agents' (two levels up from src/specificworker.py) to reach the
+# shared agent_generation package (agent scaffolding + templates), same bootstrap
+# inner_simulator uses.
+agent_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+agents_root = os.path.dirname(agent_root)
+if agents_root not in sys.path:
+    sys.path.insert(0, agents_root)
+
+from agent_generation.agent_generator import generate_agent
 
 from pydsr import *
 
@@ -141,11 +153,30 @@ class SpecificWorker(GenericWorker):
         intention_edge = Edge(photograph_me_node.id, bump_node.id, "has_intention", self.agent_id)
         self.g.insert_or_assign_edge(intention_edge)
 
-        # TODO: generate + launch the concept_bump agent here (agent_generation), once its
-        # template creates create_affordance()-style logic mirroring concept_person.
+        if not self.launch_concept_agent("bump"):
+            console.print("Failed to generate/launch concept_bump.", style='bold red')
 
         self.g.delete_node(problem_node.id)
         console.print("Created 'bump' + 'photograph_me' from resolved 'problem'.", style='bold green')
+
+    def launch_concept_agent(self, cause_name: str) -> bool:
+        # Hot-generates concept_<cause_name> from agent_generation's templates (robocompdsl +
+        # cmake + make), then launches the compiled binary directly: Program Manager only
+        # starts what's in its static config, so there is nothing to notify it dynamically.
+        agent_name = f"concept_{cause_name}"
+        console.print(f"Generating {agent_name} from templates...", style='bold yellow')
+        if not generate_agent(cause_name, agents_root):
+            return False
+
+        agent_dir = os.path.join(agents_root, agent_name)
+        # Popen inherits this process's stdout/stderr by default, which is easy to lose track
+        # of (nothing else launches this agent, so there's no terminal panel for it) -> capture
+        # to a log file so a crash/exception here is diagnosable after the fact.
+        log_path = os.path.join(agent_dir, f"{agent_name}.log")
+        log_file = open(log_path, "w")
+        subprocess.Popen(["bin/" + agent_name, "etc/config"], cwd=agent_dir, stdout=log_file, stderr=subprocess.STDOUT)
+        console.print(f"{agent_name} generated and launched from {agent_dir} (log: {log_path}).", style='bold green')
+        return True
 
     def update_node(self, id: int, type: str):
         console.print(f"UPDATE NODE: {id} {type}", style='green')

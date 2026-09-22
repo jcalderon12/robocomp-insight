@@ -17,6 +17,10 @@
  *    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "specificworker.h"
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <limits>
 
 SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check) : GenericWorker(configLoader, tprx)
 {
@@ -106,15 +110,61 @@ void SpecificWorker::initialize()
 	if (simulated)
 		{
 			desired_distance = configLoader.get<double>("Desired_distance") / 1000;
+			photo_distance = configLoader.get<double>("Photo_distance") / 1000;
 			std::cout << "Desired distance (simulated): " << desired_distance << std::endl;
 		}
 	else
 		{
 			desired_distance = configLoader.get<double>("Desired_distance");
+			photo_distance = configLoader.get<double>("Photo_distance");
 			std::cout << "Desired distance (real): " << desired_distance << std::endl;
 		}
 
 	std::cout << "Numeric locale active: " << setlocale(LC_NUMERIC, nullptr) << std::endl;
+
+	std::filesystem::create_directories("logs");
+	auto session_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()).count();
+	orbit_log_path = "logs/orbit_" + std::to_string(session_ms) + ".csv";
+	std::ofstream header(orbit_log_path);
+	header << "t_ms,event,stage,waypoint_idx,shot_idx,x_b,y_b,dist_bump,"
+		"angle_to_bump_deg,robot_heading_deg,start_bearing_deg,waypoint_bearing_deg,"
+		"target_x,target_y,dist_waypoint,heading_error_deg,linear_v,angular_v,note\n";
+	std::cout << "Orbit debug log: " << orbit_log_path << std::endl;
+
+	// Same session id as the log file above, one subfolder per run so separate attempts don't
+	// mix their photos together.
+	photo_session_dir = (std::filesystem::path(photo_save_dir) / std::to_string(session_ms)).string();
+}
+
+void SpecificWorker::log_orbit(const std::string& csv_line)
+{
+	std::ofstream out(orbit_log_path, std::ios::app);
+	if (out.is_open())
+		out << csv_line << "\n";
+}
+
+std::string SpecificWorker::csv_row(const std::array<std::string, 19>& fields)
+{
+	// Exception messages (the usual source of "note" text) can contain embedded newlines and
+	// commas, which would otherwise split into extra malformed rows or extra columns -- seen
+	// live in logs/ before this existed.
+	auto sanitize = [](std::string s)
+	{
+		for (char& c : s)
+			if (c == ',') c = ';';
+			else if (c == '\n' || c == '\r') c = ' ';
+		return s;
+	};
+
+	std::ostringstream row;
+	for (size_t i = 0; i < fields.size(); ++i)
+	{
+		if (i > 0)
+			row << ",";
+		row << sanitize(fields[i]);
+	}
+	return row.str();
 }
 
 
@@ -122,15 +172,22 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	auto_localization();
-	update_static_target_rt();
+	// update_static_target_rt();
 
-    if (queck_affordance_active())
+    if (check_affordance_active())
 	{
-		follow_target(1.0f, 1.0f, desired_distance);
+		if (is_orbit_target()) // check for bump node
+			orbit_target();
+		else
+		{
+			reset_orbit_state();  // in case a previous, interrupted photo session left it mid-way
+			follow_target(1.0f, 1.0f, desired_distance);
+		}
 	}
 	else{
 		stop_robot();
 		was_following = false;  // next follow_target() call starts a fresh D-term baseline
+		reset_orbit_state();
 	}
 
 	std::vector<float> actual_velocities = getVelocitiesFromDSR();
@@ -157,7 +214,6 @@ void SpecificWorker::emergency()
     //if (SUCCESSFUL) //The componet is safe for continue
     //  emmit goToRestore()
 }
-
 
 
 //Execute one when exiting to emergencyState
@@ -214,8 +270,19 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 
     std::vector<float> t = rt_translation_opt.value();
 
-    float x = t[0];
-    float y = t[1];
+    drive_to_local_point(t[0], t[1], desired_distance, max_forward_speed_factor, max_angular_speed_factor);
+}
+
+void SpecificWorker::drive_to_local_point(float x, float y, float desired_distance,
+	float max_forward_speed_factor, float max_angular_speed_factor)
+{
+    auto robot_node_opt = G->get_node("robot");
+    if (!robot_node_opt.has_value())
+    {
+        std::cerr << "Robot node not found in DSR." << std::endl;
+        return;
+    }
+    DSR::Node robot_node = robot_node_opt.value();
 
     float distance_to_target = std::sqrt(x*x + y*y);
     float angle_to_target    = std::atan2(y, x);
@@ -296,6 +363,30 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 
 	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
 	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
+	G->update_node(robot_node);
+}
+
+void SpecificWorker::drive_straight(float distance_to_target, float desired_distance, float max_forward_speed_factor)
+{
+	auto robot_node_opt = G->get_node("robot");
+	if (!robot_node_opt.has_value())
+	{
+		std::cerr << "Robot node not found in DSR." << std::endl;
+		return;
+	}
+	DSR::Node robot_node = robot_node_opt.value();
+
+	float distance_error = 0.0f;
+	if (distance_to_target > 1e-3f)
+		distance_error = (distance_to_target - desired_distance) / distance_to_target;
+	if (distance_error < 0.0f)
+		distance_error = 0.0f;
+
+	const float Kp_lin = 0.8f;
+	float linear_velocity = std::clamp(Kp_lin * distance_error, 0.0f, WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor);
+
+	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
+	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, 0.0f);
 	G->update_node(robot_node);
 }
 
@@ -545,28 +636,25 @@ void SpecificWorker::update_or_create_imu_node()
 	}
 }
 
-bool SpecificWorker::queck_affordance_active()
+// Shared by check_affordance_active() and complete_photo_affordance(): the affordance node
+// reached from the current TARGET via TARGET->has_intention.
+static std::optional<DSR::Node> get_target_affordance_node(DSR::DSRGraph* G)
 {
 	auto target_edges = G->get_edges_by_type("TARGET");
 	auto has_intention_edges = G->get_edges_by_type("has_intention");
 	for (const auto& target_edge : target_edges)
-	{
 		for (const auto& intention_edge : has_intention_edges)
-		{
 			if (intention_edge.from() == target_edge.to())
-			{
-				auto affordance_node_opt = G->get_node(intention_edge.to());
-				if (affordance_node_opt.has_value())
-				{
-					DSR::Node affordance_node = affordance_node_opt.value();
-					bool aff_interacting = G->get_attrib_by_name<aff_interacting_att>(affordance_node.id()).value();
-					
-					return aff_interacting;
-				}
-			}
-		}
-	}
-	return false;
+				return G->get_node(intention_edge.to());
+	return std::nullopt;
+}
+
+bool SpecificWorker::check_affordance_active()
+{
+	auto affordance_node_opt = get_target_affordance_node(G.get());
+	if (!affordance_node_opt.has_value())
+		return false;
+	return G->get_attrib_by_name<aff_interacting_att>(affordance_node_opt.value().id()).value();
 }
 
 void SpecificWorker::stop_robot()
@@ -586,6 +674,341 @@ void SpecificWorker::stop_robot()
 	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, (float)0.0);
 	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, (float)0.0);
 	G->update_node(robot_node);
+}
+
+bool SpecificWorker::is_orbit_target()
+{
+	auto target_edges = G->get_edges_by_type("TARGET");
+	if (target_edges.empty())
+		return false;
+	auto target_node_opt = G->get_node(target_edges[0].to());
+	return target_node_opt.has_value() && target_node_opt.value().name() == "bump";
+}
+
+void SpecificWorker::reset_orbit_state()
+{
+	orbit_stage = OrbitStage::TRAVEL;
+	orbit_waypoint_idx = 0;
+	orbit_shot_idx = 0;
+	orbit_bearing_captured = false;
+	travel_is_rotating = true;
+}
+
+void SpecificWorker::rotate_in_place(float heading_error, float max_angular_speed_factor)
+{
+	auto robot_node_opt = G->get_node("robot");
+	if (!robot_node_opt.has_value())
+	{
+		std::cerr << "Robot node not found in DSR." << std::endl;
+		return;
+	}
+	DSR::Node robot_node = robot_node_opt.value();
+
+	const float Kp_ang = 1.0f;
+	float angular_velocity = std::clamp(
+		Kp_ang * heading_error,
+		-WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
+		WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
+	);
+
+	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, 0.0f);
+	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
+	G->update_node(robot_node);
+}
+
+void SpecificWorker::take_photo(const std::string& label, float distance_to_bump)
+{
+	auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+	auto log_result = [&](const std::string& outcome, const std::string& path_or_reason)
+	{
+		log_orbit(csv_row({std::to_string(now_ms), "photo", "", "", "", "", "",
+			std::to_string(distance_to_bump), "", "", "", "", "", "", "", "", "", "",
+			label + " " + outcome + ": " + path_or_reason}));
+	};
+
+	try
+	{
+		// Camera360RGB looked like the natural fit (concept_robot's own interface, no cross-agent
+		// hop) but webots-bridge has it permanently disabled (pars.camera360 defaults false and
+		// nothing ever sets it true) -- every getROI() call throws. CameraRGBDSimple is the same
+		// interface vision_sam already captures through successfully; only .image is used here
+		// (DINOv3 doesn't need depth), so RGB-only intent is preserved.
+		auto img = camerargbdsimple_proxy->getImage("camera");
+		if (img.image.empty() || img.width <= 0 || img.height <= 0)
+		{
+			std::cerr << "orbit_target: empty image from Camera360RGB, skipping capture." << std::endl;
+			log_result("FAILED", "empty image from Camera360RGB");
+			return;
+		}
+
+		std::filesystem::path dir = std::filesystem::path(photo_session_dir) / label;
+		std::filesystem::create_directories(dir);
+
+		auto file_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::system_clock::now().time_since_epoch()).count();
+		std::filesystem::path filepath = dir /
+			(label + "_" + std::to_string(file_ms) + "_" + std::to_string(photo_counter++) + ".jpg");
+
+		// img.image is RGB (webots-bridge converts RGBA->RGB before sending); OpenCV's
+		// imwrite/imencode assume BGR for standard formats, so swap channels before saving.
+		cv::Mat rgb(img.height, img.width, CV_8UC3, const_cast<unsigned char*>(img.image.data()));
+		cv::Mat bgr;
+		cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
+		if (!cv::imwrite(filepath.string(), bgr))
+		{
+			std::cerr << "orbit_target: cv::imwrite failed for " << filepath.string() << std::endl;
+			log_result("FAILED", "cv::imwrite failed");
+			return;
+		}
+
+		std::cout << "orbit_target: saved " << filepath.string()
+			<< " (dist_to_bump=" << distance_to_bump << "m)" << std::endl;
+		log_result("OK", std::filesystem::absolute(filepath).string());
+	}
+	catch (const std::exception& e)
+	{
+		std::cerr << "orbit_target: take_photo failed: " << e.what() << std::endl;
+		log_result("FAILED", e.what());
+	}
+}
+
+void SpecificWorker::complete_photo_affordance()
+{
+	auto affordance_node_opt = get_target_affordance_node(G.get());
+	if (!affordance_node_opt.has_value())
+		return;
+	DSR::Node affordance_node = affordance_node_opt.value();
+	G->add_or_modify_attrib_local<aff_interacting_att>(affordance_node, false);
+	G->update_node(affordance_node);
+}
+
+const char* SpecificWorker::orbit_stage_name(OrbitStage s)
+{
+	switch (s)
+	{
+		case OrbitStage::TRAVEL: return "TRAVEL";
+		case OrbitStage::SHOOT_CON: return "SHOOT_CON";
+		case OrbitStage::TURN_AWAY: return "TURN_AWAY";
+		case OrbitStage::SHOOT_SIN: return "SHOOT_SIN";
+		case OrbitStage::NEXT_WAYPOINT: return "NEXT_WAYPOINT";
+		case OrbitStage::DONE: return "DONE";
+	}
+	return "?";
+}
+
+void SpecificWorker::orbit_target()
+{
+	auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+
+	auto robot_node_opt = G->get_node("robot");
+	auto root_node_opt  = G->get_node("root");
+	auto target_edges = G->get_edges_by_type("TARGET");
+	if (!robot_node_opt.has_value() || !root_node_opt.has_value() || target_edges.empty())
+	{
+		log_orbit(csv_row({std::to_string(now_ms), "bail", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "missing robot/root node or TARGET edge"}));
+		return;
+	}
+	DSR::Node robot_node = robot_node_opt.value();
+
+	// Live robot->bump local position, published every cycle by concept_bump (same read as
+	// follow_target(), just kept as x,y instead of handed to the P/D controller directly).
+	auto bump_rt_opt = rt->get_edge_RT(robot_node, target_edges[0].to());
+	if (!bump_rt_opt.has_value())
+	{
+		log_orbit(csv_row({std::to_string(now_ms), "bail", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "robot->bump RT edge not found (concept_bump not publishing?)"}));
+		return;
+	}
+	auto t_rb_opt = G->get_attrib_by_name<rt_translation_att>(bump_rt_opt.value());
+	if (!t_rb_opt.has_value())
+	{
+		log_orbit(csv_row({std::to_string(now_ms), "bail", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "robot->bump RT has no translation attribute"}));
+		return;
+	}
+	std::vector<float> t_rb = t_rb_opt.value();
+	float x_b = t_rb[0];
+	float y_b = t_rb[1];
+
+	// Robot's absolute heading, from root->robot RT (same formula concept_bump uses).
+	auto root_robot_rt_opt = rt->get_edge_RT(root_node_opt.value(), robot_node.id());
+	if (!root_robot_rt_opt.has_value())
+	{
+		log_orbit(csv_row({std::to_string(now_ms), "bail", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "root->robot RT edge not found"}));
+		return;
+	}
+	auto q_rr_opt = G->get_attrib_by_name<rt_quaternion_att>(root_robot_rt_opt.value());
+	if (!q_rr_opt.has_value())
+	{
+		log_orbit(csv_row({std::to_string(now_ms), "bail", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "root->robot RT has no quaternion attribute"}));
+		return;
+	}
+	std::vector<float> q_rr = q_rr_opt.value();
+	Eigen::Quaternionf root_robot_q(q_rr[3], q_rr[0], q_rr[1], q_rr[2]);
+	root_robot_q.normalize();
+	float robot_heading = std::atan2(
+		2.f * (root_robot_q.w() * root_robot_q.z() + root_robot_q.x() * root_robot_q.y()),
+		1.f - 2.f * (root_robot_q.y() * root_robot_q.y() + root_robot_q.z() * root_robot_q.z()));
+
+	const float PI = std::numbers::pi_v<float>;
+	auto wrap = [PI](float a) { return std::atan2(std::sin(a), std::cos(a)); };
+
+	float angle_to_bump = std::atan2(y_b, x_b);  // heading_error to face the bump right now
+
+	if (!orbit_bearing_captured)
+	{
+		// World-ish bearing from the bump to the robot's current position: the reference the k
+		// waypoints are spaced around, so waypoint 0 is wherever the robot already is (minimal
+		// extra travel after the approach).
+		// The +PI/2 term is NOT optional: concept_bump's world->local formula (which x_b,y_b
+		// come from) is a rotation by -(heading+90 deg), not by -heading as the textbook
+		// world_to_local would be (verified by inverting that formula by hand), so recovering a
+		// world bearing from a local one needs the same +90 deg correction.
+		orbit_start_bearing = wrap(robot_heading + std::atan2(-y_b, -x_b) + PI / 2.0f);
+		orbit_bearing_captured = true;
+	}
+
+	float log_waypoint_bearing = std::numeric_limits<float>::quiet_NaN();
+	float log_target_x = std::numeric_limits<float>::quiet_NaN();
+	float log_target_y = std::numeric_limits<float>::quiet_NaN();
+	float log_heading_error = std::numeric_limits<float>::quiet_NaN();
+
+	switch (orbit_stage)
+	{
+		case OrbitStage::TRAVEL:
+		{
+			int k = std::max(1, orbit_points_k);
+			float waypoint_bearing = wrap(orbit_start_bearing + 2.f * PI * orbit_waypoint_idx / k);
+			log_waypoint_bearing = waypoint_bearing;
+
+			// Waypoint = bump_world + photo_distance * (cos,sin)(waypoint_bearing); expressed
+			// directly in the robot's current local frame as local(bump) + world_to_local(offset)
+			// -- world_to_local must be the same formula concept_bump uses for its own
+			// world->local projection (get_bump_relative_position()), NOT the textbook rotation:
+			// this project's quaternion/axis convention isn't the standard one, and that formula
+			// is the one actually validated live (robot converges correctly onto the bump).
+			float dx_world = photo_distance * std::cos(waypoint_bearing);
+			float dy_world = photo_distance * std::sin(waypoint_bearing);
+			float local_dx = -std::sin(robot_heading) * dx_world + std::cos(robot_heading) * dy_world;
+			float local_dy = -std::cos(robot_heading) * dx_world - std::sin(robot_heading) * dy_world;
+			float target_x = x_b + local_dx;
+			float target_y = y_b + local_dy;
+			log_target_x = target_x;
+			log_target_y = target_y;
+
+			float dist_to_waypoint = std::sqrt(target_x * target_x + target_y * target_y);
+			float angle_to_waypoint = std::atan2(target_y, target_x);
+			log_heading_error = angle_to_waypoint;
+
+			// Deliberately simple for now (easy to replace with the combined drive later): look
+			// at the waypoint first (pure rotation), then drive straight at it (pure
+			// translation, no steering correction). Never combines both, so it can't reproduce
+			// the earlier combined-motion instability.
+			//
+			// Hysteresis on the rotate/drive switch (two thresholds, not one): a single shared
+			// tolerance made this chatter every 20-300ms once heading drifted slightly during a
+			// drive leg (confirmed in logs/), since the smallest drift past the tolerance flips
+			// straight back to rotating. Widening the "start rotating again" threshold well past
+			// the "good enough, start driving" one gives each phase room to run to completion
+			// instead of re-deciding from scratch every cycle.
+			if (dist_to_waypoint < ORBIT_ARRIVAL_TOLERANCE)
+			{
+				stop_robot();
+				orbit_stage = OrbitStage::SHOOT_CON;
+				orbit_shot_idx = 0;
+			}
+			else
+			{
+				if (travel_is_rotating && std::abs(angle_to_waypoint) < ORBIT_HEADING_TOLERANCE)
+					travel_is_rotating = false;
+				else if (!travel_is_rotating && std::abs(angle_to_waypoint) > TRAVEL_ROTATE_REENTRY_TOLERANCE)
+					travel_is_rotating = true;
+
+				if (travel_is_rotating)
+					rotate_in_place(angle_to_waypoint);
+				else
+					drive_straight(dist_to_waypoint, ORBIT_ARRIVAL_TOLERANCE, 1.0f);
+			}
+			break;
+		}
+
+		case OrbitStage::SHOOT_CON:
+		case OrbitStage::SHOOT_SIN:
+		{
+			bool is_con = (orbit_stage == OrbitStage::SHOOT_CON);
+			float center = is_con ? 0.0f : PI;  // heading_error=0 means "facing the bump"
+			int X = std::max(1, photos_per_point);
+			float offset = (float(orbit_shot_idx) - (X - 1) / 2.0f) * photo_angular_step;
+			// Same error convention as drive_to_local_point()/follow_target() (angular_velocity =
+			// Kp * error, no negation), just generalized from an implicit target of 0 to "center+offset".
+			float heading_error = wrap(angle_to_bump - (center + offset));
+			log_heading_error = heading_error;
+
+			if (std::abs(heading_error) < ORBIT_HEADING_TOLERANCE)
+			{
+				stop_robot();
+				take_photo(is_con ? "con_bache" : "sin_bache", std::sqrt(x_b * x_b + y_b * y_b));
+				orbit_shot_idx++;
+				if (orbit_shot_idx >= X)
+					orbit_stage = is_con ? OrbitStage::TURN_AWAY : OrbitStage::NEXT_WAYPOINT;
+			}
+			else
+				rotate_in_place(heading_error);
+			break;
+		}
+
+		case OrbitStage::TURN_AWAY:
+		{
+			// Same rotate_in_place() primitive as the fine panning above, just aimed at a
+			// farther target (~180 deg): never a single raw "rotate 180" command, always the
+			// same P-controlled, velocity-clamped step.
+			float heading_error = wrap(angle_to_bump - PI);
+			log_heading_error = heading_error;
+			if (std::abs(heading_error) < ORBIT_HEADING_TOLERANCE)
+			{
+				orbit_stage = OrbitStage::SHOOT_SIN;
+				orbit_shot_idx = 0;
+			}
+			else
+				rotate_in_place(heading_error);
+			break;
+		}
+
+		case OrbitStage::NEXT_WAYPOINT:
+		{
+			orbit_waypoint_idx++;
+			orbit_stage = (orbit_waypoint_idx >= std::max(1, orbit_points_k))
+				? OrbitStage::DONE : OrbitStage::TRAVEL;
+			travel_is_rotating = true;  // look at the new waypoint before driving to it
+			break;
+		}
+
+		case OrbitStage::DONE:
+		{
+			stop_robot();
+			complete_photo_affordance();
+			break;
+		}
+	}
+
+	std::vector<float> velocities = getVelocitiesFromDSR();
+	float dist_bump = std::sqrt(x_b * x_b + y_b * y_b);
+	float dist_waypoint = std::isnan(log_target_x) ? std::numeric_limits<float>::quiet_NaN()
+		: std::sqrt(log_target_x * log_target_x + log_target_y * log_target_y);
+
+	auto rad2deg = [](float r) { return std::isnan(r) ? r : r * 180.f / std::numbers::pi_v<float>; };
+	auto fmt = [](float v) { return std::isnan(v) ? std::string() : std::to_string(v); };
+
+	log_orbit(csv_row({
+		std::to_string(now_ms), "cycle", orbit_stage_name(orbit_stage),
+		std::to_string(orbit_waypoint_idx), std::to_string(orbit_shot_idx),
+		fmt(x_b), fmt(y_b), fmt(dist_bump),
+		fmt(rad2deg(angle_to_bump)), fmt(rad2deg(robot_heading)),
+		fmt(rad2deg(orbit_start_bearing)), fmt(rad2deg(log_waypoint_bearing)),
+		fmt(log_target_x), fmt(log_target_y), fmt(dist_waypoint),
+		fmt(rad2deg(log_heading_error)),
+		fmt(velocities[0] / 1000.f), fmt(velocities[1]), ""
+	}));
 }
 
 #pragma endregion DSR
@@ -713,13 +1136,19 @@ void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimatio
 
 
 /**************************************/
-// From the RoboCompCamera360RGB you can call this methods:
-// RoboCompCamera360RGB::TImage this->camera360rgb_proxy->getROI(int cx, int cy, int sx, int sy, int roiwidth, int roiheight)
+// From the RoboCompCameraRGBDSimple you can call this methods:
+// RoboCompCameraRGBDSimple::TRGBD this->camerargbdsimple_proxy->getAll(string camera)
+// RoboCompCameraRGBDSimple::TDepth this->camerargbdsimple_proxy->getDepth(string camera)
+// RoboCompCameraRGBDSimple::TImage this->camerargbdsimple_proxy->getImage(string camera)
+// RoboCompCameraRGBDSimple::TPoints this->camerargbdsimple_proxy->getPoints(string camera)
 
 /**************************************/
-// From the RoboCompCamera360RGB you can use this types:
-// RoboCompCamera360RGB::TRoi
-// RoboCompCamera360RGB::TImage
+// From the RoboCompCameraRGBDSimple you can use this types:
+// RoboCompCameraRGBDSimple::Point3D
+// RoboCompCameraRGBDSimple::TPoints
+// RoboCompCameraRGBDSimple::TImage
+// RoboCompCameraRGBDSimple::TDepth
+// RoboCompCameraRGBDSimple::TRGBD
 
 /**************************************/
 // From the RoboCompIMU you can call this methods:

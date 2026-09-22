@@ -1,41 +1,32 @@
 # This property is used by the clients to connect to IceStorm.
 Proxies.TopicManager = "IceStorm/TopicManager:default -p 9999"
 
-# Proxies for publishes interfaces
-Proxies.VisualElementsPubPrefix = ""
-
 # Proxies for required interfaces
-Proxies.CameraRGBDSimple = "camerargbdsimple:tcp -h localhost -p 10096"
+Proxies.ImageSegmentation = "imagesegmentation:tcp -h localhost -p 14111"
+Proxies.Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 10006"
 
 
 # --- Common Agent Data ---
-Agent.id = 0 # Change id
+Agent.id = {{agent_id}}
 Agent.name = "concept_{{concept_name}}"
 
 # --- Single Instance Configuration ---
 # Use this if you only have one graph.
 Agent.configFile = ""
 Agent.domain = 0
-Agent.tree = true
-Agent.graph = true
-Agent.2d = true
-Agent.3d = true
-
-# --- Multiple Instance Template ---
-# If you define sub-instances, the single instance config above will be ignored.
-Agent.work.configFile = ""
-Agent.work.domain = 0
-Agent.work.tree = true
-Agent.work.graph = true
-Agent.work.2d = true
-Agent.work.3d = true
+Agent.tree = false
+Agent.graph = false
+Agent.2d = false
+Agent.3d = false
 
 Period.Compute = 100
 Period.Emergency = 500
 
-Component.Debug.Verbose = true
+Component.Debug.Verbose = false
 
 Ice.Warn.Connections = "0"
 Ice.Trace.Network = "0"
 Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
+
+Simulated = true

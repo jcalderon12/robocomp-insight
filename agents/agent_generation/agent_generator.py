@@ -17,7 +17,7 @@ cdsl_template = load_template("agent_generator_cdsl_template")
 specific_worker_template = load_template("agent_generator_specificworker_template")
 config_template = load_template("agent_generator_config_template")
 
-def generate_agent(cause_name: str, output_path: str) -> bool:
+def generate_agent(cause_name: str, output_path: str, agent_id: int = 20) -> bool:
     base_dir = Path(output_path).resolve()
     # Agent directory and component both use the "concept_<name>" convention,
     # so the folder name always matches the component/binary generated inside it.
@@ -57,7 +57,7 @@ def generate_agent(cause_name: str, output_path: str) -> bool:
 
         # Generate config file
         with open(out_dir / "etc" / "config", "w", encoding="utf-8") as f:
-            f.write(config_template.render(concept_name=cause_name))
+            f.write(config_template.render(concept_name=cause_name, agent_id=agent_id))
 
         return True
 

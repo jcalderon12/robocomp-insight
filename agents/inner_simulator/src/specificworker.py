@@ -459,7 +459,7 @@ class SpecificWorker(GenericWorker):
                     plt.ylabel("Angular Velocity (rad/s)")
                     plt.legend()
                     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-                    plt.show()
+                    # plt.show()
 
                     # ---- score EVERY recording of EVERY cause (normalized DTW), in parallel ----
                     cause_defs = list(self.causes_data)
@@ -562,7 +562,7 @@ class SpecificWorker(GenericWorker):
                         plt.legend()
 
                         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-                        plt.show()
+                        # plt.show()
 
                     # Write the full result to a timestamped file (+ refresh stable sim_output.json),
                     # fully flushed before we touch the DSR so semantic never opens a half file.
