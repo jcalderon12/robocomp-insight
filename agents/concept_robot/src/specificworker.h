@@ -35,7 +35,6 @@
 #include <vector>
 #include <cmath>
 #include <numbers>
-#include <array>
 #include <string>
 #include <opencv2/opencv.hpp>
 
@@ -133,14 +132,6 @@ public slots:
 	std::vector<float> auto_localization();
 
 	/**
-	 * \brief For a TARGET pointing to a node with a static global "problem_position" (e.g.
-	 * "bump"), computes and writes a live RT robot->target edge each cycle, so follow_target()
-	 * has something to read. No-op if the target has no "problem_position" (e.g. "person",
-	 * whose RT robot->target is already maintained live by concept_person).
-	 */
-	void update_static_target_rt();
-
-	/**
 	 * \brief Method to check if there is an active affordance in the DSR graph.
 	 * An active affordance is an affordance node that comes from the person node target and has the attribute aff_interacting_att to true.
 	 * \return Return true if there is an active affordance. false otherwise.
@@ -153,63 +144,44 @@ public slots:
 	void stop_robot();
 
 	/**
-	 * \brief True when the current TARGET points at the "bump" node, i.e. this is a photo
-	 * session (orbit_target()) rather than a plain follow (follow_target()).
+	 * \brief True when the current TARGET points at the "bump" node, i.e. this is the photo
+	 * mission (photo_spin()) and not a plain follow (follow_target()).
 	 */
-	bool is_orbit_target();
+	bool is_photo_target();
 
 	/**
-	 * \brief Drives the robot to Photo_distance from the "bump" target, then orbits it in
-	 * Orbit_points evenly-spaced stops. At each stop it faces the bump and takes
-	 * Photos_per_point "con_bache" photos (panning by Photo_angular_step between shots so the
-	 * bump never leaves frame), then turns to face away (same rotate-by-Photo_angular_step
-	 * primitive, just repeated further, never a single big jump) and takes Photos_per_point
-	 * "sin_bache" photos. Finishes by clearing aff_interacting on the photo affordance, which
-	 * mission_controller watches to complete the "Take Photos" mission.
+	 * \brief Photo mission: approaches the bump with follow_target(), then spins in place a full
+	 * turn stopping every Photo_angular_step degrees to take a picture. Never translates while
+	 * spinning. Each shot is labelled from the live angle to the bump: facing it -> "con_bache",
+	 * facing away -> "sin_bache", sideways -> discarded.
 	 */
-	void orbit_target();
+	void photo_spin();
 
 	/**
-	 * \brief Core of follow_target()/orbit_target(): P/D-controlled drive toward an arbitrary
-	 * point already expressed in the robot's current local frame (meters), stopping once within
-	 * desired_distance of it. Writes robot_ref_adv_speed/robot_ref_rot_speed to the DSR.
+	 * \brief Spins in place at a constant angular speed (linear speed 0, no closed loop).
 	 */
-	void drive_to_local_point(float x, float y, float desired_distance,
-		float max_forward_speed_factor, float max_angular_speed_factor);
+	void spin_in_place(float angular_speed);
 
 	/**
-	 * \brief Rotates in place (linear speed 0) to reduce heading_error (radians), P-controlled
-	 * and velocity-clamped like drive_to_local_point -- used for both the small panning steps
-	 * between photos and the big con-bache/sin-bache turn, so neither is a single abrupt jump.
+	 * \brief Drives straight ahead at a constant speed (angular speed 0, no closed loop).
 	 */
-	void rotate_in_place(float heading_error, float max_angular_speed_factor = 0.6f);
+	void drive_forward(float speed);
 
 	/**
-	 * \brief Drives straight ahead (angular speed 0, no steering) to reduce distance_to_target
-	 * toward desired_distance, P-controlled and velocity-clamped like drive_to_local_point.
-	 * Used by orbit_target()'s TRAVEL stage's "look then go" sequence: rotate_in_place() first
-	 * to face the waypoint, only then drive_straight() -- deliberately simple, revisit later.
+	 * \brief Grabs one CameraRGBDSimple frame and saves it as .jpg under Photo_save_dir/<session>/<label>/.
 	 */
-	void drive_straight(float distance_to_target, float desired_distance, float max_forward_speed_factor = 1.0f);
+	void take_photo(const std::string& label, float angle_to_bump, float distance_to_bump);
 
 	/**
-	 * \brief Grabs one Camera360RGB frame and saves it as a .ppm under Photo_save_dir/<label>/.
-	 * distance_to_bump (meters) is only used for the debug log, not the capture itself.
+	 * \brief Clears aff_interacting on the affordance reached via TARGET->has_intention, which is
+	 * what mission_controller watches to complete the mission.
 	 */
-	void take_photo(const std::string& label, float distance_to_bump);
+	void finish_photo_mission();
 
 	/**
-	 * \brief Sets aff_interacting=false on the affordance reached via TARGET->has_intention
-	 * (mirrors the check in check_affordance_active()), signalling mission_controller that the
-	 * photo session is done.
+	 * \brief Resets photo_spin() progress so the next photo mission starts from scratch.
 	 */
-	void complete_photo_affordance();
-
-	/**
-	 * \brief Resets orbit_target()'s progress (stage/waypoint/shot index/captured bearing) so
-	 * the next "Take Photos" mission starts from scratch.
-	 */
-	void reset_orbit_state();
+	void reset_photo_spin();
 
 	void modify_node_slot(std::uint64_t, const std::string &type){};
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){};
@@ -253,35 +225,32 @@ private:
 
 	std::unique_ptr<DSR::RT_API> rt;
 
-	// ---- Photo-orbit session (orbit_target()) ----
-	enum class OrbitStage { TRAVEL, SHOOT_CON, TURN_AWAY, SHOOT_SIN, NEXT_WAYPOINT, DONE };
-	OrbitStage orbit_stage = OrbitStage::TRAVEL;
-	int orbit_waypoint_idx = 0;
-	int orbit_shot_idx = 0;
-	bool orbit_bearing_captured = false;
-	float orbit_start_bearing = 0.f;  // world-ish bearing (rad) from bump to robot, captured on orbit start
-	int photo_counter = 0;            // unique-filename counter, whole session
-	bool travel_is_rotating = true;   // TRAVEL's rotate/drive hysteresis latch -- see orbit_target()
+	// ---- Misión de fotos (photo_spin()) ----
+	enum class SpinStage { APPROACH, MOVE_OFF, TURNING, SETTLING, DONE };
+	SpinStage spin_stage = SpinStage::APPROACH;
+	float spin_accumulated = 0.f;       // radianes girados en total en esta vuelta
+	float spin_since_shot = 0.f;        // radianes girados desde la última parada de disparo
+	float spin_last_heading = 0.f;      // rumbo del ciclo anterior, para acumular el giro
+	bool spin_heading_valid = false;
+	std::chrono::steady_clock::time_point spin_settle_start;
+	int photo_counter = 0;
 
-	static constexpr float ORBIT_ARRIVAL_TOLERANCE = 0.10f;   // meters
-	static constexpr float ORBIT_HEADING_TOLERANCE = 0.035f;  // radians (~2 deg): stop rotating, start driving
-	static constexpr float TRAVEL_ROTATE_REENTRY_TOLERANCE = 4.f * ORBIT_HEADING_TOLERANCE;  // ~8 deg: stop driving, start rotating again
+	// Margen sobre desired_distance para dar la aproximación por terminada y empezar a girar.
+	static constexpr float PHOTO_APPROACH_MARGIN = 0.2f;   // metros
+	// Al arrancar encima del bache, se aparta avanzando recto en la dirección que ya llevaba.
+	static constexpr float PHOTO_MOVEOFF_SPEED = 0.4f;     // m/s
 
-	float photo_distance;             // meters, from Photo_distance (mm), set in initialize() like desired_distance
-	int orbit_points_k         = configLoader.get<int>("Orbit_points");
-	int photos_per_point       = configLoader.get<int>("Photos_per_point");
-	float photo_angular_step   = configLoader.get<double>("Photo_angular_step") * std::numbers::pi_v<float> / 180.f;
-	std::string photo_save_dir = configLoader.get<std::string>("Photo_save_dir");
-	std::string photo_session_dir;  // photo_save_dir/<session_ms>, same id as the orbit log file
-
-	// One CSV row per orbit_target() call (see logs/orbit_<session>.csv) while this feature is
-	// being debugged; drop once orbit_target() is validated.
-	std::string orbit_log_path;
-	void log_orbit(const std::string& csv_line);
-	static const char* orbit_stage_name(OrbitStage s);
-	// Joins exactly 19 fields (matching the CSV header written in initialize()) with commas,
-	// so no call site has to hand-count empty placeholders between the fields it does fill in.
-	static std::string csv_row(const std::array<std::string, 19>& fields);
+	float photo_angular_step;     // radianes entre disparos
+	float photo_front_window;     // radianes; |ángulo al bache| <= esto -> con_bache
+	float photo_back_window;      // radianes; |ángulo al bache| >= PI - esto -> sin_bache
+	float photo_settle_seconds;   // espera tras parar, antes de leer el ángulo y disparar
+	float photo_spin_speed;       // rad/s del giro
+	float photo_moveoff_distance; // metros que avanza para apartarse del bache
+	float moveoff_start_x = 0.f, moveoff_start_y = 0.f;
+	bool  moveoff_started = false;
+	std::string photo_save_dir  = configLoader.get<std::string>("Photo_save_dir");
+	std::string photo_session_dir;  // photo_save_dir/<session_ms>
+	std::string photo_log_path;     // una fila por disparo
 
 signals:
 	//void customSignal();
