@@ -290,16 +290,23 @@ __marimo__/
 
 # Inner simulator
 agents/inner_simulator/agents/
-agents/inner_simulator/*.pth
 agents/inner_simulator/*runs/
-agents/inner_simulator/sim_output.json
+agents/inner_simulator/output/
+agents/inner_simulator/sim_output*.json
 agents/mission_controller/recorded_missions/*
 agents/inner_simulator/src/sim_scene.json
 agents/inner_simulator/logs/
 
 # Vision SAM
-agents/vision_sam/*.pt
 agents/vision_sam/segmented_objects/
+
+# Concept robot
+agents/concept_robot/photos/
+agents/concept_robot/logs/
+
+# Pesos de modelos
+*.pt
+*.pth
 
 # # #
 

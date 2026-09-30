@@ -1063,8 +1063,11 @@ class SpecificWorker(GenericWorker):
         payload = json.dumps(
             self._json_safe(sim_out), indent=4, allow_nan=False,
             default=lambda o: (o.item() if hasattr(o, "item") else float(o)))
-        path = os.path.abspath(f"sim_output_{time.strftime('%Y%m%d_%H%M%S')}.json")
-        for p in (path, os.path.abspath("sim_output.json")):
+        # Todas las salidas van a output/ para no llenar la raíz del agente.
+        out_dir = os.path.abspath("output")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"sim_output_{time.strftime('%Y%m%d_%H%M%S')}.json")
+        for p in (path, os.path.join(out_dir, "sim_output.json")):
             with open(p, "w") as f:
                 f.write(payload)
                 f.flush()
