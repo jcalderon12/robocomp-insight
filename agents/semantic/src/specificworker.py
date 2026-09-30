@@ -19,8 +19,6 @@
 #    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import subprocess
-
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from rich.console import Console
@@ -29,16 +27,6 @@ import interfaces as ifaces
 
 sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
-
-# Get the path to 'agents' (two levels up from src/specificworker.py) to reach the
-# shared agent_generation package (agent scaffolding + templates), same bootstrap
-# inner_simulator uses.
-agent_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-agents_root = os.path.dirname(agent_root)
-if agents_root not in sys.path:
-    sys.path.insert(0, agents_root)
-
-from agent_generation.agent_generator import generate_agent
 
 from pydsr import *
 
@@ -110,73 +98,6 @@ class SpecificWorker(GenericWorker):
 
     def update_node_att(self, id: int, attribute_names: [str]):
         console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
-        if "cause_confirmed" in attribute_names:
-            node = self.g.get_node(id)
-            if node is not None and node.name == "problem" and node.attrs["cause_confirmed"].value:
-                self.handle_cause_confirmed()
-
-    def handle_cause_confirmed(self):
-        # Validates inner_simulator's causal search result: replaces "problem" with "bump" +
-        # "photograph_me" (has_intention), the take_photos counterpart of follow_me/person.
-        problem_node = self.g.get_node("problem")
-        if problem_node is None:
-            return
-
-        if self.g.get_node("bump") is not None:
-            return  # Already handled (avoid double creation on repeated signals)
-
-        if "problem_position" not in problem_node.attrs:
-            # Just a spatial-cause gate (does inner_simulator's grid search apply here?);
-            # the value itself isn't used anymore, see comment below.
-            console.print("cause_confirmed but no problem_position (non-spatial cause); dropping 'problem'.", style='yellow')
-            self.g.delete_node(problem_node.id)
-            return
-
-        bump_node = Node(self.agent_id, "object", name="bump")
-        bump_node.attrs["pos_x"] = Attribute(problem_node.attrs["pos_x"].value, self.agent_id)
-        bump_node.attrs["pos_y"] = Attribute(problem_node.attrs["pos_y"].value, self.agent_id)
-        # No problem_position aqui: la posicion real del bache la publica concept_bump como
-        # una RT robot->bump viva (igual que concept_person con person), no como un atributo
-        # global estatico. Evita que concept_robot::update_static_target_rt() y concept_bump
-        # escriban esa RT a la vez.
-        self.g.insert_node(bump_node)
-        bump_node = self.g.get_node("bump")
-
-        photograph_me_node = Node(self.agent_id, "affordance", name="photograph_me")
-        photograph_me_node.attrs["pos_x"] = Attribute(bump_node.attrs["pos_x"].value, self.agent_id)
-        photograph_me_node.attrs["pos_y"] = Attribute(bump_node.attrs["pos_y"].value - 100.0, self.agent_id)
-        photograph_me_node.attrs["parent"] = Attribute(bump_node.id, self.agent_id)
-        photograph_me_node.attrs["aff_interacting"] = Attribute(False, self.agent_id)
-        self.g.insert_node(photograph_me_node)
-        photograph_me_node = self.g.get_node("photograph_me")
-
-        intention_edge = Edge(photograph_me_node.id, bump_node.id, "has_intention", self.agent_id)
-        self.g.insert_or_assign_edge(intention_edge)
-
-        if not self.launch_concept_agent("bump"):
-            console.print("Failed to generate/launch concept_bump.", style='bold red')
-
-        self.g.delete_node(problem_node.id)
-        console.print("Created 'bump' + 'photograph_me' from resolved 'problem'.", style='bold green')
-
-    def launch_concept_agent(self, cause_name: str) -> bool:
-        # Hot-generates concept_<cause_name> from agent_generation's templates (robocompdsl +
-        # cmake + make), then launches the compiled binary directly: Program Manager only
-        # starts what's in its static config, so there is nothing to notify it dynamically.
-        agent_name = f"concept_{cause_name}"
-        console.print(f"Generating {agent_name} from templates...", style='bold yellow')
-        if not generate_agent(cause_name, agents_root):
-            return False
-
-        agent_dir = os.path.join(agents_root, agent_name)
-        # Popen inherits this process's stdout/stderr by default, which is easy to lose track
-        # of (nothing else launches this agent, so there's no terminal panel for it) -> capture
-        # to a log file so a crash/exception here is diagnosable after the fact.
-        log_path = os.path.join(agent_dir, f"{agent_name}.log")
-        log_file = open(log_path, "w")
-        subprocess.Popen(["bin/" + agent_name, "etc/config"], cwd=agent_dir, stdout=log_file, stderr=subprocess.STDOUT)
-        console.print(f"{agent_name} generated and launched from {agent_dir} (log: {log_path}).", style='bold green')
-        return True
 
     def update_node(self, id: int, type: str):
         console.print(f"UPDATE NODE: {id} {type}", style='green')

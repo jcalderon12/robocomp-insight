@@ -34,11 +34,17 @@ Contrapartida: si al reanudar ya está dentro del umbral, nunca se arma y **la m
 
 Nota: con la persona quieta (`fake_malaga.compute()` está vacío y nadie llama a `setPathToHuman`), la aproximación dura lo que tarde en recorrer los metros que la separen.
 
-## 2. Mover lógica de `semantic` a `fake_castilla_la_mancha`
+## 2. Mover lógica de `semantic` a `fake_castilla_la_mancha` — HECHO
 
-`cambiar lo de semantic a fake_castilla -> preguntar a usuario`
+Para vaciar `semantic` (lo lleva otra persona) y evitar conflictos. Se movió el bloque completo:
+reactor de `cause_confirmed`, `handle_cause_confirmed()` (crear `bump` + `photograph_me` +
+`has_intention`, borrar `problem`) y `launch_concept_agent()` (generación en caliente + `Popen`),
+junto con el bootstrap de `sys.path` y el import de `generate_agent`.
 
-Pendiente de concretar con el usuario qué parte exactamente y por qué.
+`semantic` queda como el esqueleto generado: `compute()` vacío y las señales DSR como trazas.
+
+Pendiente menor: sigue arrancándose desde Program Manager sin hacer nada. Decidir si se saca del
+config.
 
 ## 3. Git
 
