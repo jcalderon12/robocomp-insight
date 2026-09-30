@@ -467,7 +467,8 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 			if (completed_type == "Take Photos") {
 				delete_active_target_edge();
 			}
-			if (completed_type == "follow_person" || completed_type == "Take Photos") {
+			// Sólo "Take Photos" cierra la cadena; follow_person la continúa.
+			if (completed_type == "Take Photos") {
 				disable_autopilot_and_reset();
 			}
 
@@ -1242,7 +1243,7 @@ void SpecificWorker::create_or_check_follow_person_mission()
 	static int fallback_attempt_count = 1;
 	QString customName = QString("follow_person_attempt_%1").arg(fallback_attempt_count++);
 	QString missionType = "follow_person";
-	int priority_value = 3;  // Normal priority
+	int priority_value = 4;  // Por debajo de la investigación de la causa, por encima de las fotos
 
 	Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};
 	int row = model->rowCount();
@@ -1325,7 +1326,7 @@ void SpecificWorker::create_take_photos_mission()
 	static int take_photos_attempt_count = 1;
 	QString customName = QString("take_photos_attempt_%1").arg(take_photos_attempt_count++);
 	QString missionType = "Take Photos";
-	int priority_value = 5; // Critical priority: direct continuation of the causal investigation
+	int priority_value = 2; // La última de la cadena: sólo cuando follow_person haya terminado
 
 	// Create the mission and add it to the model
 	Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};

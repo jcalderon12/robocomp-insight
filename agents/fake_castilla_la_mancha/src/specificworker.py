@@ -71,7 +71,8 @@ class SpecificWorker(GenericWorker):
         bottle_over_robot = self.check_bottle_related_robot()
 
         if not bottle_over_robot:
-            self.generate_problem_node()
+            if self.g.get_node("bump") is None:
+                self.generate_problem_node()
             self.deactivate_affordance()
         
         print(flush=True, end="")

@@ -620,6 +620,18 @@ void SpecificWorker::finish_photo_mission()
 	auto target_edges = G->get_edges_by_type("TARGET");
 	auto has_intention_edges = G->get_edges_by_type("has_intention");
 	for (const auto& target_edge : target_edges)
+	{
+		// Publica la ruta de las fotos en el nodo del concepto, antes de cerrar la misión: es
+		// como el agente que lo representa sabe con qué imágenes entrenar y que ya están todas.
+		auto concept_node_opt = G->get_node(target_edge.to());
+		if (concept_node_opt.has_value())
+		{
+			DSR::Node concept_node = concept_node_opt.value();
+			G->runtime_checked_add_or_modify_attrib_local(concept_node, "photo_session_dir",
+				std::filesystem::absolute(photo_session_dir).string());
+			G->update_node(concept_node);
+		}
+
 		for (const auto& intention_edge : has_intention_edges)
 			if (intention_edge.from() == target_edge.to())
 			{
@@ -632,6 +644,7 @@ void SpecificWorker::finish_photo_mission()
 					return;
 				}
 			}
+	}
 }
 
 void SpecificWorker::take_photo(const std::string& label, float angle_to_bump, float distance_to_bump)

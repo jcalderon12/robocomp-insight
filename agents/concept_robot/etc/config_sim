@@ -50,7 +50,7 @@ Simulated = True
 Desired_distance = 1800.0
 
 # Misión de fotos (concept_robot::photo_spin())
-Photo_angular_step = 7.5
+Photo_angular_step = 5.0
 Photo_front_window = 45.0
 Photo_back_window = 45.0
 Photo_settle_seconds = 0.7

@@ -1,11 +1,12 @@
 import "Webots2Robocomp.idsl";
 import "ImageSegmentation.idsl";
+import "CameraRGBDSimple.idsl";
 
 Component concept_{{concept_name}}
 {
     Communications
     {
-        requires Webots2Robocomp, ImageSegmentation;
+        requires Webots2Robocomp, ImageSegmentation, CameraRGBDSimple;
     };
     language python;
     options dsr;

@@ -4,6 +4,7 @@ Proxies.TopicManager = "IceStorm/TopicManager:default -p 9999"
 # Proxies for required interfaces
 Proxies.ImageSegmentation = "imagesegmentation:tcp -h localhost -p 14111"
 Proxies.Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 10006"
+Proxies.CameraRGBDSimple = "camerargbdsimple:tcp -h localhost -p 10096"
 
 
 # --- Common Agent Data ---
@@ -30,3 +31,9 @@ Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
 
 Simulated = true
+
+# Clasificador del concepto: backbone DINOv3 y cada cuántos ciclos se clasifica la vista
+# actual una vez entrenado. La ruta de las fotos llega por el atributo photo_session_dir.
+Dinov3_repo = "/home/robolab/software/dinov3"
+Dinov3_weights = "/home/robolab/robocomp/components/robocomp-insight/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+Inference_period_cycles = 10
