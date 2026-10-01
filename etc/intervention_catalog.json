@@ -79,29 +79,41 @@
     }
   },
   "assets": {
+    "bump_25x2cm": {
+      "urdf": "etc/URDFs/bump/bump_25x2cm.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Small dome-shaped bump, 25 cm in diameter and 2 cm tall.",
+      "approx_dimensions_m": [0.25, 0.25, 0.02]
+    },
+    "bump_25x5cm": {
+      "urdf": "etc/URDFs/bump/bump_25x5cm.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Small dome-shaped bump, 25 cm in diameter and 5 cm tall.",
+      "approx_dimensions_m": [0.25, 0.25, 0.05]
+    },
     "bump_100x5cm": {
       "urdf": "etc/URDFs/bump/bump_100x5cm.urdf",
       "ontology_class": "dul:PhysicalObject",
-      "description": "Low-profile bump strip, 100 cm wide and 5 cm tall. Hard to detect for obstacle classifiers.",
-      "approx_dimensions_m": [1.0, 0.05, 0.05]
+      "description": "Low dome-shaped bump, 1 m in diameter and 5 cm tall. Hard to detect for obstacle classifiers.",
+      "approx_dimensions_m": [1.0, 1.0, 0.05]
     },
     "bump_100x10cm": {
       "urdf": "etc/URDFs/bump/bump_100x10cm.urdf",
       "ontology_class": "dul:PhysicalObject",
-      "description": "Bump strip, 100 cm wide and 10 cm tall.",
-      "approx_dimensions_m": [1.0, 0.1, 0.1]
+      "description": "Dome-shaped bump, 1 m in diameter and 10 cm tall.",
+      "approx_dimensions_m": [1.0, 1.0, 0.1]
     },
     "cylinder_bump_10m": {
       "urdf": "etc/URDFs/bump/cylinder_bump_10m.urdf",
       "ontology_class": "dul:PhysicalObject",
-      "description": "Long cylindrical bump (cable-like), 10 m long.",
-      "approx_dimensions_m": [10.0, 0.05, 0.05]
+      "description": "Long half-round bump (cable-like), 20 m long, 20 cm wide and 5 cm tall. It always lies along the world x axis: it cannot be rotated.",
+      "approx_dimensions_m": [20.0, 0.2, 0.05]
     },
     "cylinder": {
       "urdf": "etc/URDFs/cylinder/cylinder.urdf",
       "ontology_class": "dul:PhysicalObject",
-      "description": "Generic standing cylinder obstacle.",
-      "approx_dimensions_m": [0.2, 0.2, 0.5]
+      "description": "Standing cylinder obstacle, 20 cm in diameter and 2 m tall.",
+      "approx_dimensions_m": [0.2, 0.2, 2.0]
     }
   }
 }
