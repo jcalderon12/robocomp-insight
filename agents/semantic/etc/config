@@ -52,7 +52,9 @@ hypothesisGenerator.RequestTimeoutSeconds = 300
 hypothesisGenerator.InternalCount = 3
 hypothesisGenerator.ExternalCount = 3
 hypothesisGenerator.PreferredClient = "ollama_http"
-hypothesisGenerator.DescriptionCharLimit = 3500
+# The whole robot self-model (description.md, ~6 KB) must reach the prompt: its grounding
+# rules, diagnostic regions and invalid-fault examples come last and were being cut at 3500.
+hypothesisGenerator.DescriptionCharLimit = 12000
 
 # Available models ollama cloud:
 # gemma4:31b-cloud
