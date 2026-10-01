@@ -24,6 +24,9 @@ NOMINAL_HYPOTHESIS_ID = "__nominal__"
 # The catalog speaks meters; the causes simulator places bodies in millimeters.
 M_TO_MM = 1000.0
 
+# CauseBump sweeps a grid over the proposed range (one repetition per cell).
+BUMP_GRID_DIMENSIONS = [3, 3]
+
 
 class HypothesisCompilationError(ValueError):
     """Raised when a testable hypothesis cannot be mapped to a cause payload."""
@@ -68,6 +71,7 @@ def _compile_spawn_static_object(params: dict[str, Any], blueprint: dict[str, An
     position_range = params["position_range"]
     payload: dict[str, Any] = {
         "bump_file": _resolve_asset_urdf(str(params["asset"]), catalog),
+        "grid_dimensions": list(BUMP_GRID_DIMENSIONS),
     }
     for axis in ("x", "y", "z"):
         origin, span = _range_to_origin_span(position_range[axis])
