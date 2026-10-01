@@ -2,7 +2,6 @@
 #define DSR_EPISODIC_API_H
 
 #include <deque>
-#include <dsr/core/topics/IDLGraphPubSubTypes.hpp>
 #include <dsr/core/types/user_types.h>
 #include <fstream>
 #include <map>
