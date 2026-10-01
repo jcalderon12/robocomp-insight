@@ -27,15 +27,15 @@ It is intended to serve as a grounded self-model for diagnosis, explanation, and
 - The robot is designed to pass through standard indoor doorways.
 
 ## Locomotion and Mechanical System
-- Shadow uses a holonomic omnidirectional mobile base.
-- Shadow has 4 Mecanum wheels.
-- Each wheel is driven by an independent 150 W hub motor.
-- The 4 wheels are controlled through 2 dual-axis drivers.
-- The robot can move forward, backward, laterally, diagonally, and rotate in place.
+- Shadow uses a differential-drive mobile base; it is not holonomic.
+- Shadow has 2 drive wheels on a common lateral axis and 2 passive caster wheels, one at the front and one at the back.
+- The drive wheels have a radius of 100 mm and are 518 mm apart.
+- Each drive wheel has its own hub motor; both motors are controlled by a single dual-axis SVD48V driver.
+- The robot can move forward and backward, turn while moving, and rotate in place; it cannot move sideways.
+- The base limits linear speed to 0.9 m/s and rotation speed to 2 rad/s, accelerates at up to 0.5 m/s^2 and brakes at up to 1.0 m/s^2.
 - The robot includes a micro-adjustable suspension system.
 - The suspension mechanically decouples the wheels from the main chassis.
 - The suspension includes steel rods, dampers, and springs.
-- The minimum operational speed is 3 km/h.
 
 ## Power and Electronics
 - Shadow is powered by a lithium battery.
@@ -90,7 +90,7 @@ It is intended to serve as a grounded self-model for diagnosis, explanation, and
 - CORTEX uses path planning adapted to socially aware following behavior.
 
 ## What Shadow Can Do
-- Move holonomically on indoor floors.
+- Drive on indoor floors with differential steering (forward, backward, turning, and rotating in place).
 - Follow people in indoor environments.
 - Perceive nearby obstacles with LiDAR.
 - Perceive surrounding visual context with a 360 RGB camera.
