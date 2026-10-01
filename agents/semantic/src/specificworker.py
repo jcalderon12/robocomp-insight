@@ -37,7 +37,7 @@ import interfaces as ifaces
 sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
 
-from src.ontology_mapping import DSRSemanticWrapper, UNEXPLAINED_INTENTION_NAME
+from src.ontology_mapping import DSRSemanticWrapper, UNEXPLAINED_INTENTION_NAME, FOLLOW_AFFORDANCE_NAME
 from src.graphdb_client import GraphDBClient, GraphDBConfig
 from src.hypothesis_config import HypothesisGeneratorConfig
 from src.hypothesis_context import build_hypothesis_generation_context
@@ -145,6 +145,11 @@ class SpecificWorker(GenericWorker):
 
     @QtCore.Slot()
     def compute(self):
+        # Keep the robot stopped for the whole unexplained cycle: the change interrupts the
+        # follow mission, and starting any other mission re-enables follow_me.
+        if self.unexplained:
+            self.deactivate_follow_affordance()
+
         if self.unexplained and not self.stop_inserted:
             inserted = self.insert_intention_hanging_for_robot()
             if inserted:
@@ -271,6 +276,17 @@ class SpecificWorker(GenericWorker):
         self.trigger_added = frozenset()
         self.trigger_removed = frozenset()
         console.print("Unexplained cycle resolved and re-armed.", style="green")
+
+    def deactivate_follow_affordance(self) -> None:
+        """Stop the robot by deactivating the follow affordance: concept_robot stops when
+        it is not interacting, and mission_controller closes the follow mission."""
+        follow_node = self.g.get_node(FOLLOW_AFFORDANCE_NAME)
+        if follow_node is None or "aff_interacting" not in follow_node.attrs:
+            return
+        if follow_node.attrs["aff_interacting"].value:
+            follow_node.attrs["aff_interacting"].value = False
+            self.g.update_node(follow_node)
+            console.print("Follow affordance deactivated: robot stopped.", style="red")
 
     def insert_intention_hanging_for_robot(self) -> bool:
         """Insert an unexplained intention node hanging from robot with a has_intention edge."""
