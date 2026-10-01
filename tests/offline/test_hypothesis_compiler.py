@@ -56,6 +56,8 @@ def main():
     # The bump cause must resolve the asset to an absolute existing URDF
     bump = next(e["cause"] for e in compiled["entries"] if e["cause"]["name"] == "bump")
     assert Path(bump["bump_file"]).exists(), bump["bump_file"]
+    # Spawned objects rest on the floor whatever z range was proposed
+    assert bump["bump_z_origin"] == 1.0 and bump["bump_z_range"] == 0.0, bump
 
     print("test_hypothesis_compiler OK")
 

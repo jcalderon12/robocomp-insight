@@ -18,7 +18,7 @@
           "required": true,
           "bounds": {"x": [-6.0, 3.0], "y": [-3.0, 3.0], "z": [0.0, 0.3]},
           "units": "m",
-          "description": "Per-axis [min, max] sampling range (world frame, meters) for the object placement. Propose a range informed by the robot trajectory, not a single point."
+          "description": "Per-axis [min, max] sampling range (world frame, meters) for the object placement. Propose an x/y range informed by the robot trajectory, not a single point. Objects rest on the floor, so z is not used."
         }
       }
     },
