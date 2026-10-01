@@ -21,14 +21,14 @@ module RoboCompOmniRobot
 	};
 	interface OmniRobot
 	{
-		void correctOdometer (int x, int z, float alpha) throws RoboCompGenericBase::HardwareFailedException;
-		void getBasePose (out int x, out int z, out float alpha) throws RoboCompGenericBase::HardwareFailedException;
-		void getBaseState (out RoboCompGenericBase::TBaseState state) throws RoboCompGenericBase::HardwareFailedException;
-		void resetOdometer () throws RoboCompGenericBase::HardwareFailedException;
-		void setOdometer (RoboCompGenericBase::TBaseState state) throws RoboCompGenericBase::HardwareFailedException;
-		void setOdometerPose (int x, int z, float alpha) throws RoboCompGenericBase::HardwareFailedException;
-		void setSpeedBase (float advx, float advz, float rot) throws RoboCompGenericBase::HardwareFailedException;
-		void stopBase () throws RoboCompGenericBase::HardwareFailedException;
+		void correctOdometer (int x, int z, float alpha);
+		void getBasePose (out int x, out int z, out float alpha);
+		void getBaseState (out RoboCompGenericBase::TBaseState state);
+		void resetOdometer ();
+		void setOdometer (RoboCompGenericBase::TBaseState state);
+		void setOdometerPose (int x, int z, float alpha);
+		void setSpeedBase (float advx, float advz, float rot);
+		void stopBase ();
 	};
 };
 
