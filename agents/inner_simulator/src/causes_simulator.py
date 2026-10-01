@@ -511,7 +511,7 @@ class CausesSimulator:
                             wheel_velocities["frame_back_right2motor_back_right"] -
                             wheel_velocities["frame_front_left2motor_front_left"] -
                             wheel_velocities["frame_back_left2motor_back_left"]) * self.wheels_radius /
-                            2 * self.distance_between_wheels)
+                            (2 * self.distance_between_wheels))
         return angular_velocity
 
     def get_wheels_velocity_from_forward_velocity_and_angular_velocity(self, forward_velocity: float = 0, angular_velocity: float = 0) -> dict:
