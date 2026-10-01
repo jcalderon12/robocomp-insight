@@ -34,6 +34,7 @@ sys.path.append(parent_dir + "/src/")
 console = Console(highlight=False)
 
 from pydsr import *
+from pydsr import Node, Edge, rt_api, Attribute
 
 
 class SpecificWorker(GenericWorker):
@@ -58,6 +59,7 @@ class SpecificWorker(GenericWorker):
             self.timer.timeout.connect(self.compute)
             self.timer.start(self.Period)
 
+            self.rt_api = rt_api(self.g)
             self.print_dsr_signals = False
 
     def __del__(self):
@@ -69,9 +71,10 @@ class SpecificWorker(GenericWorker):
         bottle_over_robot = self.check_bottle_related_robot()
 
         if not bottle_over_robot:
+            self.generate_problem_node()
             self.deactivate_affordance()
         
-        print(flush=True)
+        print(flush=True, end="")
         return True
 
     def startup_check(self):
@@ -93,6 +96,23 @@ class SpecificWorker(GenericWorker):
             return False
         
         return True
+    
+    def generate_problem_node(self):
+        problem_node = self.g.get_node("problem")
+        if problem_node is None:
+            robot_node = self.g.get_node("robot")
+            problem_node = Node(self.agent_id, "intention", name="problem")
+            problem_node.attrs["parent"] = Attribute(robot_node.id, self.agent_id)
+            problem_node.attrs["level"] = Attribute(robot_node.attrs["level"].value + 1, self.agent_id)
+            problem_node.attrs["pos_x"] = Attribute(robot_node.attrs["pos_x"].value - 200, self.agent_id)
+            problem_node.attrs["pos_y"] = Attribute(robot_node.attrs["pos_y"].value, self.agent_id)
+            self.g.insert_node(problem_node)
+            
+            problem_node = self.g.get_node("problem")
+
+            problem_edge = Edge(robot_node.id, problem_node.id, "has", self.agent_id);
+            self.g.insert_or_assign_edge(problem_edge)
+
     
     def deactivate_affordance(self):
         follow_me_node = self.g.get_node("follow_me")

@@ -47,9 +47,6 @@
      </item>
      <item row="0" column="1">
       <widget class="QLineEdit" name="mission_custom_name">
-       <property name="minimumHeight">
-        <number>35</number>
-       </property>
        <property name="placeholderText">
         <string>Enter mission name</string>
        </property>
@@ -70,11 +67,7 @@
       </widget>
      </item>
      <item row="1" column="1">
-      <widget class="QComboBox" name="mission_name">
-       <property name="minimumHeight">
-        <number>35</number>
-       </property>
-      </widget>
+      <widget class="QComboBox" name="mission_name"/>
      </item>
      <item row="2" column="0">
       <widget class="QLabel" name="label_priority">
@@ -92,8 +85,8 @@
      </item>
      <item row="2" column="1">
       <widget class="QComboBox" name="mission_priority">
-       <property name="minimumHeight">
-        <number>35</number>
+       <property name="currentIndex">
+        <number>2</number>
        </property>
        <item>
         <property name="text">

@@ -12,6 +12,7 @@ class CauseWheel(BaseModel, Cause):
     """A wheel that stops working at an instant sampled inside the activation window."""
 
     name:Literal["wheel"]
+    num_of_repetitions:int | None = None
 
     wheel_min:float
     wheel_max:float

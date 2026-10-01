@@ -2,6 +2,7 @@
 Proxies.TopicManager = "IceStorm/TopicManager:default -p 9999"
 
 # Proxies for required interfaces
+Proxies.ImageSegmentation = "imagesegmentation:tcp -h localhost -p 14111"
 Proxies.Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 10006"
 
 # Endpoints for subscriptions interfaces
@@ -40,3 +41,5 @@ Ice.Warn.Connections = "0"
 Ice.Trace.Network = "0"
 Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
+
+Simulated = false

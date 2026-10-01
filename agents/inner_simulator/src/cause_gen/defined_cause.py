@@ -2,8 +2,10 @@ from jinja2 import Template
 from instance_generator.instance_simple_random import InstanceSimpleRandom
 from instance_generator.instance_random_range_coordinates import InstanceRandomRangeCoordinates
 from instance_generator.instance_random_uniform_range import InstanceRandomUniformRange
+from instance_generator.instance_fixed_grid_positions import InstanceFixedGridPositions
 from instance_generator.instance_none import InstanceNone
 from apply_action.apply_action_instantiate_body import ApplyActionInstantiateBody
+from apply_action.apply_action_instantiate_bodies_at_input import ApplyActionInstantiateBodiesAtInput
 from apply_action.apply_action_stop_robot_wheel import ApplyActionStopRobotWheel
 from apply_action.apply_action_apply_external_force import ApplyActionApplyExternalForce
 from apply_action.apply_action_set_friction import ApplyActionSetFriction
@@ -21,8 +23,8 @@ import argparse
 
     InstanceGeneratorUnion = Union[RandomXGenerator, RandomYGenerator]
     ApplyActionUnion = Union[LogAction]  # añade más acciones aquí"""
-InstanceGeneratorUnion = Union[InstanceRandomRangeCoordinates, InstanceSimpleRandom, InstanceRandomUniformRange, InstanceNone]
-ApplyActionUnion = Union[ApplyActionInstantiateBody, ApplyActionStopRobotWheel, ApplyActionApplyExternalForce, ApplyActionSetFriction]
+InstanceGeneratorUnion = Union[InstanceRandomRangeCoordinates, InstanceSimpleRandom, InstanceRandomUniformRange, InstanceFixedGridPositions, InstanceNone]
+ApplyActionUnion = Union[ApplyActionInstantiateBody, ApplyActionInstantiateBodiesAtInput, ApplyActionStopRobotWheel, ApplyActionApplyExternalForce, ApplyActionSetFriction]
 CauseTemplate:Template = Template(
     
 '''

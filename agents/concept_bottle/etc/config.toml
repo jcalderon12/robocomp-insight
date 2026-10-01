@@ -2,6 +2,8 @@
 # This property is used by the clients to connect to IceStorm.
 TopicManager = "IceStorm/TopicManager:default -p 9999"
 # Proxies for required interfaces
+ImageSegmentation = "imagesegmentation:tcp -h localhost -p 0"
+Lidar3D = "lidar3d:tcp -h localhost -p 0"
 Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 0"
 [Endpoints]
 # Endpoints for subscriptions interfaces
@@ -23,7 +25,7 @@ graph = true
 3d = true
 
 # --- Multiple Instance Template ---
-# If you define sub-instances, the single instance config above will be ignored.
+# If you define multiple instances, the single instance config above will be ignored.
 # [Agent.instance_name]
 # configFile = ""
 # domain = 1

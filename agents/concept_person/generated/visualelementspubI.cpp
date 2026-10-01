@@ -21,28 +21,23 @@
 VisualElementsPubI::VisualElementsPubI(GenericWorker *_worker, const size_t id): worker(_worker), id(id)
 {
 	setVisualObjectsHandlers = {
-		[this](auto &a) { return worker->VisualElementsPub_setVisualObjects(a); }
+		[this](auto &a) {if (worker != nullptr) worker->VisualElementsPub_setVisualObjects(a); else throw std::runtime_error("Worker is null");}
 	};
 
 }
-
 
 VisualElementsPubI::~VisualElementsPubI()
 {
 }
 
-
 void VisualElementsPubI::setVisualObjects(RoboCompVisualElementsPub::TData data, const Ice::Current&)
 {
-
+    if (!worker)
+        throw std::runtime_error("Worker is null");
+        
     #ifdef HIBERNATION_ENABLED
 		worker->hibernationTick();
 	#endif
     
-	if (id < setVisualObjectsHandlers.size())
-		 setVisualObjectsHandlers[id](data);
-	else
-		throw std::out_of_range("Invalid setVisualObjects id: " + std::to_string(id));
-
+	setVisualObjectsHandlers.at(id)(data);
 }
-

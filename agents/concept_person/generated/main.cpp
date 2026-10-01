@@ -81,6 +81,7 @@
 
 #include <Camera360RGB.h>
 #include <Gridder.h>
+#include <ImageSegmentation.h>
 #include <Lidar3D.h>
 #include <VisualElementsPub.h>
 #include <Webots2Robocomp.h>
@@ -236,10 +237,13 @@ int concept_person::run(int argc, char* argv[])
 	std::shared_ptr<IceStorm::TopicPrx> visualelementspub_topic;
 	Ice::ObjectPrxPtr visualelementspub;
 
+	RoboCompImageSegmentation::ImageSegmentationPrxPtr imagesegmentation_proxy;
 	RoboCompWebots2Robocomp::Webots2RobocompPrxPtr webots2robocomp_proxy;
 
 
 	//Require code
+	require<RoboCompImageSegmentation::ImageSegmentationPrx, RoboCompImageSegmentation::ImageSegmentationPrxPtr>(communicator(),
+	                    configLoader.get<std::string>("Proxies.ImageSegmentation"), "ImageSegmentationProxy", imagesegmentation_proxy);
 	require<RoboCompWebots2Robocomp::Webots2RobocompPrx, RoboCompWebots2Robocomp::Webots2RobocompPrxPtr>(communicator(),
 	                    configLoader.get<std::string>("Proxies.Webots2Robocomp"), "Webots2RobocompProxy", webots2robocomp_proxy);
 
@@ -262,7 +266,7 @@ int concept_person::run(int argc, char* argv[])
 		return EXIT_FAILURE;
 	}
 
-	tprx = std::make_tuple(webots2robocomp_proxy);
+	tprx = std::make_tuple(imagesegmentation_proxy,webots2robocomp_proxy);
 	SpecificWorker *worker = new SpecificWorker(this->configLoader, tprx, startup_check_flag);
 	QObject::connect(worker, SIGNAL(kill()), &a, SLOT(quit()));
 

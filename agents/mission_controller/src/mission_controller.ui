@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>600</width>
-    <height>400</height>
+    <width>577</width>
+    <height>401</height>
    </rect>
   </property>
   <property name="minimumSize">
@@ -171,6 +171,13 @@ QPushButton:pressed {
    </item>
    <item>
     <widget class="QListView" name="mission_list"/>
+   </item>
+   <item>
+    <widget class="QCheckBox" name="simulate_structural_failure_checkbox">
+     <property name="text">
+      <string>Simulate Structural Failure</string>
+     </property>
+    </widget>
    </item>
   </layout>
  </widget>

@@ -1,10 +1,12 @@
 import "VisualElementsPub.idsl";
 import "Webots2Robocomp.idsl";
+import "ImageSegmentation.idsl";
+
 Component concept_person
 {
     Communications
     {
-        requires Webots2Robocomp;
+        requires Webots2Robocomp, ImageSegmentation;
         subscribesTo VisualElementsPub;
     };
     language Cpp11;

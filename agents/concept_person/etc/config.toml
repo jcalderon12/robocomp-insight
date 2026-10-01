@@ -2,6 +2,7 @@
 # This property is used by the clients to connect to IceStorm.
 TopicManager = "IceStorm/TopicManager:default -p 9999"
 # Proxies for required interfaces
+ImageSegmentation = "imagesegmentation:tcp -h localhost -p 0"
 Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 0"
 [Endpoints]
 # Endpoints for subscriptions interfaces

@@ -38,13 +38,14 @@
 
 #include <Camera360RGB.h>
 #include <Gridder.h>
+#include <ImageSegmentation.h>
 #include <Lidar3D.h>
 #include <VisualElementsPub.h>
 #include <Webots2Robocomp.h>
 
 #define BASIC_PERIOD 100
 
-using TuplePrx = std::tuple<RoboCompWebots2Robocomp::Webots2RobocompPrxPtr>;
+using TuplePrx = std::tuple<RoboCompImageSegmentation::ImageSegmentationPrxPtr,RoboCompWebots2Robocomp::Webots2RobocompPrxPtr>;
 
 
 class GenericWorker : public QObject
@@ -63,6 +64,7 @@ public:
 	std::atomic_bool hibernation = false;
 
 
+	RoboCompImageSegmentation::ImageSegmentationPrxPtr imagesegmentation_proxy;
 	RoboCompWebots2Robocomp::Webots2RobocompPrxPtr webots2robocomp_proxy;
 
 	virtual void VisualElementsPub_setVisualObjects (RoboCompVisualElementsPub::TData data) = 0;

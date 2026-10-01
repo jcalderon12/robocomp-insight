@@ -95,6 +95,17 @@ void SpecificWorker::initialize()
 	rt = G->get_rt_api();
 
 	last_velocities_readed = getVelocitiesFromDSR();
+
+	prev_distance_error = 0.0f;
+	prev_angle_error    = 0.0f;
+	last_follow_time    = std::chrono::steady_clock::now();
+
+	last_odometry = {0.0f, 0.0f, 0.0f};
+
+	if (simulated)
+		desired_distance = configLoader.get<double>("Desired_distance") / 1000;
+	else
+		desired_distance = configLoader.get<double>("Desired_distance");
 }
 
 
@@ -105,7 +116,7 @@ void SpecificWorker::compute()
 
     if (queck_affordance_active())
 	{
-		follow_target(0.4f, 0.5f, 1.2f);
+		follow_target(1.0f, 1.0f, desired_distance);
 	}
 	else{
 		stop_robot();
@@ -118,6 +129,7 @@ void SpecificWorker::compute()
 
 	last_velocities_readed = actual_velocities;	
 	
+
 	update_or_create_imu_node();
 
 }
@@ -187,47 +199,68 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
         return;
     }
 
-    std::vector<float> t = rt_translation_opt.value(); 
+    std::vector<float> t = rt_translation_opt.value();
 
-    float x = t[0];   
-    float y = t[1];   
+    float x = t[0];
+    float y = t[1];
 
     float distance_to_target = std::sqrt(x*x + y*y);
-    float angle_to_target = std::atan2(x, y);
+    float angle_to_target    = std::atan2(x, y);
 
-	float distance_error = distance_to_target - desired_distance;
+    float distance_error = 0.0f;
+    if (distance_to_target > 1e-3f)
+        distance_error = (distance_to_target - desired_distance) / distance_to_target;
 
     if (distance_error < 0.0f)
         distance_error = 0.0f;
 
-    float Kp_lin = 1.0f;
-    float Kp_ang = 1.0f;
+	float d_distance_error = 0.0f;
+	float d_angle_error    = 0.0f;
 
-    float linear_velocity  = Kp_lin * distance_error;
-    float angular_velocity = Kp_ang * angle_to_target;
+    auto now = std::chrono::steady_clock::now();
+	float dt = std::chrono::duration<float>(now - last_follow_time).count();
+	last_follow_time = now;
 
-    if (std::abs(angle_to_target) > 0.4f)
-        linear_velocity *= 0.3f;
+	if (dt > 1e-4f)
+	{
+		d_distance_error = (distance_error - prev_distance_error) / dt;
+		d_angle_error    = (angle_to_target - prev_angle_error)   / dt;
+	}
 
-    linear_velocity = std::clamp(
-        linear_velocity,
-        0.0f,
-        WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor
-    );
+	prev_distance_error = distance_error;
+	prev_angle_error    = angle_to_target;
 
-    angular_velocity = std::clamp(
-        angular_velocity,
-        -WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
-         WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
-    );
+    const float Kp_lin = 0.8f;
+    const float Kd_lin = 0.1f;   
 
-	if (print_extra_info)
-		std::cout << "Distance: " << distance_to_target
-				<< "  Error: " << distance_error
-				<< "  Angle: " << angle_to_target
-				<< "  Linear Vel: " << linear_velocity
-				<< "  Angular Vel: " << angular_velocity << std::endl;
+    const float Kp_ang = 1.0f;
+    const float Kd_ang = 0.1f;   
 
+	float linear_velocity  = Kp_lin * distance_error + Kd_lin * d_distance_error;
+	float angular_velocity = Kp_ang * angle_to_target + Kd_ang * d_angle_error;
+
+	float angle_attenuation = std::cos(std::clamp(angle_to_target, -HALF_PI, HALF_PI));
+	linear_velocity *= angle_attenuation;
+
+	linear_velocity = std::clamp(
+		linear_velocity,
+		0.0f,
+		WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor
+	);
+
+	angular_velocity = std::clamp(
+		angular_velocity,
+		-WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
+		WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
+	);
+
+    if (print_extra_info)
+        std::cout << "Distance: "    << distance_to_target
+                  << "  Error: "     << distance_error
+                  << "  dError/dt: " << d_distance_error
+                  << "  Angle: "     << angle_to_target
+                  << "  Linear Vel: "<< linear_velocity
+                  << "  Angular Vel:"<< angular_velocity << std::endl;
 
     G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
     G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
@@ -250,7 +283,18 @@ std::vector<float> SpecificWorker::auto_localization()
 		robot_pose[6] = quat.w();
 	}
 	else{
-		//Real robot localization code here
+		if (last_odometry.empty())
+			return robot_pose;
+			
+		robot_pose[0] = last_odometry[0];
+		robot_pose[1] = last_odometry[1];
+		robot_pose[2] = 0.0f;
+		Eigen::AngleAxisf rot_z(last_odometry[2], Eigen::Vector3f::UnitZ());
+		Eigen::Quaternionf quat(rot_z);
+		robot_pose[3] = quat.x();
+		robot_pose[4] = quat.y();
+		robot_pose[5] = quat.z();
+		robot_pose[6] = quat.w();
 	}
 
 	if (!has_significant_change(robot_pose, last_robot_pose))
@@ -351,11 +395,23 @@ bool SpecificWorker::has_significant_change(const std::vector<float>& a,
 
 void SpecificWorker::update_or_create_imu_node()
 {
+	std::vector<float> acceleration, angularVel;
 
-	auto acceleration_raw = this->imu_proxy->getAcceleration();
-	auto angularVel_raw = this->imu_proxy->getAngularVel();
-	std::vector<float> acceleration = {acceleration_raw.XAcc, acceleration_raw.YAcc, acceleration_raw.ZAcc};
-	std::vector<float> angularVel = {angularVel_raw.XGyr, angularVel_raw.YGyr, angularVel_raw.ZGyr};
+	try{
+		auto acceleration_raw = this->imu_proxy->getAcceleration();
+		auto angularVel_raw = this->imu_proxy->getAngularVel();
+
+		acceleration = {acceleration_raw.XAcc, acceleration_raw.YAcc, acceleration_raw.ZAcc};
+		angularVel = {angularVel_raw.XGyr, angularVel_raw.YGyr, angularVel_raw.ZGyr};
+
+	}catch(const Ice::Exception& ex)
+    {
+        std::cout <<"IMU proxy exception:"<< ex << std::endl;
+        throw;
+    }
+
+	if (acceleration.empty() || angularVel.empty())
+		return;	
 
 	if (auto imu_node_opt = G->get_node("imu"); imu_node_opt.has_value())
 	{
@@ -451,10 +507,123 @@ void SpecificWorker::stop_robot()
 #pragma endregion DSR
 
 //SUBSCRIPTION to newFullPose method from FullPoseEstimationPub interface
+// void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimation::FullPoseEuler pose)
+// {
+// 	if (simulated)
+// 		return;
+
+//     if (!std::isfinite(pose.y) || !std::isfinite(pose.rz))
+//     {
+//         std::cerr << "[FullPoseEstimationPub_newFullPose] WARNING: invalid pose received "
+//                   << "(y=" << pose.y << ", rz=" << pose.rz << "), skipping." << std::endl;
+//         return;
+//     }
+
+// 	float adv, last_x, last_y, last_theta;
+// 	adv = pose.y;
+
+// 	if (last_odometry.empty())
+// 	{
+// 		last_x = 0;
+// 		last_y = 0;
+// 		last_theta = 0;
+// 	}
+// 	else
+// 	{		
+// 		last_x = last_odometry[0];
+// 		last_y = last_odometry[1];
+// 		last_theta = last_odometry[2];
+// 	}
+
+// 		float theta = last_theta + pose.rz;
+// 		float x = adv * std::cos(theta) + last_x;
+// 		float y = adv * std::sin(theta) + last_y;
+
+// 		last_odometry = {x, y, theta};
+
+// 		if (print_extra_info){
+// 			std::cout << "[FullPoseEstimationPub_newFullPose]" << std::endl;
+// 			std::cout << "  Raw pose    -> y (adv): " << adv 
+// 					<< " | rz: " << pose.rz << std::endl;
+// 			std::cout << "  Last odom   -> x: " << last_x 
+// 					<< " | y: " << last_y 
+// 					<< " | theta: " << last_theta << std::endl;
+// 			std::cout << "  New odom    -> x: " << x 
+// 					<< " | y: " << y 
+// 					<< " | theta: " << theta << std::endl;
+// 		}
+// }
+
 void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimation::FullPoseEuler pose)
 {
-//subscribesToCODE
+    if (simulated)
+        return;
 
+    if (!std::isfinite(pose.vy) || !std::isfinite(pose.vx) || !std::isfinite(pose.vrz))
+    {
+        std::cerr << "[FullPoseEstimationPub_newFullPose] WARNING: invalid pose, skipping." << std::endl;
+        return;
+    }
+
+    // Calcular dt a partir del timestamp de la pose (viene en ms)
+    if (last_timestamp == 0)
+    {
+        last_timestamp = pose.timestamp;
+        last_odometry = {0.f, 0.f, 0.f};
+        return;
+    }
+
+    float dt = (pose.timestamp - last_timestamp) / 1000.f;
+    last_timestamp = pose.timestamp;
+
+    if (dt <= 0.f || dt > 1.f)
+    {
+        std::cerr << "[FullPoseEstimationPub_newFullPose] WARNING: anomalous dt=" << dt << ", skipping." << std::endl;
+        return;
+    }
+
+    // Ventana deslizante de velocidades
+    velocity_window.push_back({pose.vx, pose.vy, pose.vrz});
+    if (velocity_window.size() > ODOMETRY_WINDOW_SIZE)
+        velocity_window.pop_front();
+
+    if (velocity_window.size() < ODOMETRY_WINDOW_SIZE)
+        return;
+
+    float avg_vx = 0.f, avg_vy = 0.f, avg_vrz = 0.f;
+    for (const auto& [vx, vy, vrz] : velocity_window)
+    {
+        avg_vx  += vx;
+        avg_vy  += vy;
+        avg_vrz += vrz;
+    }
+    avg_vx  /= ODOMETRY_WINDOW_SIZE;
+    avg_vy  /= ODOMETRY_WINDOW_SIZE;
+    avg_vrz /= ODOMETRY_WINDOW_SIZE;
+
+	if (std::abs(avg_vy) < LINEAR_VELOCITY_DEADBAND) avg_vy = 0.f;
+	if (std::abs(avg_vx) < LINEAR_VELOCITY_DEADBAND) avg_vx = 0.f;
+	if (std::abs(avg_vrz) < ANGULAR_VELOCITY_DEADBAND) avg_vrz = 0.f;
+
+    float last_x     = last_odometry[0];
+    float last_y     = last_odometry[1];
+    float last_theta = last_odometry[2];
+
+	float theta = last_theta + avg_vrz * dt;
+	float x     = last_x + (avg_vy * std::sin(last_theta) + avg_vx * std::cos(last_theta)) * dt;
+	float y     = last_y + (avg_vy * std::cos(last_theta) - avg_vx * std::sin(last_theta)) * dt;
+
+    last_odometry = {x, y, theta};
+
+    if (print_extra_info)
+    {
+        std::cout << "[FullPoseEstimationPub_newFullPose]\n"
+                  << "  Raw vel    -> vy: " << pose.vy  << " | vx: " << pose.vx  << " | vrz: " << pose.vrz << "\n"
+                  << "  Avg vel    -> vy: " << avg_vy   << " | vx: " << avg_vx   << " | vrz: " << avg_vrz  << "\n"
+                  << "  dt         -> " << dt << " s\n"
+                  << "  Last odom  -> x: " << last_x    << " | y: " << last_y    << " | theta: " << last_theta << "\n"
+                  << "  New odom   -> x: " << x         << " | y: " << y         << " | theta: " << theta << std::endl;
+    }
 }
 
 

@@ -21,6 +21,9 @@ DEFAULT_CATALOG_PATH = REPO_ROOT / "etc" / "intervention_catalog.json"
 
 NOMINAL_HYPOTHESIS_ID = "__nominal__"
 
+# The catalog speaks meters; the causes simulator places bodies in millimeters.
+M_TO_MM = 1000.0
+
 
 class HypothesisCompilationError(ValueError):
     """Raised when a testable hypothesis cannot be mapped to a cause payload."""
@@ -68,8 +71,8 @@ def _compile_spawn_static_object(params: dict[str, Any], blueprint: dict[str, An
     }
     for axis in ("x", "y", "z"):
         origin, span = _range_to_origin_span(position_range[axis])
-        payload[f"bump_{axis}_origin"] = origin
-        payload[f"bump_{axis}_range"] = span
+        payload[f"bump_{axis}_origin"] = origin * M_TO_MM
+        payload[f"bump_{axis}_range"] = span * M_TO_MM
     return payload
 
 

@@ -1,12 +1,12 @@
-import "VisualElementsPub.idsl";
+import "ImageSegmentation.idsl";
 import "Webots2Robocomp.idsl";
+import "Lidar3D.idsl";
 
 Component concept_bottle
 {
     Communications
     {   
-        requires Webots2Robocomp;
-        subscribesTo VisualElementsPub;
+        requires Webots2Robocomp, Lidar3D, ImageSegmentation;
     };
     language Cpp11;
     options dsr;

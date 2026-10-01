@@ -159,9 +159,25 @@ private:
 	std::vector<float> last_velocities_readed;
 	std::vector<float> last_robot_pose;
 
+	std::vector<float> last_odometry;
+
+	static constexpr float HALF_PI = std::numbers::pi_v<float> / 2.0f;
+
+	float desired_distance;
+
+	float prev_distance_error;
+	float prev_angle_error;
+	std::chrono::steady_clock::time_point last_follow_time;
+
 	bool print_extra_info = false;
-	bool simulated = true;
+	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
+
+	static constexpr int ODOMETRY_WINDOW_SIZE = 5;
+	static constexpr float LINEAR_VELOCITY_DEADBAND  = 2.f;    // mm/s
+	static constexpr float ANGULAR_VELOCITY_DEADBAND = 0.01f;  // rad/s
+	std::deque<std::tuple<float, float, float>> velocity_window;
+	long long last_timestamp = 0;
 
 	std::unique_ptr<DSR::RT_API> rt;
 

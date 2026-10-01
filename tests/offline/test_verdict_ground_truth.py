@@ -27,16 +27,17 @@ from src.verdict import NOMINAL_HYPOTHESIS_ID, build_verdict, write_verdict
 
 WORKDIR = Path(tempfile.mkdtemp(prefix="insight_verdict_test_"))
 
+# Positions in millimeters, as the causes simulator expects (see SimulationScene).
 SCENE = {
     "gravity": -9.81,
-    "initial_robot_position": [-3.7, -0.3, 0.0325],
+    "initial_robot_position": [-3700.0, -300.0, 32.5],
     "initial_robot_orientation": [0.0, 0.0, 0.0, 1.0],
-    "problem_position": [-1.7, -0.3, 0.03],
+    "problem_position": [-1700.0, -300.0, 30.0],
     "problem_orientation": [0.0, 0.0, 0.0, 1.0],
     "simulation_length": 4.0,
     "list_of_target_velocities": {"timestamp": [0.0], "adv_speed": [0.5]},
     "num_of_repetitions": 4,
-    "bottle_position": [-3.65, -0.19, 0.795],
+    "bottle_position": [-3650.0, -190.0, 795.0],
     "bottle_orientation": [0.0, 0.0, 0.0, 0.0],
 }
 
@@ -51,8 +52,9 @@ ENTRIES = [
     {"hypothesis_id": NOMINAL_HYPOTHESIS_ID, "title": "Nominal", "cause": {"name": "none"}},
     {"hypothesis_id": "EXT_bump", "title": "Bump", "cause": {
         "name": "bump", "bump_file": str(REPO / "etc/URDFs/bump/bump_100x5cm.urdf"),
-        "bump_x_range": 0.6, "bump_y_range": 0.2, "bump_z_range": 0.0,
-        "bump_x_origin": -2.9, "bump_y_origin": -0.3, "bump_z_origin": 0.004}},
+        "bump_x_range": 600.0, "bump_y_range": 200.0, "bump_z_range": 0.0,
+        "bump_x_origin": -2900.0, "bump_y_origin": -300.0, "bump_z_origin": 4.0,
+        "grid_dimensions": [2, 2]}},
     {"hypothesis_id": "INT_wheel", "title": "Wheel", "cause": {
         "name": "wheel", "wheel_wheel": "BR", "wheel_min": 0.3, "wheel_max": 0.6}},
     {"hypothesis_id": "EXT_force", "title": "Force on bottle", "cause": dict(GROUND_TRUTH_CAUSE)},
@@ -86,7 +88,7 @@ def main():
     scene_path = WORKDIR / "scene.json"
 
     truth = run_cause(GROUND_TRUTH_CAUSE, scene_path, logger, reps=1)[0]
-    assert truth["bottle_position"][2] < 0.4, "ground truth should knock the bottle down"
+    assert truth["bottle_position"][2] < 400.0, "ground truth should knock the bottle down"
 
     historicals = [run_cause(e["cause"], scene_path, logger, reps=4) for e in ENTRIES]
     verdict = build_verdict(

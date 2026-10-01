@@ -149,10 +149,10 @@ public slots:
 	bool check_affordance_active();
 
 	/**
-	 * \brief Calculate the relative pose between the robot and the person
-	 * \return Return a vector with the relative pose (x, y, z, qx, qy, qz, qw)
+	 * \brief Calculate the relative position between the robot and the person
+	 * \return Return a vector with the relative position (x, y, z)
 	 */
-	std::vector<float> get_person_relative_pose();
+	std::vector<float> get_person_relative_position();
 
 	/**
 	 * \brief Compare whether two vectors are too similar to avoid publishing the same data twice.
@@ -161,10 +161,11 @@ public slots:
 	bool has_significant_change(const std::vector<float>& a,const std::vector<float>& b,double atol=0.001);
 
 	/**
-	 * \brief Update the relative pose between the robot and the person in the DSR
-	 * \param relative_pose The relative pose between the robot and the person
+	 * \brief Update the relative position between the robot and the person in the DSR
+	 * \param relative_position The relative position between the robot and the person
+	 * \return True if the position was actually updated in DSR
 	 */
-	void update_relative_pose_to_person(std::vector<float> relative_pose);
+	bool update_relative_position_to_person(const std::vector<float>& relative_position);
 
 	/**
 	 * \brief Calculate the speed that the robot must have to reach the person
@@ -185,7 +186,14 @@ private:
 	 */
 	bool print_extra_info = false;
 
-	std::vector<float> last_relative_pose = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // {x, y, z, qx, qy, qz, qw}
+	bool simulated = configLoader.get<bool>("Simulated");
+
+	std::vector<float> last_relative_pose = {0.0f, 0.0f, 0.0f}; // {x, y, z}
+	std::vector<float> pending_relative_position = {0.0f, 0.0f, 0.0f};
+	int consecutive_large_jump_confirmations = 0;
+	int required_large_jump_confirmations = 3;
+	float large_jump_threshold = 1000.0f; // millimeters
+	float large_jump_candidate_tolerance = 200.0f; // millimeters
 
 signals:
 	//void customSignal();

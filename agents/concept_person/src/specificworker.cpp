@@ -41,8 +41,6 @@ SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, 
 			throw error;
 		}
 	}
-
-	rt = G->get_rt_api();
 }
 
 SpecificWorker::~SpecificWorker()
@@ -79,19 +77,22 @@ void SpecificWorker::initialize()
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
 
-	last_relative_pose = get_person_relative_pose();
+	rt = G->get_rt_api();
+
+	last_relative_pose = get_person_relative_position();
 }
 
 
 
 void SpecificWorker::compute()
 {
-	auto relative_pose = get_person_relative_pose();
+	auto relative_position = get_person_relative_position();
 
 
-	if (has_significant_change(relative_pose, last_relative_pose)){
-		update_relative_pose_to_person(relative_pose);
-		last_relative_pose = relative_pose;
+	if (has_significant_change(relative_position, last_relative_pose)){
+		if (update_relative_position_to_person(relative_position)){
+			last_relative_pose = relative_position;
+		}
 	}
 
 	switch (agentState){
@@ -185,37 +186,70 @@ bool SpecificWorker::has_significant_change(const std::vector<float>& a,
     return false;
 }
 
-std::vector<float> SpecificWorker::get_person_relative_pose()
+std::vector<float> SpecificWorker::get_person_relative_position()
 {
-    auto person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
-    auto robot_pose  = this->webots2robocomp_proxy->getObjectPose(robot_def);
+	std::vector<float> relative_position = {0.0f, 0.0f, 0.0f};
 
-    Eigen::Vector3f p_pos(person_pose.position.x / 1000.f, 
-                          person_pose.position.y / 1000.f, 
-                          person_pose.position.z / 1000.f);
-                          
-    Eigen::Vector3f r_pos(robot_pose.position.x / 1000.f, 
-                          robot_pose.position.y / 1000.f, 
-                          robot_pose.position.z / 1000.f);
+	if (simulated){
+		auto person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
+		auto robot_pose  = this->webots2robocomp_proxy->getObjectPose(robot_def);
 
-    Eigen::Quaternionf p_quat(person_pose.orientation.w, person_pose.orientation.x, 
-                              person_pose.orientation.y, person_pose.orientation.z);
-                              
-    Eigen::Quaternionf r_quat(robot_pose.orientation.w, robot_pose.orientation.x, 
-                              robot_pose.orientation.y, robot_pose.orientation.z);
+		std::vector<float> p_pos = {person_pose.position.x / 1000.f,
+						 person_pose.position.y / 1000.f,
+						 person_pose.position.z / 1000.f};
+		std::vector<float> r_pos = {robot_pose.position.x / 1000.f,
+						 robot_pose.position.y / 1000.f,
+						 robot_pose.position.z / 1000.f};
 
-	p_quat.normalize();
-	r_quat.normalize();
+		relative_position = {p_pos[0] - r_pos[0], p_pos[1] - r_pos[1], p_pos[2] - r_pos[2]};
+	}
+	else{
+		auto segmented_objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
 
+		std::vector<std::vector<float>> person_positions;
 
-    Eigen::Vector3f relative_pos = r_quat.inverse() * (p_pos - r_pos);
+		for (const auto& obj : segmented_objects){
+			if (obj.label == "person"){
+				auto point_cloud = obj.points3D;
+				if (!point_cloud.X.empty()){
+					person_positions.push_back(std::vector<float>{point_cloud.X[0], point_cloud.Y[0], point_cloud.Z[0]});
+				}
+			}
+		}
 
-    Eigen::Quaternionf relative_quat = r_quat.inverse() * p_quat;
+		if (!person_positions.empty()){
+			// Tolerance in mm: if two people are within this distance, prefer the one more centered
+			const float distance_tolerance_mm = 150.0f; 
+			auto best_person = person_positions[0];
+			auto best_distance_sq = best_person[0]*best_person[0] + best_person[1]*best_person[1] + best_person[2]*best_person[2];
 
-    return {
-        relative_pos.x(), relative_pos.y(), relative_pos.z(),
-        relative_quat.x(), relative_quat.y(), relative_quat.z(), relative_quat.w()
-    };
+			auto best_center_offset = std::abs(best_person[0]);
+
+			for (const auto& pos : person_positions){
+				float distance_sq = pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2];
+				// If clearly closer (beyond tolerance), this is the new best
+				if (distance_sq + distance_tolerance_mm * distance_tolerance_mm < best_distance_sq){
+					best_person = pos;
+					best_distance_sq = distance_sq;
+					best_center_offset = std::abs(pos[0]);
+				}
+				// If within tolerance (similar distance), prefer the more centered one
+				else if (std::abs(distance_sq - best_distance_sq) <= distance_tolerance_mm * distance_tolerance_mm){
+					auto center_offset = std::abs(pos[0]);
+					// Prefer less offset from center; if tied, prefer less vertical offset
+					if (center_offset < best_center_offset ||
+					    (center_offset == best_center_offset && std::abs(pos[1]) < std::abs(best_person[1]))){
+						best_person = pos;
+						best_center_offset = center_offset;
+					}
+				}
+			}
+
+			relative_position = {best_person[0], best_person[1], best_person[2]};
+		}
+	}
+
+	return relative_position;
 }
 
 
@@ -338,7 +372,7 @@ bool SpecificWorker::check_affordance_accepted()
 	}
 }
 
-void SpecificWorker::update_relative_pose_to_person(std::vector<float> relative_pose)
+bool SpecificWorker::update_relative_position_to_person(const std::vector<float>& relative_position)
 {
 	auto optional_robot_node = G->get_node("robot");
     auto optional_person_node = G->get_node("person");
@@ -346,30 +380,52 @@ void SpecificWorker::update_relative_pose_to_person(std::vector<float> relative_
     if (!optional_robot_node || !optional_person_node)
     {
         std::cout << "Robot or Person node not found in DSR." << std::endl;
-        return;
+        return false;
     }
+
+	if (relative_position.size() != 3)
+	{
+		std::cout << "Invalid relative position size." << std::endl;
+		return false;
+	}
+
+	float dx = relative_position[0] - last_relative_pose[0];
+	float dy = relative_position[1] - last_relative_pose[1];
+	float dz = relative_position[2] - last_relative_pose[2];
+	float jump_distance = std::sqrt(dx*dx + dy*dy + dz*dz);
+
+	if (jump_distance > large_jump_threshold)
+	{
+		float pdx = relative_position[0] - pending_relative_position[0];
+		float pdy = relative_position[1] - pending_relative_position[1];
+		float pdz = relative_position[2] - pending_relative_position[2];
+		float pending_distance = std::sqrt(pdx*pdx + pdy*pdy + pdz*pdz);
+
+		if (pending_distance > large_jump_candidate_tolerance)
+		{
+			pending_relative_position = relative_position;
+			consecutive_large_jump_confirmations = 1;
+			if (print_extra_info)
+				std::cout << "Large jump detected, waiting for confirmation (1/" << required_large_jump_confirmations << ")" << std::endl;
+			return false;
+		}
+		else
+		{
+			consecutive_large_jump_confirmations++;
+			if (print_extra_info)
+				std::cout << "Large jump confirmation " << consecutive_large_jump_confirmations << "/" << required_large_jump_confirmations << std::endl;
+			if (consecutive_large_jump_confirmations < required_large_jump_confirmations)
+				return false;
+		}
+	}
 
 	auto robot_node = optional_robot_node.value();
 	auto person_node = optional_person_node.value();
-
-	auto rt_edge_opt = rt->get_edge_RT(robot_node, person_node.id());
-	if (!rt_edge_opt.has_value())
-	{
-		DSR::Edge new_rt_edge;
-		new_rt_edge.from(robot_node.id());
-		new_rt_edge.to(person_node.id());
-		new_rt_edge.type("RT");
-		G->add_or_modify_attrib_local<rt_translation_att>(new_rt_edge, (std::vector<float>){relative_pose[0], relative_pose[1], relative_pose[2]});
-		G->add_or_modify_attrib_local<rt_quaternion_att>(new_rt_edge, (std::vector<float>){relative_pose[3], relative_pose[4], relative_pose[5], relative_pose[6]});
-		G->insert_or_assign_edge(new_rt_edge);
-	}
-	else
-	{
-		DSR::Edge rt_edge = rt_edge_opt.value();
-		G->add_or_modify_attrib_local<rt_translation_att>(rt_edge, (std::vector<float>){relative_pose[0], relative_pose[1], relative_pose[2]});
-		G->add_or_modify_attrib_local<rt_quaternion_att>(rt_edge, (std::vector<float>){relative_pose[3], relative_pose[4], relative_pose[5], relative_pose[6]});
-		G->insert_or_assign_edge(rt_edge);
-	}
+	rt->insert_or_assign_edge_RT(robot_node, person_node.id(), relative_position, {0.0f, 0.0f, 0.0f});
+	last_relative_pose = relative_position;
+	consecutive_large_jump_confirmations = 0;
+	pending_relative_position = last_relative_pose;
+	return true;
 }
 
 
@@ -453,6 +509,22 @@ void SpecificWorker::VisualElementsPub_setVisualObjects(RoboCompVisualElementsPu
 }
 
 
+
+/**************************************/
+// From the RoboCompImageSegmentation you can call this methods:
+// RoboCompImageSegmentation::TData this->imagesegmentation_proxy->getAll(bool points3d, bool rgb)
+// RoboCompImageSegmentation::TDepth this->imagesegmentation_proxy->getDepth()
+// RoboCompImageSegmentation::TImage this->imagesegmentation_proxy->getImage()
+// RoboCompImageSegmentation::ObjectList this->imagesegmentation_proxy->getSegmentedObjects(bool points3d, bool rgb)
+
+/**************************************/
+// From the RoboCompImageSegmentation you can use this types:
+// RoboCompImageSegmentation::PointCloud
+// RoboCompImageSegmentation::Polygon
+// RoboCompImageSegmentation::SegmentedObject
+// RoboCompImageSegmentation::TImage
+// RoboCompImageSegmentation::TDepth
+// RoboCompImageSegmentation::TData
 
 /**************************************/
 // From the RoboCompWebots2Robocomp you can call this methods:
