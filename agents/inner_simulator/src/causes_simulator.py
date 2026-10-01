@@ -166,7 +166,9 @@ class CausesSimulator:
         if gui:
             p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
             p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15, cameraTargetPosition=[0.8, -0.9, 0.2])
-        self.dt = 1./120.
+        # 1/120 made the nominal replay knock the bottle off the tray with the stepwise
+        # speed profile of the PD follow controller, so every hypothesis matched the null one.
+        self.dt = 1./62.
         p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1, numSolverIterations=20)
         self.flags = p.URDF_USE_INERTIA_FROM_FILE
 
