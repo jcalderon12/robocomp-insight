@@ -228,6 +228,38 @@ def commanded_speed_history(mem_api, until_ns: Optional[int] = None) -> Optional
     return history
 
 
+def real_imu_history(mem_api, list_of_ts: list) -> Optional[dict]:
+    """The recorded IMU resampled at the simulation timestamps (seconds from the first
+    IMU event): each sample takes the last recorded value at or before it."""
+    if not mem_api.is_ready():
+        return None
+    imu_events = mem_api.get_node_history_by_name("imu")
+    history = {TIMESTAMP: [], "accelerometer": [], "gyroscope": []}
+    if not imu_events:
+        return history
+    initial_ts = imu_events[0].timestamp
+    samples = [
+        (event.timestamp - initial_ts,
+         event.attributes["imu_accelerometer"].value if "imu_accelerometer" in event.attributes else None,
+         event.attributes["imu_gyroscope"].value if "imu_gyroscope" in event.attributes else None)
+        for event in imu_events if event.modification_type == "MNA"
+    ]
+    samples.sort(key=lambda sample: sample[0])
+    times = [sample[0] for sample in samples]
+    last_acc, last_gyro = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+    for ts in list_of_ts:
+        index = int(np.searchsorted(times, int(ts * 1e9), side="right")) - 1
+        if index < 0:
+            continue
+        _, acc, gyro = samples[index]
+        last_acc = acc if acc is not None else last_acc
+        last_gyro = gyro if gyro is not None else last_gyro
+        history[TIMESTAMP].append(int(ts * 1e9) * 1e-9)
+        history["accelerometer"].append(last_acc)
+        history["gyroscope"].append(last_gyro)
+    return history
+
+
 def _find_node_id_in_keyframes(mem_api, name: str):
     """Node id by name, looking through every keyframe (a node may appear late)."""
     for index in range(mem_api.get_keyframe_count()):

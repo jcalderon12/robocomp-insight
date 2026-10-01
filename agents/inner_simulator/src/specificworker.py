@@ -76,6 +76,9 @@ from src.simulation_scene import SimulationScene
 from src.logger import Logger
 from src.episode_scene import (
     build_simulation_scene,
+    commanded_speed_history,
+    episode_length_s,
+    real_imu_history,
 )
 from src.hypothesis_compiler import compile_batch
 from src.verdict import build_verdict, write_verdict, save_comparison_plots, save_real_imu_plot
@@ -874,52 +877,12 @@ class SpecificWorker(GenericWorker):
                 - dict: with keys "timestamp" and "adv_speed", each one with a list of values for each timestamp found in the episodic memory.
                 - None: if episodic memory is not ready.
         """
-        self.robot_adv_speed_history = {}
-        self.robot_adv_speed_history[TIMESTAMP] = []
-        self.robot_adv_speed_history[ADV_SPEED] = []
-        if self.mem_api.is_ready():
-            robot_events = self.mem_api.get_node_history_by_name("robot")
-            initial_ts = robot_events[0].timestamp
-            
-            # # Print statistics of type of events in robot history
-            # event_types = {}
-            # for event in robot_events:
-            #     if event.modification_type not in event_types:
-            #         event_types[event.modification_type] = 1
-            #     else:
-            #         event_types[event.modification_type] += 1
-            # self.logger.log(f"Robot events in episodic memory by modification type:", style="bold blue")
-            # for mod_type in event_types:
-            #     self.logger.log(f"    Type {mod_type}: {event_types[mod_type]} events", style="blue")
-                      
-            # # Filter by modification type "K" (Keyframe)
-            # robot_events = [event for event in robot_events if event.modification_type == "K" and "robot_ref_adv_speed" in event.attributes]
-            # self.logger.log(f"Found {len(robot_events)} robot events in episodic memory with modification type K related to robot_ref_adv_speed.", style="bold blue")
-            # for event in robot_events:
-            #     corrected_ts = event.timestamp - initial_ts
-            #     event.timestamp = corrected_ts
-            #     if event.attributes.get("robot_ref_adv_speed") is not None:
-            #         self.robot_adv_speed_history[TIMESTAMP].append(corrected_ts * 1e-9)
-            #         self.robot_adv_speed_history[ADV_SPEED].append(event.attributes["robot_ref_adv_speed"].value)
-            #     break
-            
-            # Filter by modification type "MNA" (Modified Node Attribute)
-            robot_events = self.mem_api.get_node_history_by_name("robot")
-            robot_events = [event for event in robot_events if event.modification_type == "MNA" and "robot_ref_adv_speed" in event.attributes]
-            for event in robot_events:
-                corrected_ts = event.timestamp - initial_ts
-                event.timestamp = corrected_ts
-                if event.attributes.get("robot_ref_adv_speed") is not None:
-                    self.robot_adv_speed_history[TIMESTAMP].append(corrected_ts * 1e-9)
-                    self.robot_adv_speed_history[ADV_SPEED].append(event.attributes["robot_ref_adv_speed"].value)
-
-            
-            self.logger.log(f"Robot speeds loaded from epidodic memory",style="bold blue")
-                    
-            return self.robot_adv_speed_history
-        else:
+        self.robot_adv_speed_history = commanded_speed_history(self.mem_api)
+        if self.robot_adv_speed_history is None:
             self.logger.log("Episodic Memory API is not ready!", style="bold red")
             return None
+        self.logger.log(f"Robot speeds loaded from epidodic memory",style="bold blue")
+        return self.robot_adv_speed_history
 
     
     def convert_episodic_to_imu_history(self, list_of_ts: list) -> dict | None:
@@ -930,66 +893,24 @@ class SpecificWorker(GenericWorker):
                 - dict: with keys "timestamp", "accelerometer" and "gyroscope", each one with a list of values for each timestamp in the list_of_ts.
                 - None: if episodic memory is not ready.
         """
-        self.imu_history = {}
-        self.imu_history[TIMESTAMP] = []
-        self.imu_history[ACCELEROMETER] = []
-        self.imu_history[GYROSCOPE] = []
-        
-        if self.mem_api.is_ready():
-            # Download the event list
-            imu_events = self.mem_api.get_node_history_by_name("imu")
-            initial_ts = imu_events[0].timestamp
-            # Filter by modification type "MNA" (Modified Node Attribute)
-            imu_events = [event for event in imu_events if event.modification_type == "MNA"]
-            initial_acc = [0.0,0.0,0.0]
-            initial_gyro = [0.0,0.0,0.0]
-            
-            self.logger.log(f"Found {len(imu_events)} IMU events in episodic memory with modification type MNA.", style="bold blue")
-
-            # Correct each ts of the event list
-            for event in imu_events:
-                corrected_ts = event.timestamp - initial_ts
-                event.timestamp = corrected_ts
-
-
-            # Recreate event history to imy history format
-            for ts in list_of_ts:
-                # Convert ts (seconds) to nanoseconds
-                ts = int(ts * 1e9)
-                # Get the value of acc and gyro from the closest timestamp before ts (using lambda function)
-                candidates = [event for event in imu_events if event.timestamp <= ts]
-                closest_event = min(candidates, key=lambda event: abs(event.timestamp - ts), default=None)
-                if closest_event is not None:
-                    acc = closest_event.attributes["imu_accelerometer"].value if "imu_accelerometer" in closest_event.attributes else initial_acc
-                    gyro = closest_event.attributes["imu_gyroscope"].value if "imu_gyroscope" in closest_event.attributes else initial_gyro
-                    self.logger.log(f"Bonding IMU history ts:{ts} <==> episodic event ts:{closest_event.timestamp+initial_ts} USING acc {acc} // gyro {gyro} (there were {len(candidates)} candidates).", style="purple")
-                    initial_acc = acc
-                    initial_gyro = gyro
-                    self.imu_history[TIMESTAMP].append(ts * 1e-9) # Convert back to seconds for easier handling
-                    self.imu_history[ACCELEROMETER].append(acc)
-                    self.imu_history[GYROSCOPE].append(gyro)
-                else:
-                    acc = initial_acc
-                    gyro = initial_gyro
-                    self.logger.log(f"No IMU event found in episodic memory for or before timestamp {ts}. Using last known values: acc {acc} and gyro {gyro}.", style="yellow")
-             
-    
-            os.makedirs("logs/imu_raw", exist_ok=True)
-            timestamp = time.strftime('%Y%m%d_%H%M%S')
-            filepath = f"logs/imu_raw/episodic_imu_{timestamp}.json"
-            history_to_save = {
-                k: [v.tolist() if isinstance(v, np.ndarray) else v for v in values]
-                for k, values in self.imu_history.items()
-            }
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(history_to_save, f)
-            self.logger.log(f"Episodic IMU history saved to '{filepath}'", style="bold cyan")
-
-
-            self.logger.log(f"Converted {len(imu_events)} imu events to IMU history format ({len(self.imu_history[TIMESTAMP])} frames).", style="bold blue")
-        else:
+        self.imu_history = real_imu_history(self.mem_api, list_of_ts)
+        if self.imu_history is None:
+            self.imu_history = {TIMESTAMP: [], ACCELEROMETER: [], GYROSCOPE: []}
             self.logger.log("Episodic Memory API is not ready! WTF?", style="bold red")
             return
+
+        os.makedirs("logs/imu_raw", exist_ok=True)
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        filepath = f"logs/imu_raw/episodic_imu_{timestamp}.json"
+        history_to_save = {
+            k: [v.tolist() if isinstance(v, np.ndarray) else v for v in values]
+            for k, values in self.imu_history.items()
+        }
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(history_to_save, f)
+        self.logger.log(f"Episodic IMU history saved to '{filepath}'", style="bold cyan")
+        self.logger.log(f"Converted episodic IMU to IMU history format ({len(self.imu_history[TIMESTAMP])} frames).", style="bold blue")
+        return self.imu_history
 
 
     def get_simulation_length_from_episodic_memory(self) -> float | None:
@@ -998,21 +919,15 @@ class SpecificWorker(GenericWorker):
                 - float: length of the simulation in seconds.
                 - None: if not available.
         """
-        if self.mem_api.is_ready():
-            imu_events = self.mem_api.get_node_history_by_name("imu")
-            if len(imu_events) > 0:
-                last_ts = imu_events[-1].timestamp
-                initial_ts = imu_events[0].timestamp
-                simulation_length = (last_ts - initial_ts) * 1e-9 # Convert from nanoseconds to seconds
-                self.logger.log(f"Simulation length obtained from episodic memory:{simulation_length} seconds.",style="bold blue")
-                return simulation_length
-            else:
-                self.logger.log("No IMU events found in episodic memory!",style="bold red")
-
-                return None
-        else:
+        if not self.mem_api.is_ready():
             self.logger.log("Episodic Memory API is not ready! WTF?", style="bold red")
-            return None   
+            return None
+        simulation_length = episode_length_s(self.mem_api)
+        if simulation_length is None:
+            self.logger.log("No IMU events found in episodic memory!",style="bold red")
+            return None
+        self.logger.log(f"Simulation length obtained from episodic memory:{simulation_length} seconds.",style="bold blue")
+        return simulation_length
         
     def get_robot_positions_relative_to_problem(self) -> dict[str, list[float]] | None:
         """
