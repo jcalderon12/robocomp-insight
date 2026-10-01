@@ -531,6 +531,8 @@ class SpecificWorker(GenericWorker):
                         f"Window: {verdict['anomaly_window']}.",
                         style="bold green" if accepted_id else "bold yellow",
                     )
+                    if verdict.get("abstention_reason"):
+                        self.logger.log(f"Verdict abstained: {verdict['abstention_reason']}.", style="bold red")
 
                     # Synthesize detector agent templates only for accepted causes
                     accepted_causes = {

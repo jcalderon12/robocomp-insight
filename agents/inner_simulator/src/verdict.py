@@ -4,11 +4,19 @@ A hypothesis is accepted iff one of its repetitions (a) reproduces the observed
 effect (the bottle leaves the tray) and (b) fits the real IMU no worse than the
 nominal run does, within a margin. Accepted hypotheses are ranked by IMU score
 (normalized RMSE over the anomaly window of the real episode).
+
+Safeguards:
+  * repetitions where the physics blew up (bottle through the floor, robot base
+    launched) or an obstacle was placed overlapping the robot are discarded, and
+    an effect only counts when the bottle lands near the robot;
+  * when the nominal run already reproduces the effect, nothing is accepted: the
+    comparison cannot tell any hypothesis from "nothing happened".
 """
 
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,6 +30,10 @@ GYROSCOPE = "gyroscope"
 HISTORY = "history"
 GENERATED_INSTANCES = "generated_instances"
 BOTTLE_POSITION = "bottle_position"
+FALL_TIME = "fall_time"
+ROBOT_POSITION_AT_FALL = "robot_position_at_fall"
+ROBOT_FINAL_POSITION = "robot_final_position"
+SPAWN_OVERLAP = "spawn_overlap"
 
 DEFAULT_MARGIN = 0.15
 DEFAULT_SCORE_TOLERANCE = 0.05
@@ -36,6 +48,20 @@ _EPS = 1e-9
 # by 0.06-1.0 s.
 OBSERVED_EFFECT_LOOKBACK_S = 3.0
 OBSERVED_EFFECT_LOOKAHEAD_S = 0.5
+
+# Physical plausibility of a repetition (millimeters, like the simulator output).
+# A bottle lying on the floor sits at z ~ 25 mm; the robot base stays near it.
+FLOOR_TOLERANCE_MM = 50.0
+ROBOT_Z_RANGE_MM = (-100.0, 1000.0)
+# A bottle knocked off the tray lands next to the robot. Farther away means it was
+# flung by a solver explosion or by a push far stronger than a real one. Calibrated
+# on three recorded episodes (corrected replay, 10 repetitions each): falls
+# caused by obstacles land within 1.1 m and by pushes on the robot within 2.4 m,
+# while +-20 N held on the bottle for 40 % of the horizon (what the LLM proposes)
+# sends it 84-294 m away.
+MAX_LANDING_DISTANCE_MM = 3000.0
+
+ABSTAIN_NOMINAL_REPRODUCES_EFFECT = "nominal_reproduces_effect"
 
 
 def _safe_filename(text: str) -> str:
@@ -147,6 +173,49 @@ def effect_reproduced(repetition: dict, initial_bottle_z: float, z_fraction: flo
     return float(final_position[2]) < z_fraction * initial_bottle_z
 
 
+def _finite(values) -> bool:
+    return values is not None and len(values) >= 3 and all(math.isfinite(float(v)) for v in values)
+
+
+def physical_problem(repetition: dict) -> Optional[str]:
+    """Why a repetition is not physically meaningful, or None when it is.
+    Repetitions from before these fields existed only get the bottle checks."""
+    if repetition.get(SPAWN_OVERLAP):
+        return "obstacle placed overlapping the robot or the bottle"
+    bottle = repetition.get(BOTTLE_POSITION)
+    if not _finite(bottle):
+        return "bottle pose missing or not finite"
+    if float(bottle[2]) < -FLOOR_TOLERANCE_MM:
+        return "bottle ended below the floor"
+    robot = repetition.get(ROBOT_FINAL_POSITION)
+    if robot is not None:
+        if not _finite(robot):
+            return "robot pose not finite"
+        if not ROBOT_Z_RANGE_MM[0] <= float(robot[2]) <= ROBOT_Z_RANGE_MM[1]:
+            return "robot base left the floor"
+    return None
+
+
+def landing_distance_mm(repetition: dict) -> Optional[float]:
+    """Horizontal distance from the robot, when the bottle fell, to where it ended."""
+    bottle = repetition.get(BOTTLE_POSITION)
+    robot = repetition.get(ROBOT_POSITION_AT_FALL)
+    if not _finite(bottle) or not _finite(robot):
+        return None
+    return float(math.hypot(float(bottle[0]) - float(robot[0]), float(bottle[1]) - float(robot[1])))
+
+
+def plausible_effect(repetition: dict, initial_bottle_z: float, z_fraction: float = DEFAULT_EFFECT_Z_FRACTION) -> bool:
+    """The effect is reproduced by a physically meaningful repetition, and the bottle
+    landed next to the robot."""
+    if physical_problem(repetition) is not None:
+        return False
+    if not effect_reproduced(repetition, initial_bottle_z, z_fraction):
+        return False
+    distance = landing_distance_mm(repetition)
+    return distance is None or distance <= MAX_LANDING_DISTANCE_MM
+
+
 def build_verdict(
     case_id: str,
     real_imu: dict,
@@ -175,11 +244,22 @@ def build_verdict(
     for entry, repetitions in zip(entries, historicals):
         rep_scores = []
         rep_effects = []
+        problems = []
+        implausible_effects = 0
         for repetition in repetitions:
-            rep_scores.append(score_repetition(real_window, acc_std, gyro_std, repetition[HISTORY]))
-            rep_effects.append(effect_reproduced(repetition, initial_bottle_z, effect_z_fraction))
+            problem = physical_problem(repetition)
+            problems.append(problem)
+            # A blown-up repetition says nothing about the hypothesis: no score, no effect.
+            rep_scores.append(
+                float("inf") if problem else score_repetition(real_window, acc_std, gyro_std, repetition[HISTORY])
+            )
+            effect = plausible_effect(repetition, initial_bottle_z, effect_z_fraction)
+            rep_effects.append(effect)
+            if not problem and not effect and effect_reproduced(repetition, initial_bottle_z, effect_z_fraction):
+                implausible_effects += 1
 
-        best_index = int(np.argmin(rep_scores)) if rep_scores else -1
+        valid_indices = [i for i, problem in enumerate(problems) if problem is None]
+        best_index = min(valid_indices, key=lambda i: rep_scores[i]) if valid_indices else -1
         effect_indices = [i for i, has_effect in enumerate(rep_effects) if has_effect]
         best_effect_index = (
             min(effect_indices, key=lambda i: rep_scores[i]) if effect_indices else None
@@ -191,12 +271,15 @@ def build_verdict(
             "title": entry.get("title", ""),
             "cause": entry["cause"],
             "repetitions": len(repetitions),
-            "best_score": rep_scores[best_index] if rep_scores else None,
+            "invalid_repetitions": len(repetitions) - len(valid_indices),
+            "invalid_reasons": sorted({problem for problem in problems if problem}),
+            "implausible_effects": implausible_effects,
+            "best_score": rep_scores[best_index] if best_index >= 0 else None,
             "best_effect_score": rep_scores[best_effect_index] if best_effect_index is not None else None,
             "effect_rate": (sum(rep_effects) / len(rep_effects)) if rep_effects else 0.0,
-            "best_repetition_index": report_index if repetitions else None,
-            "best_generated_instances": repetitions[report_index][GENERATED_INSTANCES] if repetitions else {},
-            "best_bottle_final_position": repetitions[report_index][BOTTLE_POSITION] if repetitions else None,
+            "best_repetition_index": report_index if repetitions and report_index >= 0 else None,
+            "best_generated_instances": repetitions[report_index][GENERATED_INSTANCES] if repetitions and report_index >= 0 else {},
+            "best_bottle_final_position": repetitions[report_index][BOTTLE_POSITION] if repetitions and report_index >= 0 else None,
         }
         evaluations.append(evaluation)
         if entry["hypothesis_id"] == NOMINAL_HYPOTHESIS_ID:
@@ -205,17 +288,21 @@ def build_verdict(
     nominal_effect_warning = False
     for evaluation in evaluations:
         if evaluation["hypothesis_id"] == NOMINAL_HYPOTHESIS_ID:
-            evaluation["accepted"] = False
+            evaluation["passes_rule"] = False
             if evaluation["effect_rate"] > 0.0:
                 # The effect appears with no intervention: no acceptance is trustworthy.
                 nominal_effect_warning = True
             continue
         score = evaluation["best_effect_score"]
-        evaluation["accepted"] = (
+        evaluation["passes_rule"] = (
             score is not None
             and nominal_best_score is not None
             and score <= nominal_best_score * (1.0 + margin) + score_tolerance
         )
+
+    abstention_reason = ABSTAIN_NOMINAL_REPRODUCES_EFFECT if nominal_effect_warning else None
+    for evaluation in evaluations:
+        evaluation["accepted"] = bool(evaluation["passes_rule"]) and abstention_reason is None
 
     accepted = [e for e in evaluations if e.get("accepted")]
     accepted_id = (
@@ -223,7 +310,7 @@ def build_verdict(
     )
 
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "case_id": case_id,
         "anomaly_window": {"start_s": window[0], "end_s": window[1], "source": window_source},
         "observed_effect_time": observed_effect_time,
@@ -232,9 +319,13 @@ def build_verdict(
             "score_tolerance": score_tolerance,
             "effect_z_fraction": effect_z_fraction,
             "initial_bottle_z": initial_bottle_z,
+            "max_landing_distance_mm": MAX_LANDING_DISTANCE_MM,
+            "floor_tolerance_mm": FLOOR_TOLERANCE_MM,
+            "robot_z_range_mm": list(ROBOT_Z_RANGE_MM),
         },
         "nominal_best_score": nominal_best_score,
         "nominal_effect_warning": nominal_effect_warning,
+        "abstention_reason": abstention_reason,
         "hypotheses": evaluations,
         "skipped": skipped or [],
         "accepted_hypothesis_id": accepted_id,

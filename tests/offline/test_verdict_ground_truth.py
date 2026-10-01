@@ -41,11 +41,14 @@ SCENE = {
     "bottle_orientation": [0.0, 0.0, 0.0, 0.0],
 }
 
+# A gentle push (~5 N for 0.2 s, ~1 N*s) that knocks the bottle off and leaves it
+# about 1 m from the robot. A stronger one (22 N for 0.4 s) flings it ~15 m, which
+# the verdict now discards as physically implausible (MAX_LANDING_DISTANCE_MM).
 GROUND_TRUTH_CAUSE = {
     "name": "external_force", "force_target": "bottle",
-    "force_window_start": 0.4, "force_window_end": 0.5,
-    "force_x_range": 4.0, "force_y_range": 4.0, "force_z_range": 0.0,
-    "force_x_origin": 22.0, "force_y_origin": 0.0, "force_z_origin": 0.0,
+    "force_window_start": 0.4, "force_window_end": 0.45,
+    "force_x_range": 1.0, "force_y_range": 1.0, "force_z_range": 0.0,
+    "force_x_origin": 5.0, "force_y_origin": 0.0, "force_z_origin": 0.0,
 }
 
 ENTRIES = [
