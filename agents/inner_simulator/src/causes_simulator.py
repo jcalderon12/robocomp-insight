@@ -41,6 +41,7 @@ TIMESTAMP = "timestamp"
 ACCELEROMETER = "accelerometer"
 GYROSCOPE = "gyroscope"
 ADV_SPEED = "adv_speed"
+ROT_SPEED = "rot_speed"
 
 # Keys of the IMU historical dictionary
 HISTORY = "history"
@@ -308,6 +309,7 @@ class CausesSimulator:
         else:
             self.num_of_repetitions = getattr(self.current_cause, 'num_of_repetitions', None) or self.simulation_scene.num_of_repetitions
         self.list_of_target_velocities = self.simulation_scene.list_of_target_velocities
+        self.list_of_target_rot_speeds = self.simulation_scene.list_of_target_rot_speeds
 
     def simulate(self) -> None:
         """Simulate a step of the current iteration.
@@ -444,6 +446,7 @@ class CausesSimulator:
             Parameters:
                 - simulationTime (float): Current simulation time in seconds.
         """
+        self.angularSpeed = self.get_target_rot_speed(simulationTime)
         wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.get_target_velocity(simulationTime), self.angularSpeed)
         for motor_name in self.motors:
             if not self.wheel_movement[motor_name]: wheels_velocity[motor_name] = 0
@@ -471,6 +474,16 @@ class CausesSimulator:
         else:
             self.logger.log(f"No target velocity found for simulation time {simulationTime}. Returning default stop (0) speed.", style="yellow")
             return 0
+
+    def get_target_rot_speed(self, simulationTime: float) -> float:
+        """Target angular velocity (rad/s) at a simulation time: the last sample at or
+        before it, 0 when the scene carries no rotation profile.
+        """
+        timestamps = self.list_of_target_rot_speeds.get(TIMESTAMP, []) if self.list_of_target_rot_speeds else []
+        index = int(np.searchsorted(timestamps, simulationTime, side="right")) - 1
+        if index < 0:
+            return 0.0
+        return float(self.list_of_target_rot_speeds[ROT_SPEED][index])
 
     def get_forward_velocity(self) -> float:
         """Get the forward velocity of the robot based on current wheel velocities.

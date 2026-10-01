@@ -12,3 +12,4 @@ class SimulationScene(BaseModel):
     simulation_length:float # Length of the simulation.
     num_of_repetitions:int # Number of times to run the simulation.
     list_of_target_velocities:dict # List of target velocities for the robot.
+    list_of_target_rot_speeds:dict = {} # {"timestamp": [...], "rot_speed": [...]} in rad/s; empty keeps the robot from turning.
