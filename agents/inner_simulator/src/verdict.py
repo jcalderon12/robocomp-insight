@@ -3,7 +3,8 @@
 A hypothesis is accepted iff one of its repetitions (a) reproduces the observed
 effect (the bottle leaves the tray) and (b) fits the real IMU no worse than the
 nominal run does, within a margin. Accepted hypotheses are ranked by IMU score
-(normalized RMSE over the anomaly window of the real episode).
+(normalized RMSE over the anomaly window of the real episode); exact ties are
+broken by how close the simulated fall is to the observed one, then by id.
 
 Safeguards:
   * repetitions where the physics blew up (bottle through the floor, robot base
@@ -60,6 +61,9 @@ ROBOT_Z_RANGE_MM = (-100.0, 1000.0)
 # while +-20 N held on the bottle for 40 % of the horizon (what the LLM proposes)
 # sends it 84-294 m away.
 MAX_LANDING_DISTANCE_MM = 3000.0
+
+# IMU scores closer than this are a tie (they come from identical windows).
+SCORE_TIE_RESOLUTION = 1e-3
 
 ABSTAIN_NOMINAL_REPRODUCES_EFFECT = "nominal_reproduces_effect"
 
@@ -266,6 +270,13 @@ def build_verdict(
         )
         report_index = best_effect_index if best_effect_index is not None else best_index
 
+        fall_times = [repetitions[i].get(FALL_TIME) for i in effect_indices]
+        timing_errors = [
+            abs(float(t) - observed_effect_time)
+            for t in fall_times
+            if t is not None and observed_effect_time is not None
+        ]
+
         evaluation = {
             "hypothesis_id": entry["hypothesis_id"],
             "title": entry.get("title", ""),
@@ -277,6 +288,8 @@ def build_verdict(
             "best_score": rep_scores[best_index] if best_index >= 0 else None,
             "best_effect_score": rep_scores[best_effect_index] if best_effect_index is not None else None,
             "effect_rate": (sum(rep_effects) / len(rep_effects)) if rep_effects else 0.0,
+            "median_timing_error_s": float(np.median(timing_errors)) if timing_errors else None,
+            "best_timing_error_s": min(timing_errors) if timing_errors else None,
             "best_repetition_index": report_index if repetitions and report_index >= 0 else None,
             "best_generated_instances": repetitions[report_index][GENERATED_INSTANCES] if repetitions and report_index >= 0 else {},
             "best_bottle_final_position": repetitions[report_index][BOTTLE_POSITION] if repetitions and report_index >= 0 else None,
@@ -304,10 +317,16 @@ def build_verdict(
     for evaluation in evaluations:
         evaluation["accepted"] = bool(evaluation["passes_rule"]) and abstention_reason is None
 
+    def rank_key(evaluation: dict) -> tuple:
+        timing = evaluation["median_timing_error_s"]
+        return (
+            round(evaluation["best_effect_score"] / SCORE_TIE_RESOLUTION),
+            timing if timing is not None else float("inf"),
+            str(evaluation["hypothesis_id"]),
+        )
+
     accepted = [e for e in evaluations if e.get("accepted")]
-    accepted_id = (
-        min(accepted, key=lambda e: e["best_effect_score"])["hypothesis_id"] if accepted else None
-    )
+    accepted_id = min(accepted, key=rank_key)["hypothesis_id"] if accepted else None
 
     return {
         "schema_version": "1.1",
@@ -322,6 +341,7 @@ def build_verdict(
             "max_landing_distance_mm": MAX_LANDING_DISTANCE_MM,
             "floor_tolerance_mm": FLOOR_TOLERANCE_MM,
             "robot_z_range_mm": list(ROBOT_Z_RANGE_MM),
+            "ranking": "imu_score, then median |fall time - observed|, then id",
         },
         "nominal_best_score": nominal_best_score,
         "nominal_effect_warning": nominal_effect_warning,
