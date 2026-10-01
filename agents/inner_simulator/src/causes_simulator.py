@@ -33,6 +33,7 @@ MM_TO_M = 0.001
 M_TO_MM = 1000
 
 from src.logger import Logger
+from src.verdict import DEFAULT_EFFECT_Z_FRACTION
 
 console = Console(highlight=False)
 
@@ -48,6 +49,10 @@ HISTORY = "history"
 GENERATED_INSTANCES = "generated_instances"
 BOTTLE_POSITION = "bottle_position"
 BOTTLE_ORIENTATION = "bottle_orientation"
+FALL_TIME = "fall_time"
+ROBOT_POSITION_AT_FALL = "robot_position_at_fall"
+ROBOT_FINAL_POSITION = "robot_final_position"
+SPAWN_OVERLAP = "spawn_overlap"
 
 # Constants for cause loading logic
 # Ajustamos para que busque desde la carpeta actual del script
@@ -156,6 +161,7 @@ class CausesSimulator:
         self.simulationTime = 0.0
         self.angularSpeed = 0.0
         self.historical = []
+        self.spawn_overlap = False
         self.engine_wrapper = EnginePybullet(self)
         self.forwardSpeed = 0.0
         # Small Z offset in millimeters to place robot slightly above the ground
@@ -225,6 +231,10 @@ class CausesSimulator:
         self.imu_history[ACCELEROMETER] = []
         self.imu_history[GYROSCOPE] = []
 
+        # When the bottle first drops below the effect threshold, and where the robot was then.
+        self.fall_time = None
+        self.robot_position_at_fall = None
+
     def record_imu(self) -> None:
         """Record the current real IMU measurements and store it at the IMU history dictionary.
         """
@@ -232,6 +242,17 @@ class CausesSimulator:
         self.imu_history[TIMESTAMP].append(self.simulationTime)
         self.imu_history[ACCELEROMETER].append(acc.tolist())
         self.imu_history[GYROSCOPE].append(ang.tolist())
+
+    def record_fall(self) -> None:
+        """Register the first instant the bottle is below the effect threshold (the same
+        z fraction the verdict uses on the final pose)."""
+        if self.fall_time is not None:
+            return
+        bottle_z = p.getBasePositionAndOrientation(self.bottle)[0][2]
+        if bottle_z < DEFAULT_EFFECT_Z_FRACTION * self.bottle_position[2]:
+            self.fall_time = self.simulationTime
+            robot_pos_m = p.getBasePositionAndOrientation(self.robot)[0]
+            self.robot_position_at_fall = [coord * M_TO_MM for coord in robot_pos_m]
         
     def save_imu(self) -> None:
         """Save the current iteration IMU history in the historical list.
@@ -242,6 +263,10 @@ class CausesSimulator:
         bottle_pos_m, bottle_orn = p.getBasePositionAndOrientation(self.bottle)
         obj[BOTTLE_POSITION] = [coord * M_TO_MM for coord in bottle_pos_m]
         obj[BOTTLE_ORIENTATION] = bottle_orn
+        obj[FALL_TIME] = self.fall_time
+        obj[SPAWN_OVERLAP] = self.spawn_overlap
+        obj[ROBOT_POSITION_AT_FALL] = self.robot_position_at_fall
+        obj[ROBOT_FINAL_POSITION] = [coord * M_TO_MM for coord in p.getBasePositionAndOrientation(self.robot)[0]]
         self.historical.append(obj)
 
     def send_history_to_parent(self) -> None:
@@ -324,6 +349,7 @@ class CausesSimulator:
             self.current_cause.apply_compute(self.engine_wrapper)
             p.stepSimulation()
             self.record_imu()
+            self.record_fall()
             stepCount += 1
             self.simulationTime = stepCount * self.dt
             et = time.time()
@@ -339,6 +365,7 @@ class CausesSimulator:
         for i in range(self.num_of_repetitions):
             self.current_repetition = i
             self.current_cause.apply(self.engine_wrapper)
+            self.spawn_overlap = self.spawned_bodies_overlap()
             self.init_imu_record()
             self.simulate()
             self.save_imu()
@@ -348,6 +375,17 @@ class CausesSimulator:
             p.restoreState(stateId=self.intialState) # Restore the clean state
         return
     
+    def spawned_bodies_overlap(self) -> bool:
+        """Whether a body placed by the cause interpenetrates the robot or the bottle.
+        The recording shows the robot standing there, so such a placement cannot be
+        the real scene; the solver then pushes the bodies apart and the jolt alone
+        can knock the bottle off."""
+        for body_id in self.loaded_bodies:
+            for target in (self.robot, self.bottle):
+                if p.getClosestPoints(bodyA=target, bodyB=body_id, distance=0.0):
+                    return True
+        return False
+
     def clean_bodies(self) -> None:
         """Remove all bodies from the simulation except the plane and the robot.
         """
