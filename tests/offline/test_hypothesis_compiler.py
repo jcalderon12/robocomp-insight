@@ -26,7 +26,7 @@ def main():
                                "position_range": {"x": [-3.4, -2.8], "y": [-0.5, -0.1], "z": [0.0, 0.01]}},
                 "activation_window": {"start_fraction": 0, "end_fraction": 1}}),
             hypothesis("INT_001", "internal", 1, {
-                "intervention": "disable_wheel", "parameters": {"wheel_id": "FL"},
+                "intervention": "disable_wheel", "parameters": {"wheel_id": "left"},
                 "activation_window": {"start_fraction": 0.2, "end_fraction": 0.8}}),
             hypothesis("INT_002", "internal", 2,
                        {"intervention": None, "parameters": {}, "activation_window": None},
@@ -53,6 +53,16 @@ def main():
     # The wheel cause must carry the activation window
     wheel = next(e["cause"] for e in compiled["entries"] if e["cause"]["name"] == "wheel")
     assert wheel["wheel_min"] == 0.2 and wheel["wheel_max"] == 0.8, wheel
+    # A drive wheel of the differential base maps to a side of the simulated base,
+    # and stopping that side stops both of its wheels
+    assert wheel["wheel_wheel"] == "L", wheel
+    from causes_simulator import CausesSimulator
+    simulator = CausesSimulator.__new__(CausesSimulator)
+    simulator.initialze_wheel_simplified_names_map()
+    simulator.initialize_wheels_movement_map()
+    simulator.set_robot_wheel_moving("L", False)
+    stopped = sorted(name for name, moving in simulator.wheel_movement.items() if not moving)
+    assert stopped == ["frame_back_left2motor_back_left", "frame_front_left2motor_front_left"], stopped
     # The bump cause must resolve the asset to an absolute existing URDF
     bump = next(e["cause"] for e in compiled["entries"] if e["cause"]["name"] == "bump")
     assert Path(bump["bump_file"]).exists(), bump["bump_file"]

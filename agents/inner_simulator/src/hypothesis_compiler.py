@@ -32,6 +32,9 @@ BUMP_GRID_DIMENSIONS = [3, 3]
 # floating; 1 mm matches how the Webots world places its bump.
 FLOOR_OBJECT_Z_MM = 1.0
 
+# Drive wheel of the catalog -> side of the simulated base (see CausesSimulator.wheel_sides).
+WHEEL_SIDES = {"left": "L", "right": "R"}
+
 
 class HypothesisCompilationError(ValueError):
     """Raised when a testable hypothesis cannot be mapped to a cause payload."""
@@ -90,7 +93,7 @@ def _compile_spawn_static_object(params: dict[str, Any], blueprint: dict[str, An
 def _compile_disable_wheel(params: dict[str, Any], blueprint: dict[str, Any], catalog: dict[str, Any]) -> dict[str, Any]:
     start, end = _window_fractions(blueprint)
     return {
-        "wheel_wheel": str(params["wheel_id"]),
+        "wheel_wheel": WHEEL_SIDES.get(str(params["wheel_id"]), str(params["wheel_id"])),
         "wheel_min": start,
         "wheel_max": end,
     }

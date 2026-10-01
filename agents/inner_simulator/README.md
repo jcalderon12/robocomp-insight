@@ -117,7 +117,7 @@ Simulator-agnostic API that causes use to modify the world.
 |---|---|
 | `instantiate_body(body_file, body_position)` | Spawn a URDF body at the given position. |
 | `get_simulation_time()` | Current simulation time (s). |
-| `disable_robot_wheel(wheel_name)` | Disable a wheel by simplified name (`FL`, `FR`, `BL`, `BR`). |
+| `disable_robot_wheel(wheel_name)` | Disable a side of the differential base (`L`, `R`: both wheels of that side of the URDF) or a single wheel (`FL`, `FR`, `BL`, `BR`). |
 | `get_simulation_length()` | Total configured run duration (s). |
 
 ### `EnginePybullet` — `src/engines/engine_pybullet.py`

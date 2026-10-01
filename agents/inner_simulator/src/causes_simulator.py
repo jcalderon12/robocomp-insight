@@ -421,6 +421,10 @@ class CausesSimulator:
         self.wheel_names["FR"] = "frame_front_right2motor_front_right"
         self.wheel_names["BL"] = "frame_back_left2motor_back_left"
         self.wheel_names["BR"] = "frame_back_right2motor_back_right"
+        # The shadow URDF has four wheels while the real base is differential (two
+        # drive wheels and two casters): a failing drive wheel stops both wheels of
+        # its side.
+        self.wheel_sides = {"L": ["FL", "BL"], "R": ["FR", "BR"]}
         
     def initialize_bodies_list(self) -> None:
         """Initialize the list to track all loaded bodies in the simulation.
@@ -442,8 +446,9 @@ class CausesSimulator:
         self.loaded_bodies.append(p.loadURDF(body_file, basePosition=body_position_m))
 
     def set_robot_wheel_moving(self, simplified_wheel_name:str, moving:bool):
-        """ ENGINE: Set robot wheel moving """
-        self.wheel_movement[self.wheel_names[simplified_wheel_name]] = moving
+        """ ENGINE: Set robot wheel moving (a single wheel, or a side: "L" / "R") """
+        for name in self.wheel_sides.get(simplified_wheel_name, [simplified_wheel_name]):
+            self.wheel_movement[self.wheel_names[name]] = moving
     
     def set_gravity(self, gravity:float=-9.81):
         """ ENGINE: Set gravity """

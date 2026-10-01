@@ -23,7 +23,7 @@
       }
     },
     "disable_wheel": {
-      "description": "One of the robot's wheels stops responding at some instant inside the activation window. Models a motor, driver or transmission failure in the locomotion subsystem.",
+      "description": "One of the two drive wheels of the differential base stops at some instant inside the activation window and stays braked. Models a motor, driver or transmission failure in the locomotion subsystem.",
       "cause_name": "wheel",
       "phase": "runtime",
       "uses_activation_window": true,
@@ -31,8 +31,8 @@
         "wheel_id": {
           "type": "enum",
           "required": true,
-          "values": ["FL", "FR", "BL", "BR"],
-          "description": "Which wheel fails: front-left, front-right, back-left, back-right."
+          "values": ["left", "right"],
+          "description": "Which drive wheel fails. The base has two drive wheels on a common axis plus two passive casters."
         }
       }
     },

@@ -52,7 +52,7 @@ def main():
                 "parameters": {"target": "floor", "lateral_friction_range": [0.01, 0.3]},
                 "activation_window": None}),
             hypothesis("INT_001", "internal", 1, {
-                "intervention": "disable_wheel", "parameters": {"wheel_id": "BR"},
+                "intervention": "disable_wheel", "parameters": {"wheel_id": "right"},
                 "activation_window": {"start_fraction": 0.4, "end_fraction": 0.7}}),
             hypothesis("INT_002", "internal", 2,
                        {"intervention": None, "parameters": {}, "activation_window": None},
