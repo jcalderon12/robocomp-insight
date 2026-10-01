@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel
 
 class SimulationScene(BaseModel):
@@ -13,3 +15,5 @@ class SimulationScene(BaseModel):
     num_of_repetitions:int # Number of times to run the simulation.
     list_of_target_velocities:dict # List of target velocities for the robot.
     list_of_target_rot_speeds:dict = {} # {"timestamp": [...], "rot_speed": [...]} in rad/s; empty keeps the robot from turning.
+    observed_effect_time:Optional[float] = None # Seconds at which the bottle was observed leaving the robot, if it was.
+    episode_length:Optional[float] = None # Length of the whole recording, before cutting the horizon at the observed effect.

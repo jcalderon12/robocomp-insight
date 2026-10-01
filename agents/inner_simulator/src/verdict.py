@@ -30,6 +30,13 @@ DEFAULT_SETTLE_S = 2.0
 DEFAULT_EFFECT_Z_FRACTION = 0.5
 _EPS = 1e-9
 
+# The IMU peak is searched in this span around the observed effect. The span
+# reaches back because perception confirms the fall late: concept_bottle needs 5
+# frames of 100 ms, and in the recorded episodes the deletion lags the IMU peak
+# by 0.06-1.0 s.
+OBSERVED_EFFECT_LOOKBACK_S = 3.0
+OBSERVED_EFFECT_LOOKAHEAD_S = 0.5
+
 
 def _safe_filename(text: str) -> str:
     return "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in str(text))
@@ -59,6 +66,42 @@ def estimate_anomaly_window(
     return (
         max(float(times[0]), peak_time - padding_s),
         min(float(times[-1]), peak_time + padding_s),
+    )
+
+
+def anomaly_window(
+    real_imu: dict,
+    observed_effect_time: Optional[float] = None,
+    padding_s: float = DEFAULT_WINDOW_PADDING_S,
+    settle_s: float = DEFAULT_SETTLE_S,
+) -> tuple[float, float, str]:
+    """(start, end, source) of the window the IMU is compared on.
+
+    With an observed effect, the IMU peak is only searched just before it, so an
+    unrelated spike (e.g. while the robot waits stopped after the event) cannot
+    move the window; without IMU activity there, the window is centred on the
+    observed instant. Without an observed effect, the global IMU peak is used."""
+    if observed_effect_time is None:
+        return (*estimate_anomaly_window(real_imu, padding_s, settle_s), "imu_peak")
+    times = np.asarray(real_imu[TIMESTAMP], dtype=float)
+    acc = np.asarray(real_imu[ACCELEROMETER], dtype=float)
+    if times.size == 0 or acc.size == 0:
+        return 0.0, 0.0, "empty_imu"
+    magnitude = np.linalg.norm(acc, axis=1)
+    deviation = np.abs(magnitude - np.median(magnitude))
+    near = (times >= observed_effect_time - OBSERVED_EFFECT_LOOKBACK_S) & (
+        times <= observed_effect_time + OBSERVED_EFFECT_LOOKAHEAD_S
+    )
+    if near.any() and float(deviation[near].max()) >= 1e-6:
+        centre = float(times[near][int(np.argmax(deviation[near]))])
+        source = "imu_peak_near_observed_effect"
+    else:
+        centre = float(observed_effect_time)
+        source = "observed_effect_time"
+    return (
+        max(float(times[0]), centre - padding_s),
+        min(float(times[-1]), centre + padding_s),
+        source,
     )
 
 
@@ -115,10 +158,13 @@ def build_verdict(
     window_padding_s: float = DEFAULT_WINDOW_PADDING_S,
     effect_z_fraction: float = DEFAULT_EFFECT_Z_FRACTION,
     skipped: Optional[list[dict[str, Any]]] = None,
+    observed_effect_time: Optional[float] = None,
 ) -> dict[str, Any]:
     """entries[i] is {'hypothesis_id', 'title', 'cause'} (nominal first);
-    historicals[i] is the list of repetitions the causes simulator returned."""
-    window = estimate_anomaly_window(real_imu, window_padding_s)
+    historicals[i] is the list of repetitions the causes simulator returned.
+    `observed_effect_time` is when the recording saw the bottle leave the robot."""
+    window_start, window_end, window_source = anomaly_window(real_imu, observed_effect_time, window_padding_s)
+    window = (window_start, window_end)
     real_window = _windowed(real_imu, window)
     acc_std = float(np.std(np.asarray(real_imu[ACCELEROMETER], dtype=float)))
     gyro_std = float(np.std(np.asarray(real_imu[GYROSCOPE], dtype=float)))
@@ -179,7 +225,8 @@ def build_verdict(
     return {
         "schema_version": "1.0",
         "case_id": case_id,
-        "anomaly_window": {"start_s": window[0], "end_s": window[1]},
+        "anomaly_window": {"start_s": window[0], "end_s": window[1], "source": window_source},
+        "observed_effect_time": observed_effect_time,
         "decision_rule": {
             "margin": margin,
             "score_tolerance": score_tolerance,

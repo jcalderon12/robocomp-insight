@@ -5,12 +5,16 @@ initial and final poses are read from the room->robot RT edge history (recorded 
 the DSR room frame, which is also the PyBullet world frame), and the bottle pose is
 derived as robot pose + tray offset (a physical constant of the robot model, since
 the recording only registers the robot->bottle edge deletion when the bottle falls).
+
+It also reads what the scene needs over time: the commanded speed profile, the
+episode length, and the instant the bottle was observed to leave the robot.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -26,6 +30,14 @@ IDENTITY_QUATERNION = [0.0, 0.0, 0.0, 1.0]
 # along +x. Loading the recorded quaternion as is made every replay drive 90 deg
 # away from the recorded path (43/43 recorded episodes).
 DSR_TO_URDF_YAW_OFFSET = math.pi / 2.0
+
+# Seconds simulated past the observed effect. The recording keeps going while the
+# robot waits stopped (keyframes up to ~2 min after the fall); simulating that tail
+# only costs time and lets fraction-based activation windows land after the event.
+EFFECT_HORIZON_MARGIN_S = 3.0
+
+TIMESTAMP = "timestamp"
+ADV_SPEED = "adv_speed"
 
 # Recordings may be in millimeters (DSR convention) or meters (Webots bridge);
 # coordinates beyond this magnitude mean the whole history is in millimeters.
@@ -172,3 +184,142 @@ def extract_scene_poses(
     poses.sources["bottle"] = "robot_pose_plus_tray_offset"
 
     return poses
+
+
+# --------------------------------------------------------------------------- #
+# Time series of the episode
+# --------------------------------------------------------------------------- #
+def episode_time_origin_ns(mem_api) -> Optional[int]:
+    """Timestamp (ns) of the first IMU event: time zero of the real IMU history the
+    verdict compares against, and of the simulation."""
+    if not mem_api.is_ready():
+        return None
+    imu_events = mem_api.get_node_history_by_name("imu")
+    return int(imu_events[0].timestamp) if imu_events else None
+
+
+def episode_length_s(mem_api) -> Optional[float]:
+    """Seconds between the first and the last IMU event of the recording."""
+    if not mem_api.is_ready():
+        return None
+    imu_events = mem_api.get_node_history_by_name("imu")
+    if not imu_events:
+        return None
+    return (imu_events[-1].timestamp - imu_events[0].timestamp) * 1e-9
+
+
+def commanded_speed_history(mem_api, until_ns: Optional[int] = None) -> Optional[dict]:
+    """The robot_ref_adv_speed setpoints (MNA events of the robot node), with their
+    time relative to the first robot event. Setpoints at or after `until_ns` are
+    left out."""
+    if not mem_api.is_ready():
+        return None
+    robot_events = mem_api.get_node_history_by_name("robot")
+    history = {TIMESTAMP: [], ADV_SPEED: []}
+    if not robot_events:
+        return history
+    initial_ts = robot_events[0].timestamp
+    for event in robot_events:
+        if until_ns is not None and event.timestamp >= until_ns:
+            continue
+        if event.modification_type == "MNA" and "robot_ref_adv_speed" in event.attributes:
+            history[TIMESTAMP].append((event.timestamp - initial_ts) * 1e-9)
+            history[ADV_SPEED].append(event.attributes["robot_ref_adv_speed"].value)
+    return history
+
+
+def _find_node_id_in_keyframes(mem_api, name: str):
+    """Node id by name, looking through every keyframe (a node may appear late)."""
+    for index in range(mem_api.get_keyframe_count()):
+        node_id = _find_node_id_by_name(mem_api.get_keyframe(index), name)
+        if node_id is not None:
+            return node_id
+    return None
+
+
+def observed_effect_times(
+    mem_api,
+    origin_ns: Optional[int],
+    from_name: str = "robot",
+    to_name: str = "bottle",
+    edge_type: str = "RT",
+) -> list[float]:
+    """Seconds (from `origin_ns`) at which the robot->bottle RT edge was deleted,
+    i.e. when perception reported the bottle had left the robot. The first one is
+    the observed effect; later ones come from the bottle being re-attached and lost
+    again, so callers should keep them only for the record."""
+    if origin_ns is None or not mem_api.is_ready() or mem_api.get_keyframe_count() == 0:
+        return []
+    from_id = _find_node_id_in_keyframes(mem_api, from_name)
+    to_id = _find_node_id_in_keyframes(mem_api, to_name)
+    if from_id is None or to_id is None:
+        return []
+    events = mem_api.get_edge_history(from_id, to_id, edge_type)
+    return sorted((event.timestamp - origin_ns) * 1e-9 for event in events if event.modification_type == "DE")
+
+
+def simulation_horizon(
+    episode_length: Optional[float],
+    observed_effect_time: Optional[float],
+    margin_s: float = EFFECT_HORIZON_MARGIN_S,
+) -> Optional[float]:
+    """Simulate until shortly after the observed effect; the whole recording when
+    no effect was observed."""
+    if observed_effect_time is None or episode_length is None:
+        return episode_length
+    return min(episode_length, observed_effect_time + margin_s)
+
+
+MM_PER_M = 1000.0
+DEFAULT_REPETITIONS = 10
+
+
+def build_simulation_scene(
+    mem_api,
+    fallback_robot_position_mm: list[float],
+    fallback_problem_position_mm: list[float],
+    num_of_repetitions: int = DEFAULT_REPETITIONS,
+    gravity: float = -9.81,
+) -> tuple[dict, dict]:
+    """The scene the causes simulator replays (a SimulationScene dict, positions in
+    millimeters), plus what was learned while building it, for logging.
+
+    The rotation profile stays empty: where omega should come from (the pose
+    history or the setpoint) is still to be decided, so the replay drives straight."""
+    robot_fallback_m = [v / MM_PER_M for v in fallback_robot_position_mm]
+    poses = extract_scene_poses(
+        mem_api,
+        fallback_robot_position=robot_fallback_m,
+        fallback_bottle_position=[r + o for r, o in zip(robot_fallback_m, DEFAULT_TRAY_OFFSET)],
+        fallback_problem_position=[v / MM_PER_M for v in fallback_problem_position_mm],
+    )
+    # First deletion of the robot->bottle RT edge; later ones come from the bottle
+    # being re-attached and lost again.
+    origin_ns = episode_time_origin_ns(mem_api)
+    effect_times = observed_effect_times(mem_api, origin_ns)
+    observed_effect_time = effect_times[0] if effect_times else None
+    length = episode_length_s(mem_api)
+    # The replay only uses setpoints issued before the effect was observed; the last
+    # one is held until the horizon. Later ones are the system's reaction to the
+    # anomaly (the semantic agent stops the robot ~0.1 s after the bottle is lost),
+    # and replaying that hard stop can knock the bottle off by itself.
+    until_ns = origin_ns + int(observed_effect_time * 1e9) if observed_effect_time is not None else None
+    speeds = commanded_speed_history(mem_api, until_ns) or {TIMESTAMP: [], ADV_SPEED: []}
+
+    scene = {
+        "gravity": gravity,
+        "initial_robot_position": [v * MM_PER_M for v in poses.initial_robot_position],
+        "initial_robot_orientation": poses.initial_robot_orientation,
+        "problem_position": [v * MM_PER_M for v in poses.problem_position],
+        "problem_orientation": poses.problem_orientation,
+        "bottle_position": [v * MM_PER_M for v in poses.bottle_position],
+        "bottle_orientation": poses.bottle_orientation,
+        "simulation_length": simulation_horizon(length, observed_effect_time),
+        "num_of_repetitions": num_of_repetitions,
+        "list_of_target_velocities": speeds,
+        "list_of_target_rot_speeds": {},
+        "observed_effect_time": observed_effect_time,
+        "episode_length": length,
+    }
+    info = {"pose_sources": poses.sources, "effect_times": effect_times, "episode_length": length}
+    return scene, info

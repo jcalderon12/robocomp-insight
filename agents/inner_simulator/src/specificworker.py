@@ -74,7 +74,9 @@ if agent_root not in sys.path:
 
 from src.simulation_scene import SimulationScene
 from src.logger import Logger
-from src.episode_scene import extract_scene_poses, DEFAULT_TRAY_OFFSET
+from src.episode_scene import (
+    build_simulation_scene,
+)
 from src.hypothesis_compiler import compile_batch
 from src.verdict import build_verdict, write_verdict, save_comparison_plots, save_real_imu_plot
 
@@ -156,6 +158,8 @@ class SpecificWorker(GenericWorker):
         self.processed_hypotheses_paths = set()
         self.processed_episode_paths = set()
         self.mem_api_path = None
+        # When the recording saw the bottle leave the robot (seconds, IMU time base).
+        self.observed_effect_time = None
 
         # Clear terminal
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -278,26 +282,19 @@ class SpecificWorker(GenericWorker):
 
     def writeSimulationScene(self) -> None:
        # Build the scene from the episodic recording; scene constants remain as fallback.
-       # extract_scene_poses works in meters, the scene file in millimeters (see SimulationScene).
        self.logger.log("Writing simulation scene to sim_scene.json...", style="bold purple")
-       robot_fallback_m = [v * MM_TO_M for v in ROBOT_POS]
-       poses = extract_scene_poses(
-           self.mem_api,
-           fallback_robot_position=robot_fallback_m,
-           fallback_bottle_position=[r + o for r, o in zip(robot_fallback_m, DEFAULT_TRAY_OFFSET)],
-           fallback_problem_position=[v * MM_TO_M for v in PROBLEM_POS],
-       )
-       self.logger.log(f"Scene poses reconstructed from episode: {poses.sources}", style="purple")
-       self.sim_scene.initial_robot_position = [v * M_TO_MM for v in poses.initial_robot_position]
-       self.sim_scene.initial_robot_orientation = poses.initial_robot_orientation
-       self.sim_scene.problem_position = [v * M_TO_MM for v in poses.problem_position]
-       self.sim_scene.problem_orientation = poses.problem_orientation
-       self.sim_scene.bottle_position = [v * M_TO_MM for v in poses.bottle_position]
-       self.sim_scene.bottle_orientation = poses.bottle_orientation
-       self.sim_scene.simulation_length = self.get_simulation_length_from_episodic_memory()
-       adv_speed_history = self.get_robot_adv_speed_history()
-       self.sim_scene.list_of_target_velocities = adv_speed_history if adv_speed_history is not None else []
-       self.sim_scene.num_of_repetitions = 10
+       scene, info = build_simulation_scene(self.mem_api, ROBOT_POS, PROBLEM_POS)
+       self.logger.log(f"Scene poses reconstructed from episode: {info['pose_sources']}", style="purple")
+       if len(info["effect_times"]) > 1:
+           self.logger.log(
+               f"Bottle detached {len(info['effect_times'])} times at "
+               f"{[round(t, 2) for t in info['effect_times']]} s; using the first.", style="yellow")
+       self.observed_effect_time = scene["observed_effect_time"]
+       self.logger.log(
+           f"Observed effect at {self.observed_effect_time} s; simulating {scene['simulation_length']} s "
+           f"of a {info['episode_length']} s recording.", style="purple")
+       for field_name, value in scene.items():
+           setattr(self.sim_scene, field_name, value)
        self.sim_scene.model_validate(self.sim_scene.__dict__)
        file = open("src/sim_scene.json", "w")
        file.write(self.sim_scene.model_dump_json(indent=4))
@@ -519,6 +516,7 @@ class SpecificWorker(GenericWorker):
                         historicals=ordered_historicals,
                         initial_bottle_z=self.sim_scene.bottle_position[2],
                         skipped=skipped,
+                        observed_effect_time=self.observed_effect_time,
                     )
                     verdict_path = os.path.abspath(write_verdict(verdict, "logs/verdicts"))
                     save_comparison_plots(self.imu_history, verdict["hypotheses"], ordered_historicals, plots_dir)
@@ -526,7 +524,8 @@ class SpecificWorker(GenericWorker):
                     accepted_id = verdict.get("accepted_hypothesis_id")
                     self.logger.log(
                         f"Verdict written to {verdict_path}. Accepted hypothesis: {accepted_id}. "
-                        f"Nominal score: {verdict.get('nominal_best_score')}.",
+                        f"Nominal score: {verdict.get('nominal_best_score')}. "
+                        f"Window: {verdict['anomaly_window']}.",
                         style="bold green" if accepted_id else "bold yellow",
                     )
 
