@@ -9,14 +9,23 @@ the recording only registers the robot->bottle edge deletion when the bottle fal
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
 
-# Bottle resting on the tray, in the robot frame (meters): BOTTLE_POS - ROBOT_POS.
+# Bottle resting on the tray, in the URDF robot frame (meters): BOTTLE_POS - ROBOT_POS
+# with the shadow URDF loaded at identity orientation.
 DEFAULT_TRAY_OFFSET = [0.05, 0.11, 0.7625]
 
 IDENTITY_QUATERNION = [0.0, 0.0, 0.0, 1.0]
+
+# The DSR/RoboComp robot frame is +y-forward (concept_robot integrates odometry as
+# x += v*sin(theta), y += v*cos(theta), and SimpleWorld_Bump.wbt starts the Shadow
+# rotated -90 deg about z while it advances along world +x); the shadow URDF drives
+# along +x. Loading the recorded quaternion as is made every replay drive 90 deg
+# away from the recorded path (43/43 recorded episodes).
+DSR_TO_URDF_YAW_OFFSET = math.pi / 2.0
 
 # Recordings may be in millimeters (DSR convention) or meters (Webots bridge);
 # coordinates beyond this magnitude mean the whole history is in millimeters.
@@ -41,6 +50,27 @@ def _units_scale(events) -> float:
         default=0.0,
     )
     return 0.001 if peak > MM_DETECTION_THRESHOLD else 1.0
+
+
+def _quat_multiply(a: list[float], b: list[float]) -> list[float]:
+    """Hamilton product a*b of [x, y, z, w] quaternions."""
+    ax, ay, az, aw = (float(c) for c in a)
+    bx, by, bz, bw = (float(c) for c in b)
+    return [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+
+
+def to_urdf_orientation(dsr_quaternion: list[float]) -> list[float]:
+    """Orientation of the URDF body whose +x points where the DSR body's +y points.
+
+    Composes the recorded orientation with a +90 deg rotation about the body z
+    axis (for a level robot this is yaw + 90 deg)."""
+    half = DSR_TO_URDF_YAW_OFFSET / 2.0
+    return _quat_multiply(dsr_quaternion, [0.0, 0.0, math.sin(half), math.cos(half)])
 
 
 def _quat_rotate(quaternion: list[float], vector: list[float]) -> list[float]:
@@ -128,14 +158,16 @@ def extract_scene_poses(
     final_position, final_orientation = _event_pose(robot_events[-1], scale)
 
     poses.initial_robot_position = initial_position
-    poses.initial_robot_orientation = initial_orientation
+    poses.initial_robot_orientation = to_urdf_orientation(initial_orientation)
     poses.sources["initial_robot"] = "episodic_rt_edge"
 
     poses.problem_position = final_position
-    poses.problem_orientation = final_orientation
+    poses.problem_orientation = to_urdf_orientation(final_orientation)
     poses.sources["problem"] = "episodic_rt_edge"
 
-    rotated_offset = _quat_rotate(initial_orientation, tray_offset)
+    # The tray offset is expressed in the URDF body frame, so it is rotated by the
+    # orientation the URDF is actually loaded with.
+    rotated_offset = _quat_rotate(poses.initial_robot_orientation, tray_offset)
     poses.bottle_position = [p + o for p, o in zip(initial_position, rotated_offset)]
     poses.sources["bottle"] = "robot_pose_plus_tray_offset"
 
