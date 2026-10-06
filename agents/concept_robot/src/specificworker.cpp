@@ -242,8 +242,6 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 
     std::vector<float> t = rt_translation_opt.value();
 
-	std::cout << "x: " << t[0] << ",y: " << t[1] << std::endl;
-
     float x = t[0];
     float y = t[1];
 
