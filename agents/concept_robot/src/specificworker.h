@@ -213,7 +213,7 @@ private:
 	std::chrono::steady_clock::time_point last_follow_time;
 	bool was_following = false;  // skip the PID D-term on the first cycle after (re)starting to follow a target
 
-	bool print_extra_info = true;
+	bool print_extra_info = configLoader.get<bool>("print_extra_info");
 	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
 

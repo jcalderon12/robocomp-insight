@@ -9,6 +9,7 @@
 #ifndef ROBOCOMPWEBOTS2ROBOCOMP_ICE
 #define ROBOCOMPWEBOTS2ROBOCOMP_ICE
 #include <Gridder.ice>
+#include <KinovaArm.ice>
 module RoboCompWebots2Robocomp
 {
 	struct Vector3
@@ -33,7 +34,9 @@ module RoboCompWebots2Robocomp
 	{
 		ObjectPose getObjectPose (string DEF);
 		void resetWebots ();
-		void setDoorAngle (float angle);
+		void setArmJointsInstant (RoboCompKinovaArm::TJointAngles angles);
+		void setDoorAngle (string DEF, float angle);
+		void setObjectPose (string DEF, ObjectPose pose);
 		void setPathToHuman (int humanId, RoboCompGridder::TPath path);
 	};
 };

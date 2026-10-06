@@ -184,7 +184,7 @@ private:
 	/**
 	 * \brief Flag to indicate if want many info
 	 */
-	bool print_extra_info = false;
+	bool print_extra_info = configLoader.get<bool>("print_extra_info");
 
 	bool simulated = configLoader.get<bool>("Simulated");
 

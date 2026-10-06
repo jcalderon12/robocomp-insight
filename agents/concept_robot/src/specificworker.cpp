@@ -164,7 +164,8 @@ void SpecificWorker::compute()
 
 	if (has_significant_change(actual_velocities, last_velocities_readed)) {
 		this->omnirobot_proxy->setSpeedBase(0.0, actual_velocities[0], actual_velocities[1]);
-		std::cout << "setSpeedBase -> advx: " << actual_velocities[0] << " | rot: " << actual_velocities[1] << std::endl;
+		if(print_extra_info)
+			std::cout << "setSpeedBase -> advx: " << actual_velocities[0] << " | rot: " << actual_velocities[1] << std::endl;
 	}
 
 	last_velocities_readed = actual_velocities;	
@@ -241,11 +242,13 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 
     std::vector<float> t = rt_translation_opt.value();
 
+	std::cout << "x: " << t[0] << ",y: " << t[1] << std::endl;
+
     float x = t[0];
     float y = t[1];
 
     float distance_to_target = std::sqrt(x*x + y*y);
-    float angle_to_target    = std::atan2(y, x);
+    float angle_to_target    = std::atan2(x, y);
 
     float distance_error = 0.0f;
     if (distance_to_target > 1e-3f)
@@ -285,7 +288,7 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     const float Kd_ang = 0.1f;   
 
 	float linear_velocity  = Kp_lin * distance_error + Kd_lin * d_distance_error;
-	float angular_velocity = Kp_ang * angle_to_target + Kd_ang * d_angle_error;
+	float angular_velocity = -(Kp_ang * angle_to_target + Kd_ang * d_angle_error);
 
 	float angle_attenuation = std::cos(std::clamp(angle_to_target, -HALF_PI, HALF_PI));
 	linear_velocity *= angle_attenuation;

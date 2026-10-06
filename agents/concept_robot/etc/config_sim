@@ -47,6 +47,7 @@ Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
 
 Simulated = True
+print_extra_info = false
 Desired_distance = 1800.0
 
 # Misión de fotos (concept_robot::photo_spin())

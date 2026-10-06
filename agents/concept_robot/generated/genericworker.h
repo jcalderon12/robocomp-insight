@@ -30,26 +30,26 @@
 #include <QtCore>
 #include <variant>
 #include <unordered_map>
+#include <fps/fps.h>
 
 #include "dsr/api/dsr_api.h"
 #include "dsr/gui/dsr_gui.h"
-#include <doublebuffer/DoubleBuffer.h>
 #include <memory>
 
-#include <Camera360RGB.h>
 #include <CameraRGBDSimple.h>
 #include <FullPoseEstimation.h>
 #include <FullPoseEstimationPub.h>
 #include <GenericBase.h>
 #include <Gridder.h>
 #include <IMU.h>
+#include <KinovaArm.h>
 #include <Lidar3D.h>
 #include <OmniRobot.h>
 #include <Webots2Robocomp.h>
 
 #define BASIC_PERIOD 100
 
-using TuplePrx = std::tuple<RoboCompCamera360RGB::Camera360RGBPrxPtr,RoboCompIMU::IMUPrxPtr,RoboCompLidar3D::Lidar3DPrxPtr,RoboCompOmniRobot::OmniRobotPrxPtr,RoboCompWebots2Robocomp::Webots2RobocompPrxPtr>;
+using TuplePrx = std::tuple<RoboCompCameraRGBDSimple::CameraRGBDSimplePrxPtr,RoboCompIMU::IMUPrxPtr,RoboCompLidar3D::Lidar3DPrxPtr,RoboCompOmniRobot::OmniRobotPrxPtr,RoboCompWebots2Robocomp::Webots2RobocompPrxPtr>;
 
 
 class GenericWorker : public QObject
@@ -68,7 +68,7 @@ public:
 	std::atomic_bool hibernation = false;
 
 
-	RoboCompCamera360RGB::Camera360RGBPrxPtr camera360rgb_proxy;
+	RoboCompCameraRGBDSimple::CameraRGBDSimplePrxPtr camerargbdsimple_proxy;
 	RoboCompIMU::IMUPrxPtr imu_proxy;
 	RoboCompLidar3D::Lidar3DPrxPtr lidar3d_proxy;
 	RoboCompOmniRobot::OmniRobotPrxPtr omnirobot_proxy;
@@ -80,6 +80,7 @@ public:
 protected:
 	std::unordered_map<std::string, std::unique_ptr<GRAFCETStep>> states;
 	ConfigLoader configLoader;
+	FPSCounter fps;
 	//DSR params
 	std::string agent_name;
 	int agent_id;

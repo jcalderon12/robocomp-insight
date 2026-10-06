@@ -321,7 +321,6 @@ agents/concept_robot/logs/
 
 # Archivos generados
 **/.qglviewer.xml
-**/generated/
 **/.qt/
 
 # Documentación local y scripts personales

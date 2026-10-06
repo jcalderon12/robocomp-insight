@@ -89,15 +89,18 @@ void SpecificWorker::compute()
 	auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	auto relative_position = get_person_relative_position();
 
-	std::cout << "[" << now_ms << "] get_person_relative_position -> x: " << relative_position[0]
-		<< " | y: " << relative_position[1] << " | z: " << relative_position[2] << std::endl;
+	if(print_extra_info)
+		std::cout << "[" << now_ms << "] get_person_relative_position -> x: " << relative_position[0]
+			<< " | y: " << relative_position[1] << " | z: " << relative_position[2] << std::endl;
 
 	bool changed = has_significant_change(relative_position, last_relative_pose);
-	std::cout << "[" << now_ms << "] Significant change detected: " << (changed ? "Yes" : "No") << std::endl;
+	if(print_extra_info)
+		std::cout << "[" << now_ms << "] Significant change detected: " << (changed ? "Yes" : "No") << std::endl;
 
 	if (changed){
 		bool updated = update_relative_position_to_person(relative_position, now_ms);
-		std::cout << "[" << now_ms << "] update_relative_position_to_person -> " << (updated ? "Updated successfully" : "Update failed") << std::endl;
+		if(print_extra_info)
+			std::cout << "[" << now_ms << "] update_relative_position_to_person -> " << (updated ? "Updated successfully" : "Update failed") << std::endl;
 		if (updated){
 			last_relative_pose = relative_position;
 		}
@@ -224,14 +227,15 @@ std::vector<float> SpecificWorker::get_person_relative_position()
 		float local_x = -std::sin(theta) * dx + std::cos(theta) * dy;
 		float local_y = -std::cos(theta) * dx - std::sin(theta) * dy;
 
-		relative_position = {local_x, local_y, dz};
+		relative_position = {local_y, local_x, dz};
 
 		// debug
 		auto ts_person = std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count();
-		std::cout << "[" << ts_person << "] local_delta -> dx: " << relative_position[0]
-				  << " | dy: " << relative_position[1]
-				  << " | theta: " << theta << std::endl;
+		if(print_extra_info)
+			std::cout << "[" << ts_person << "] local_delta -> dx: " << relative_position[0]
+					<< " | dy: " << relative_position[1]
+					<< " | theta: " << theta << std::endl;
 	}
 	else{
 		auto segmented_objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
