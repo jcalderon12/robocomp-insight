@@ -436,6 +436,12 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 			std::cout << "[MC→EM] Creating TARGET edge for mission " << event.mission_id << std::endl;
 			create_mission_target_edge(event.mission_id);
 
+			// TARGET en el mundo para los concept_*: activar o reanudar una mision recupera su
+			// propio objetivo, en vez de quedarse con el de la ultima mision creada.
+			const std::string activated_type = get_mission_type_from_id(event.mission_id);
+			if (activated_type == "follow_person")    set_dsr_target_edge("robot", "person");
+			else if (activated_type == "Take Photos") set_dsr_target_edge("robot", "bump");
+
 			// Update DSR status
 			update_mission_status_episodic(event.mission_id, "running");
 
@@ -1185,6 +1191,31 @@ void SpecificWorker::delete_active_target_edge() {
 	}
 }
 
+// Apunta el TARGET del mundo a un nodo por nombre; los concept_* lo leen para saber a quien
+// seguir. Nombre vacio o nodo ausente: no se toca nada.
+void SpecificWorker::set_dsr_target_edge(const std::string& from_name, const std::string& to_name)
+{
+	if (to_name.empty())
+		return;
+
+	auto from_opt = G->get_node(from_name);
+	auto to_opt   = G->get_node(to_name);
+	if (!from_opt.has_value() || !to_opt.has_value())
+	{
+		std::cerr << "[TARGET] Falta el nodo '" << (from_opt.has_value() ? to_name : from_name) << "'" << std::endl;
+		return;
+	}
+
+	// Solo un objetivo activo a la vez: se retira el anterior antes de poner el nuevo.
+	delete_active_target_edge();
+	DSR::Edge new_target_edge;
+	new_target_edge.from(from_opt.value().id());
+	new_target_edge.to(to_opt.value().id());
+	new_target_edge.type("TARGET");
+	G->insert_or_assign_edge(new_target_edge);
+	std::cout << "[TARGET] " << from_name << " -> " << to_name << std::endl;
+}
+
 void SpecificWorker::delete_mission_target_edge(uint64_t mission_id) {
 	try {
 		auto robot_opt = mission_graph->get_node("robot");
@@ -1256,21 +1287,6 @@ void SpecificWorker::create_or_check_follow_person_mission()
 	{
 		waiting_mission_row = row;
 		waiting_mission_id = mission_id_opt.value();
-
-		// Create TARGET edge (same as on_setMission_clicked)
-		auto robot_opt = G->get_node("robot");
-		auto person_opt = G->get_node("person");
-
-		if (robot_opt.has_value() && person_opt.has_value())
-		{
-			delete_active_target_edge();
-			DSR::Edge new_target_edge;
-			new_target_edge.from(robot_opt.value().id());
-			new_target_edge.to(person_opt.value().id());
-			new_target_edge.type("TARGET");
-			G->insert_or_assign_edge(new_target_edge);
-		}
-
 	}
 	else
 	{
@@ -1338,21 +1354,6 @@ void SpecificWorker::create_take_photos_mission()
 	if (!mission_id_opt.has_value()) {
 		std::cerr << "[TAKE_PHOTOS_ERROR] Failed to insert mission node" << std::endl;
 		return;
-	}
-
-	// Create TARGET edge
-	// "bump" carries problem_position (the resolved cause location, RT later); concept_bump
-	// reads this TARGET the same way concept_person reads TARGET -> person for follow_person.
-	auto robot_opt = G->get_node("robot");
-	auto bump_opt = G->get_node("bump");
-	if (robot_opt.has_value() && bump_opt.has_value())
-	{
-		delete_active_target_edge();
-		DSR::Edge new_target_edge;
-		new_target_edge.from(robot_opt.value().id());
-		new_target_edge.to(bump_opt.value().id());
-		new_target_edge.type("TARGET");
-		G->insert_or_assign_edge(new_target_edge);
 	}
 
 	std::cout << "[AUTOPILOT] Take Photos mission created" << std::endl;
@@ -1480,7 +1481,7 @@ void SpecificWorker::monitor_mission_execution_state()
 	if (active_id == 0) return;
 
 	// Monitor "problem" node
-	if (follow_person_active && problem_node_exists()) {
+	if (follow_person_active && problem_node_exists() && !G->get_node("bump").has_value()) {
 		std::cout << "[AUTOPILOT] Problem detected during follow_person mission. Stopping mission." << std::endl;
 		stop_active_mission();
 		create_search_problem_cause_mission();
@@ -1504,7 +1505,7 @@ void SpecificWorker::monitor_mission_execution_state()
 	std::string active_type = get_mission_type_from_id(active_id);
 	if (active_type != "follow_person" && active_type != "Take Photos") return;
 
-	auto affordance_opt = get_active_affordance_node(mission_graph);
+	auto affordance_opt = get_active_affordance_node(G);
 	if (!affordance_opt.has_value()) return;
 
 	auto affordance = affordance_opt.value();

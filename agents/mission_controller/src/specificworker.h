@@ -218,6 +218,7 @@ private:
 	void create_mission_target_edge(uint64_t mission_id);
 	void delete_mission_target_edge(uint64_t mission_id);
 	void delete_active_target_edge(); 
+	void set_dsr_target_edge(const std::string& from_name, const std::string& to_name);  // TARGET robot->objetivo de la mision activa
 	std::optional<uint64_t> find_mission_node_by_name(const std::string &mission_name);
 	
 	// Affordance and mission monitoring

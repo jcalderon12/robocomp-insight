@@ -83,7 +83,7 @@ class SpecificWorker(GenericWorker):
         if not bottle_over_robot:
             if self.g.get_node("bump") is None:
                 self.generate_problem_node()
-            self.deactivate_affordance()
+                self.deactivate_affordance()
         
         print(flush=True, end="")
         return True
@@ -121,7 +121,7 @@ class SpecificWorker(GenericWorker):
             
             problem_node = self.g.get_node("problem")
 
-            problem_edge = Edge(robot_node.id, problem_node.id, "has", self.agent_id);
+            problem_edge = Edge(problem_node.id, robot_node.id, "has", self.agent_id);
             self.g.insert_or_assign_edge(problem_edge)
 
     

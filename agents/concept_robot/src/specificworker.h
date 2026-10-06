@@ -173,10 +173,21 @@ public slots:
 	void take_photo(const std::string& label, float angle_to_bump, float distance_to_bump);
 
 	/**
-	 * \brief Clears aff_interacting on the affordance reached via TARGET->has_intention, which is
-	 * what mission_controller watches to complete the mission.
+	 * \brief Publishes photo_session_dir on the concept node and closes the mission.
 	 */
 	void finish_photo_mission();
+
+	/**
+	 * \brief Clears aff_interacting on the affordance reached via TARGET->has_intention, which is
+	 * what mission_controller watches to complete the mission. Shared by both missions.
+	 */
+	void clear_target_affordance();
+
+	/**
+	 * \brief Completes follow_person once the robot holds the desired distance to the target for
+	 * Follow_hold_seconds; leaving the distance or drifting resets the wait.
+	 */
+	void check_follow_reached();
 
 	/**
 	 * \brief Resets photo_spin() progress so the next photo mission starts from scratch.
@@ -213,6 +224,18 @@ private:
 	std::chrono::steady_clock::time_point last_follow_time;
 	bool was_following = false;  // skip the PID D-term on the first cycle after (re)starting to follow a target
 
+	// ---- Fin de follow_person por permanencia a la distancia deseada ----
+	// Holgura sobre desired_distance: la aproximacion es asintotica y los ultimos centimetros se
+	// recorren a milimetros por segundo, asi que exigir la distancia exacta puede no cumplirse nunca.
+	static constexpr float FOLLOW_REACHED_MARGIN = 0.1f;   // metros
+	// Deriva de la distancia durante la espera que se interpreta como que la persona se ha movido.
+	static constexpr float FOLLOW_HOLD_DRIFT     = 0.25f;  // metros
+	float follow_hold_seconds;           // segundos que hay que aguantar a la distancia deseada
+	float last_target_distance = -1.f;   // distancia medida en el ultimo follow_target()
+	bool  follow_holding = false;        // ya a la distancia deseada, contando
+	float follow_hold_distance = 0.f;    // distancia al empezar la espera, para medir la deriva
+	std::chrono::steady_clock::time_point follow_hold_start;
+
 	bool print_extra_info = configLoader.get<bool>("print_extra_info");
 	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
@@ -226,8 +249,8 @@ private:
 	std::unique_ptr<DSR::RT_API> rt;
 
 	// ---- Misión de fotos (photo_spin()) ----
-	enum class SpinStage { APPROACH, MOVE_OFF, TURNING, SETTLING, DONE };
-	SpinStage spin_stage = SpinStage::APPROACH;
+	enum class SpinStage { TURNING, SETTLING, DONE };
+	SpinStage spin_stage = SpinStage::TURNING;
 	float spin_accumulated = 0.f;       // radianes girados en total en esta vuelta
 	float spin_since_shot = 0.f;        // radianes girados desde la última parada de disparo
 	float spin_last_heading = 0.f;      // rumbo del ciclo anterior, para acumular el giro
@@ -235,19 +258,11 @@ private:
 	std::chrono::steady_clock::time_point spin_settle_start;
 	int photo_counter = 0;
 
-	// Margen sobre desired_distance para dar la aproximación por terminada y empezar a girar.
-	static constexpr float PHOTO_APPROACH_MARGIN = 0.2f;   // metros
-	// Al arrancar encima del bache, se aparta avanzando recto en la dirección que ya llevaba.
-	static constexpr float PHOTO_MOVEOFF_SPEED = 0.4f;     // m/s
-
 	float photo_angular_step;     // radianes entre disparos
 	float photo_front_window;     // radianes; |ángulo al bache| <= esto -> con_bache
 	float photo_back_window;      // radianes; |ángulo al bache| >= PI - esto -> sin_bache
 	float photo_settle_seconds;   // espera tras parar, antes de leer el ángulo y disparar
 	float photo_spin_speed;       // rad/s del giro
-	float photo_moveoff_distance; // metros que avanza para apartarse del bache
-	float moveoff_start_x = 0.f, moveoff_start_y = 0.f;
-	bool  moveoff_started = false;
 	std::string photo_save_dir  = configLoader.get<std::string>("Photo_save_dir");
 	std::string photo_session_dir;  // photo_save_dir/<session_ms>
 	std::string photo_log_path;     // una fila por disparo

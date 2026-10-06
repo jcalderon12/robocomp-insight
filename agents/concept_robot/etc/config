@@ -50,11 +50,13 @@ Simulated = False
 print_extra_info = false
 Desired_distance = 1800.0
 
+# Fin de follow_person: segundos seguidos a la distancia deseada
+Follow_hold_seconds = 3.0
+
 # Misión de fotos (concept_robot::photo_spin())
 Photo_angular_step = 5.0
 Photo_front_window = 30.0
 Photo_back_window = 30.0
 Photo_settle_seconds = 0.7
 Photo_spin_speed_factor = 0.1
-Photo_moveoff_distance = 1800.0
 Photo_save_dir = "photos"

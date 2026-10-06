@@ -116,6 +116,9 @@ void SpecificWorker::initialize()
 			std::cout << "Desired distance (real): " << desired_distance << std::endl;
 		}
 
+	// Segundos que hay que aguantar a la distancia deseada para dar follow_person por terminada.
+	follow_hold_seconds = configLoader.get<double>("Follow_hold_seconds");
+
 	// Parámetros de la misión de fotos: en el config van en grados, aquí se pasan a radianes.
 	const float deg2rad = std::numbers::pi_v<float> / 180.f;
 	photo_angular_step  = configLoader.get<double>("Photo_angular_step") * deg2rad;
@@ -123,7 +126,6 @@ void SpecificWorker::initialize()
 	photo_back_window   = configLoader.get<double>("Photo_back_window") * deg2rad;
 	photo_settle_seconds = configLoader.get<double>("Photo_settle_seconds");
 	photo_spin_speed    = configLoader.get<double>("Photo_spin_speed_factor") * WEBOTS_MAX_ANGULAR_SPEED;
-	photo_moveoff_distance = configLoader.get<double>("Photo_moveoff_distance") / 1000.f;
 
 	// Una carpeta y un log por ejecución, para no mezclar tandas.
 	auto session_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -152,11 +154,14 @@ void SpecificWorker::compute()
 		{
 			reset_photo_spin();
 			follow_target(1.0f, 1.0f, desired_distance);
+			check_follow_reached();
 		}
 	}
 	else{
 		stop_robot();
 		was_following = false;  // next follow_target() call starts a fresh D-term baseline
+		follow_holding = false;
+		last_target_distance = -1.f;
 		reset_photo_spin();
 	}
 
@@ -247,6 +252,8 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 
     float distance_to_target = std::sqrt(x*x + y*y);
     float angle_to_target    = std::atan2(x, y);
+
+    last_target_distance = distance_to_target;   // la lee check_follow_reached()
 
     float distance_error = 0.0f;
     if (distance_to_target > 1e-3f)
@@ -579,11 +586,10 @@ bool SpecificWorker::is_photo_target()
 
 void SpecificWorker::reset_photo_spin()
 {
-	spin_stage = SpinStage::APPROACH;
+	spin_stage = SpinStage::TURNING;
 	spin_accumulated = 0.f;
-	spin_since_shot = 0.f;
+	spin_since_shot = photo_angular_step;   // dispara ya en el rumbo de partida
 	spin_heading_valid = false;
-	moveoff_started = false;
 }
 
 void SpecificWorker::spin_in_place(float angular_speed)
@@ -619,7 +625,6 @@ void SpecificWorker::drive_forward(float speed)
 void SpecificWorker::finish_photo_mission()
 {
 	auto target_edges = G->get_edges_by_type("TARGET");
-	auto has_intention_edges = G->get_edges_by_type("has_intention");
 	for (const auto& target_edge : target_edges)
 	{
 		// Publica la ruta de las fotos en el nodo del concepto, antes de cerrar la misión: es
@@ -633,6 +638,17 @@ void SpecificWorker::finish_photo_mission()
 			G->update_node(concept_node);
 		}
 
+	}
+	clear_target_affordance();
+}
+
+// Pone aff_interacting=false en la afordance alcanzada por TARGET -> has_intention, que es como
+// se le señala a mission_controller que la misión ha terminado.
+void SpecificWorker::clear_target_affordance()
+{
+	auto target_edges = G->get_edges_by_type("TARGET");
+	auto has_intention_edges = G->get_edges_by_type("has_intention");
+	for (const auto& target_edge : target_edges)
 		for (const auto& intention_edge : has_intention_edges)
 			if (intention_edge.from() == target_edge.to())
 			{
@@ -645,6 +661,46 @@ void SpecificWorker::finish_photo_mission()
 					return;
 				}
 			}
+}
+
+// Da follow_person por terminada tras aguantar follow_hold_seconds a la distancia deseada;
+// alejarse o derivar durante la espera reinicia la cuenta.
+void SpecificWorker::check_follow_reached()
+{
+	if (last_target_distance < 0.f)
+		return;
+
+	// El controlador nunca retrocede, así que se acepta la distancia deseada o menos; el margen
+	// cubre que los últimos centímetros se recorren a milímetros por segundo.
+	if (last_target_distance > desired_distance + FOLLOW_REACHED_MARGIN)
+	{
+		follow_holding = false;
+		return;
+	}
+
+	auto now = std::chrono::steady_clock::now();
+	if (!follow_holding)
+	{
+		follow_holding = true;
+		follow_hold_start = now;
+		follow_hold_distance = last_target_distance;
+		return;
+	}
+
+	// Deriva respecto a la distancia que había al empezar: el objetivo se ha movido.
+	if (std::fabs(last_target_distance - follow_hold_distance) > FOLLOW_HOLD_DRIFT)
+	{
+		follow_holding = false;
+		return;
+	}
+
+	if (std::chrono::duration<float>(now - follow_hold_start).count() >= follow_hold_seconds)
+	{
+		std::cout << "follow_person: " << follow_hold_seconds << " s a " << last_target_distance
+		          << " m del objetivo; misión completada." << std::endl;
+		clear_target_affordance();
+		follow_holding = false;
+		last_target_distance = -1.f;
 	}
 }
 
@@ -708,18 +764,14 @@ void SpecificWorker::photo_spin()
 	float angle_to_bump = std::atan2(t_rb[1], t_rb[0]);
 	float dist_to_bump  = std::sqrt(t_rb[0] * t_rb[0] + t_rb[1] * t_rb[1]);
 
-	// Posición y rumbo del robot desde la RT root->robot, que auto_localization() refresca cada
-	// ciclo: es la señal rápida con la que se miden el giro acumulado y lo recorrido.
+	// Rumbo del robot desde la RT root->robot, que auto_localization() refresca cada ciclo: es la
+	// señal rápida con la que se mide el giro acumulado.
 	auto root_robot_rt_opt = rt->get_edge_RT(root_node_opt.value(), robot_node.id());
 	if (!root_robot_rt_opt.has_value())
 		return;
-	auto t_rr_opt = G->get_attrib_by_name<rt_translation_att>(root_robot_rt_opt.value());
 	auto q_rr_opt = G->get_attrib_by_name<rt_quaternion_att>(root_robot_rt_opt.value());
-	if (!t_rr_opt.has_value() || !q_rr_opt.has_value())
+	if (!q_rr_opt.has_value())
 		return;
-	std::vector<float> t_rr = t_rr_opt.value();
-	float robot_x = t_rr[0];
-	float robot_y = t_rr[1];
 	std::vector<float> q_rr = q_rr_opt.value();
 	Eigen::Quaternionf q(q_rr[3], q_rr[0], q_rr[1], q_rr[2]);
 	q.normalize();
@@ -731,51 +783,6 @@ void SpecificWorker::photo_spin()
 
 	switch (spin_stage)
 	{
-		case SpinStage::APPROACH:
-		{
-			// Demasiado lejos: acercarse con el controlador de siempre. Demasiado cerca (arranca
-			// encima del bache tras el choque): apartarse primero. Si ya está a tiro, girar.
-			if (dist_to_bump > desired_distance + PHOTO_APPROACH_MARGIN)
-				follow_target(1.0f, 1.0f, desired_distance);
-			else if (dist_to_bump < desired_distance - PHOTO_APPROACH_MARGIN)
-			{
-				stop_robot();
-				moveoff_started = false;
-				spin_stage = SpinStage::MOVE_OFF;
-			}
-			else
-			{
-				stop_robot();
-				spin_accumulated = 0.f;
-				spin_since_shot = photo_angular_step;
-				spin_heading_valid = false;
-				spin_stage = SpinStage::TURNING;
-			}
-			break;
-		}
-
-		case SpinStage::MOVE_OFF:
-		{
-			// Arranca encima del bache: se aparta avanzando recto en la dirección que ya llevaba,
-			// midiendo lo recorrido con la posición de root->robot (se refresca cada ciclo).
-			if (!moveoff_started)
-			{
-				moveoff_start_x = robot_x;
-				moveoff_start_y = robot_y;
-				moveoff_started = true;
-			}
-
-			float travelled = std::hypot(robot_x - moveoff_start_x, robot_y - moveoff_start_y);
-			if (travelled >= photo_moveoff_distance)
-			{
-				stop_robot();
-				spin_stage = SpinStage::APPROACH;
-			}
-			else
-				drive_forward(PHOTO_MOVEOFF_SPEED);
-			break;
-		}
-
 		case SpinStage::TURNING:
 		{
 			// Acumular el giro real hecho desde el ciclo anterior.
