@@ -302,6 +302,71 @@ def simulation_horizon(
     return min(episode_length, observed_effect_time + margin_s)
 
 
+# --------------------------------------------------------------------------- #
+# Clock of the episode
+# --------------------------------------------------------------------------- #
+# The recording is stamped with the wall clock, but the physics behind it may run on
+# a clock of its own: Webots simulated 0.46-0.96 s per wall second depending on the
+# load, and in its own time the base follows the setpoint 1:1 (webots-bridge has no
+# ramp or clamp). Replayed on the wall clock, the setpoint made the simulated robot
+# cover 1.6-2.3 times the recorded path and reach the obstacle seconds early. The
+# rate is fitted from the episode itself, as travelled over ordered in free motion;
+# on the real robot it comes out close to 1 (the base's ramp), so nothing has to
+# say which platform recorded the episode.
+CLOCK_FIT_START_S = 1.0     # skips the start-up turn (placeholder person pose)
+CLOCK_FIT_WINDOW_S = 1.0
+CLOCK_MIN_ORDERED_M = 0.1   # the robot was told to move
+CLOCK_MIN_RATIO = 0.25      # below it the robot was stalled, e.g. against an obstacle
+
+
+def _zoh_integral(times: np.ndarray, values: np.ndarray, at: np.ndarray) -> np.ndarray:
+    """Integral, from the first sample, of a zero-order-hold signal at each of `at`."""
+    cumulative = np.concatenate([[0.0], np.cumsum(np.diff(times) * values[:-1])])
+    index = np.searchsorted(times, at, side="right") - 1
+    safe = np.clip(index, 0, None)
+    return np.where(index >= 0, cumulative[safe] + values[safe] * (at - times[safe]), 0.0)
+
+
+def episode_clock_rate(mem_api, origin_ns: Optional[int], until_s: Optional[float]) -> tuple[float, int]:
+    """(rate, windows): seconds of the recorded physics per second of the recording.
+
+    The median, over windows of CLOCK_FIT_WINDOW_S from CLOCK_FIT_START_S to `until_s`,
+    of the path the robot travelled (room->robot RT history) over the path the forward
+    setpoint ordered. Windows where the robot was not told to move, or was stalled, do
+    not count. Without any window the rate is 1: the recording's own clock."""
+    if origin_ns is None or until_s is None or not mem_api.is_ready() or mem_api.get_keyframe_count() == 0:
+        return 1.0, 0
+    keyframe = mem_api.get_keyframe(0)
+    room_id = _find_node_id_by_name(keyframe, "room")
+    robot_id = _find_node_id_by_name(keyframe, "robot")
+    if room_id is None or robot_id is None:
+        return 1.0, 0
+    pose_events = _rt_pose_events(mem_api, room_id, robot_id)
+    setpoints = [
+        ((event.timestamp - origin_ns) * 1e-9, float(event.attributes["robot_ref_adv_speed"].value))
+        for event in mem_api.get_node_history_by_name("robot")
+        if event.modification_type == "MNA" and "robot_ref_adv_speed" in event.attributes
+    ]
+    if len(pose_events) < 2 or not setpoints:
+        return 1.0, 0
+
+    scale = _units_scale(pose_events)
+    pose_times = np.array([(event.timestamp - origin_ns) * 1e-9 for event in pose_events])
+    xy = np.array([_event_pose(event, scale)[0][:2] for event in pose_events])
+    path = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))])
+    setpoint_times, setpoint_values = (np.array(column) for column in zip(*setpoints))
+
+    edges = np.arange(CLOCK_FIT_START_S, until_s + 1e-9, CLOCK_FIT_WINDOW_S)
+    travelled = np.diff(np.interp(edges, pose_times, path))
+    ordered = np.diff(_zoh_integral(setpoint_times, setpoint_values, edges))
+    moving = ordered > CLOCK_MIN_ORDERED_M
+    ratios = travelled[moving] / ordered[moving]
+    ratios = ratios[ratios > CLOCK_MIN_RATIO]
+    if ratios.size == 0:
+        return 1.0, 0
+    return float(np.median(ratios)), int(ratios.size)
+
+
 MM_PER_M = 1000.0
 DEFAULT_REPETITIONS = 10
 
@@ -315,6 +380,9 @@ def build_simulation_scene(
 ) -> tuple[dict, dict]:
     """The scene the causes simulator replays (a SimulationScene dict, positions in
     millimeters), plus what was learned while building it, for logging.
+
+    Times stay on the recording's clock; `clock_rate` tells the simulator how fast
+    the recorded physics ran against it (episode_clock_rate).
 
     The rotation profile stays empty: where omega should come from (the pose
     history or the setpoint) is still to be decided, so the replay drives straight."""
@@ -337,6 +405,8 @@ def build_simulation_scene(
     # and replaying that hard stop can knock the bottle off by itself.
     until_ns = origin_ns + int(observed_effect_time * 1e9) if observed_effect_time is not None else None
     speeds = commanded_speed_history(mem_api, until_ns) or {TIMESTAMP: [], ADV_SPEED: []}
+    clock_rate, clock_windows = episode_clock_rate(
+        mem_api, origin_ns, observed_effect_time if observed_effect_time is not None else length)
 
     scene = {
         "gravity": gravity,
@@ -352,6 +422,8 @@ def build_simulation_scene(
         "list_of_target_rot_speeds": {},
         "observed_effect_time": observed_effect_time,
         "episode_length": length,
+        "clock_rate": clock_rate,
     }
-    info = {"pose_sources": poses.sources, "effect_times": effect_times, "episode_length": length}
+    info = {"pose_sources": poses.sources, "effect_times": effect_times, "episode_length": length,
+            "clock_rate": clock_rate, "clock_rate_windows": clock_windows}
     return scene, info

@@ -17,3 +17,4 @@ class SimulationScene(BaseModel):
     list_of_target_rot_speeds:dict = {} # {"timestamp": [...], "rot_speed": [...]} in rad/s; empty keeps the robot from turning.
     observed_effect_time:Optional[float] = None # Seconds at which the bottle was observed leaving the robot, if it was.
     episode_length:Optional[float] = None # Length of the whole recording, before cutting the horizon at the observed effect.
+    clock_rate:float = 1.0 # Seconds of the recorded physics per second of the recording's clock (Webots runs slower than the wall clock the episode is stamped with); 1 replays on the recording's clock.

@@ -327,6 +327,7 @@ class CausesSimulator:
         self.problem_position = self.simulation_scene.problem_position
         self.problem_orientation = self.simulation_scene.problem_orientation
         self.simulation_length = self.simulation_scene.simulation_length
+        self.clock_rate = self.simulation_scene.clock_rate if self.simulation_scene.clock_rate > 0 else 1.0
         # If cause uses grid-based generation, derive repetitions from grid dimensions
         if hasattr(self.current_cause, 'grid_dimensions'):
             grid_dims = getattr(self.current_cause, 'grid_dimensions', [10, 10])
@@ -351,7 +352,11 @@ class CausesSimulator:
             self.record_imu()
             self.record_fall()
             stepCount += 1
-            self.simulationTime = stepCount * self.dt
+            # A physics step lasts dt on the clock the recorded physics ran on (Webots
+            # runs slower than the wall clock of the recording). The setpoints, the
+            # horizon, the causes' windows and everything recorded here stay on the
+            # recording's clock.
+            self.simulationTime = stepCount * self.dt / self.clock_rate
             et = time.time()
             
             if self.realTime:

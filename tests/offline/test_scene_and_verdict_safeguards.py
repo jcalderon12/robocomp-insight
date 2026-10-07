@@ -6,7 +6,9 @@
   * the verdict: abstention when the nominal run reproduces the effect, discarded
     blown-up repetitions and implausible landings, deterministic tie-break;
   * the semantic ingestor refusing to consolidate an abstained verdict;
-  * the causes simulator following a rotation profile and recording the fall.
+  * the causes simulator following a rotation profile and recording the fall;
+  * the episode clock: the rate fitted from the recording, and the simulator
+    replaying on it while recording on the recording's clock.
 
 Run from the repo root:  python3 tests/offline/test_scene_and_verdict_safeguards.py
 """
@@ -28,6 +30,7 @@ from src.episode_scene import (
     DEFAULT_TRAY_OFFSET,
     build_simulation_scene,
     EFFECT_HORIZON_MARGIN_S,
+    episode_clock_rate,
     episode_time_origin_ns,
     extract_scene_poses,
     observed_effect_times,
@@ -278,13 +281,68 @@ def test_simulator_rotation_and_fall():
     assert repetition["fall_time"] is None and "robot_final_position" in repetition
 
 
+def _run_scene(scene: dict) -> dict:
+    import pybullet as p
+    from causes_simulator import CausesSimulator
+    from src.logger import Logger
+
+    workdir = Path(tempfile.mkdtemp(prefix="insight_clock_sim_"))
+    scene_path = workdir / "scene.json"
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+    read_fd, write_fd = os.pipe()
+    try:
+        simulator = CausesSimulator(json.dumps({"cause": {"name": "none"}}), str(scene_path), write_fd,
+                                    Logger(str(workdir / "sim.log")), real_time=False, gui=False)
+        simulator.doSimulations()
+        return simulator.historical[0]
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+        p.disconnect()
+
+
+def test_episode_clock():
+    # The recording's robot covers what the setpoint orders: rate ~1 (the real robot).
+    api = FakeMemApi(yaw_deg=-90.0, deletions_s=[14.6])
+    rate, windows = episode_clock_rate(api, episode_time_origin_ns(api), 14.6)
+    assert abs(rate - 3.3 / (8 * 0.4)) < 0.01 and windows == 7, (rate, windows)
+    # It covers half of it, as under the Webots clock; the scene carries the rate.
+    api.robot_rt[1] = Event(9 * NS, "MEA", {"rt_translation": Attr([-3.7 + 0.5 * 0.4 * 8, -0.3, 0.04]),
+                                            "rt_quaternion": Attr([0.0, 0.0, -math.sqrt(0.5), math.sqrt(0.5)])})
+    scene, info = build_simulation_scene(api, [-3700.0, -300.0, 32.5], [0.0, 40.0, 1.0])
+    assert abs(scene["clock_rate"] - 0.5) < 1e-6 and info["clock_rate_windows"] == 7, (scene["clock_rate"], info)
+    # A robot that is never told to move gives no window: the recording's own clock.
+    api.robot_node = api.robot_node[:1]
+    assert episode_clock_rate(api, episode_time_origin_ns(api), 14.6) == (1.0, 0)
+
+    # Replayed at rate 0.5, the same horizon on the recording's clock takes half the
+    # physics steps and the robot covers half the path.
+    base = {
+        "gravity": -9.81,
+        "initial_robot_position": [0.0, 0.0, 32.5], "initial_robot_orientation": [0.0, 0.0, 0.0, 1.0],
+        "problem_position": [0.0, 0.0, 0.0], "problem_orientation": [0.0, 0.0, 0.0, 1.0],
+        "bottle_position": [50.0, 110.0, 795.0], "bottle_orientation": [0.0, 0.0, 0.0, 1.0],
+        "simulation_length": 4.0, "num_of_repetitions": 1,
+        "list_of_target_velocities": {"timestamp": [0.0], "adv_speed": [0.4]},
+    }
+    runs = {rate: _run_scene({**base, "clock_rate": rate}) for rate in (1.0, 0.5)}
+    dt = 1.0 / 62.0
+    for rate, repetition in runs.items():
+        stamps = repetition["history"]["timestamp"]
+        assert len(stamps) == math.ceil(4.0 * rate / dt), (rate, len(stamps))
+        assert 4.0 - 2 * dt / rate < stamps[-1] + dt / rate <= 4.0 + 1e-9, (rate, stamps[-1])
+    travelled = {rate: run["robot_final_position"][0] for rate, run in runs.items()}
+    assert abs(travelled[0.5] / travelled[1.0] - 0.5) < 0.1, travelled
+
+
 def main():
     test_heading_convention()
     test_observed_effect_and_horizon()
     test_window_anchored_on_observed_effect()
     abstained = test_verdict_safeguards()
     test_simulator_rotation_and_fall()
-    test_ingestor_refuses_abstained_verdict(abstained)
+    test_episode_clock()
+    test_ingestor_refuses_abstained_verdict(abstained)   # last: it swaps `src` for the semantic agent's
     print("test_scene_and_verdict_safeguards OK")
 
 
