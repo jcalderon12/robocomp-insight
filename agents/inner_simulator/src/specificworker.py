@@ -27,6 +27,9 @@ EM_HISTORY_FILE = "src/mission_Follow Path_25032026_120505.txt"
 UNEXPLAINED_NODE = "unexplained"
 HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
 VERDICT_FILEPATH_ATTR = "verdict_filepath"
+# Default of Simulation.BatchWaitSeconds. The batch came 4 s after the closed recording in
+# Webots (06/10); one LLM attempt takes 2-6 s and the semantic agent makes up to 3.
+BATCH_WAIT_DEFAULT_S = 120.0
 
 # Keys of IMU history dictionary
 TIMESTAMP = "timestamp"
@@ -154,6 +157,9 @@ class SpecificWorker(GenericWorker):
         sim_cfg = configData.get("Simulation", {})
         self.sim_gui = bool(sim_cfg.get("Gui", False))
         self.sim_real_time = bool(sim_cfg.get("RealTime", False))
+        # How long to wait for the semantic agent's batch before the static causes (see waiting_for_batch).
+        self.batch_wait_s = float(sim_cfg.get("BatchWaitSeconds", BATCH_WAIT_DEFAULT_S))
+        self.batch_wait_started = {}
 
         # Hypothesis-driven mode state (set when the semantic agent publishes a batch)
         self.hypotheses_compiled = None
@@ -741,6 +747,8 @@ class SpecificWorker(GenericWorker):
         has_new_hypotheses = self.load_hypotheses_causes()
         if not has_new_hypotheses and episode_path in self.processed_episode_paths:
             return False
+        if not has_new_hypotheses and self.waiting_for_batch(episode_path):
+            return False
 
         self.logger.log(
             "Search Problem Cause node found with status 'running' and Follow Person node found with non-empty filepath.",
@@ -778,6 +786,31 @@ class SpecificWorker(GenericWorker):
 
         self.writeSimulationScene()
         return True
+
+    def waiting_for_batch(self, episode_path: str) -> bool:
+        """Whether to hold the static causes back for this closed recording: the semantic
+        agent is explaining it (its 'unexplained' intention node is in the work graph) and
+        has not published its hypotheses batch yet. It sees the recording closed when this
+        agent does, and simulating causes.json meanwhile only delays the cycle: the agent
+        ignores that verdict (another case_id). The wait counts from the first time the
+        closed recording is seen and lasts up to batch_wait_s; past it, the static causes
+        run as before, and a batch that comes later is still simulated."""
+        try:
+            explaining = self.graphs["work"].get_node(UNEXPLAINED_NODE) is not None
+        except Exception:
+            explaining = False
+        if not explaining:
+            return False
+        if episode_path not in self.batch_wait_started:
+            self.batch_wait_started[episode_path] = time.time()
+            self.logger.log(
+                f"Recording closed while the semantic agent explains it: waiting up to "
+                f"{self.batch_wait_s:.0f} s for its hypotheses batch.", style="blue")
+        if time.time() - self.batch_wait_started[episode_path] < self.batch_wait_s:
+            return True
+        self.logger.log(
+            f"No hypotheses batch after {self.batch_wait_s:.0f} s: simulating the static causes.", style="yellow")
+        return False
 
     def get_velocities_from_dsr(self):
         """

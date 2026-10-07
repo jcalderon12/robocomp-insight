@@ -36,6 +36,9 @@ Period.Emergency = 500
 #      RealTime: slow each run down to wall-clock speed (only with Gui).
 Simulation.Gui = true
 Simulation.RealTime = false
+# Seconds to wait, once the recording is closed, for the semantic agent's hypotheses batch
+# while its "unexplained" intention node exists; past them, the static causes (src/causes.json).
+Simulation.BatchWaitSeconds = 120
 
 Component.Debug.Verbose = true
 
