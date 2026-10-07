@@ -1,0 +1,1083 @@
+{
+ "schema_version": "2.0",
+ "case_id": "semantic_unexplained_20261006T073328Z",
+ "trace_id": "trace_a0ffa1064b6042f98ba3238b14cb71bd",
+ "generated_at": "2026-10-06T07:33:32+00:00",
+ "status": "success",
+ "errors": [],
+ "trigger": {
+  "unexplained_reason": "Bottle lost location on robot without explicit causal evidence.",
+  "removed_triples": [
+   {
+    "subject": "http://insight.local/instances#PhysicalObject_Bottle",
+    "predicate": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasLocation",
+    "object": "http://insight.local/instances#Agent_Robot"
+   }
+  ],
+  "added_triples": []
+ },
+ "context_summary": {},
+ "arm": "llm_full",
+ "episode": {
+  "id": "rec_mission_Follow_Person_06102026_093231",
+  "path": "/home/javi/robocomp/components/robocomp-insight/agents/semantic/generated_hypotheses/semantic_unexplained_20261006T073328Z_episode.json",
+  "sha256": "9a5b674ec4c18d0bf93380eeaf92bab39b83dbb564465dcf5bccc4731d40371f",
+  "recording": {
+   "path": "/home/javi/robocomp/components/robocomp-insight/agents/mission_controller/recorded_missions/mission_Follow_Person_06102026_093231.txt",
+   "sha256": "f95cb9ccbc0c9b7862203ce7672569593c4cb7639c9134538a2be7d06e77d432"
+  }
+ },
+ "mechanisms_version": "11d322da69e81c31cc852aa1483f9d76b05a3c9c0559e20f86f31894f143cf04",
+ "budget": {
+  "k": 6,
+  "used": 6,
+  "unit": "compiled cause; the nominal run is free"
+ },
+ "model": "gemma4:31b-cloud",
+ "prompt_path": "agents/semantic/generated_hypotheses/semantic_unexplained_20261006T073328Z_prompt.md",
+ "attempts": 1,
+ "hypotheses": [
+  {
+   "hypothesis_id": "H01_bump_25x2cm",
+   "rank": 1,
+   "mechanism": "obstacle_traversed",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_ObstacleTraversed",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": "Segment_final",
+    "interval": null
+   },
+   "qualitative_parameters": {
+    "shape": "bump"
+   },
+   "expected_trace": [
+    "pitch_rate_peak",
+    "vertical_accel_peak"
+   ],
+   "rationale": "The recording shows a significant pitch rate peak and vertical acceleration peak shortly before the fall, which is consistent with driving over a bump.",
+   "llm_title": "Bump on final segment",
+   "title": "Undetected bump on the last 1 m of the path before the fall (bump_25x2cm)",
+   "family": "external",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_on_segment: mean speed on Segment_final 0.112 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_on_segment",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed on Segment_final",
+         "value": 0.112,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed on Segment_final 0.112 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "obstacle_jolt",
+      "kind": "contrast_rule",
+      "effect": "inform",
+      "status": "to_calibrate",
+      "reads": [
+       "pitch_rate_peak",
+       "vertical_accel_peak"
+      ],
+      "conditions": [
+       {
+        "quantity": "pitch_rate_peak",
+        "value": 1.0,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       },
+       {
+        "quantity": "vertical_accel_peak",
+        "value": 2.81,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       }
+      ],
+      "verdict": "undetermined",
+      "reason": "pitch_rate_peak 1 > 3 x baseline ? = ? (unknown) or vertical_accel_peak 2.81 > 3 x baseline ? = ? (unknown)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "split": "bump: its size is not chosen, so each of the 4 bumps of the catalog is one compiled cause; this one is bump_25x2cm",
+    "asset": "bump = bump_25x2cm",
+    "position_range": "bbox(Segment_final) + 0.475 m (0.35 robot footprint + 0.125 half of bump_25x2cm), clipped to the catalog"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "spawn_static_object",
+    "parameters": {
+     "asset": "bump_25x2cm",
+     "position_range": {
+      "x": [
+       -1.475,
+       0.475
+      ],
+      "y": [
+       -0.475,
+       0.475
+      ],
+      "z": [
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H01_bump_25x5cm",
+   "rank": 1,
+   "mechanism": "obstacle_traversed",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_ObstacleTraversed",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": "Segment_final",
+    "interval": null
+   },
+   "qualitative_parameters": {
+    "shape": "bump"
+   },
+   "expected_trace": [
+    "pitch_rate_peak",
+    "vertical_accel_peak"
+   ],
+   "rationale": "The recording shows a significant pitch rate peak and vertical acceleration peak shortly before the fall, which is consistent with driving over a bump.",
+   "llm_title": "Bump on final segment",
+   "title": "Undetected bump on the last 1 m of the path before the fall (bump_25x5cm)",
+   "family": "external",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_on_segment: mean speed on Segment_final 0.112 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_on_segment",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed on Segment_final",
+         "value": 0.112,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed on Segment_final 0.112 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "obstacle_jolt",
+      "kind": "contrast_rule",
+      "effect": "inform",
+      "status": "to_calibrate",
+      "reads": [
+       "pitch_rate_peak",
+       "vertical_accel_peak"
+      ],
+      "conditions": [
+       {
+        "quantity": "pitch_rate_peak",
+        "value": 1.0,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       },
+       {
+        "quantity": "vertical_accel_peak",
+        "value": 2.81,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       }
+      ],
+      "verdict": "undetermined",
+      "reason": "pitch_rate_peak 1 > 3 x baseline ? = ? (unknown) or vertical_accel_peak 2.81 > 3 x baseline ? = ? (unknown)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "split": "bump: its size is not chosen, so each of the 4 bumps of the catalog is one compiled cause; this one is bump_25x5cm",
+    "asset": "bump = bump_25x5cm",
+    "position_range": "bbox(Segment_final) + 0.475 m (0.35 robot footprint + 0.125 half of bump_25x5cm), clipped to the catalog"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "spawn_static_object",
+    "parameters": {
+     "asset": "bump_25x5cm",
+     "position_range": {
+      "x": [
+       -1.475,
+       0.475
+      ],
+      "y": [
+       -0.475,
+       0.475
+      ],
+      "z": [
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H01_bump_100x5cm",
+   "rank": 1,
+   "mechanism": "obstacle_traversed",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_ObstacleTraversed",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": "Segment_final",
+    "interval": null
+   },
+   "qualitative_parameters": {
+    "shape": "bump"
+   },
+   "expected_trace": [
+    "pitch_rate_peak",
+    "vertical_accel_peak"
+   ],
+   "rationale": "The recording shows a significant pitch rate peak and vertical acceleration peak shortly before the fall, which is consistent with driving over a bump.",
+   "llm_title": "Bump on final segment",
+   "title": "Undetected bump on the last 1 m of the path before the fall (bump_100x5cm)",
+   "family": "external",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_on_segment: mean speed on Segment_final 0.112 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_on_segment",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed on Segment_final",
+         "value": 0.112,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed on Segment_final 0.112 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "obstacle_jolt",
+      "kind": "contrast_rule",
+      "effect": "inform",
+      "status": "to_calibrate",
+      "reads": [
+       "pitch_rate_peak",
+       "vertical_accel_peak"
+      ],
+      "conditions": [
+       {
+        "quantity": "pitch_rate_peak",
+        "value": 1.0,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       },
+       {
+        "quantity": "vertical_accel_peak",
+        "value": 2.81,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       }
+      ],
+      "verdict": "undetermined",
+      "reason": "pitch_rate_peak 1 > 3 x baseline ? = ? (unknown) or vertical_accel_peak 2.81 > 3 x baseline ? = ? (unknown)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "split": "bump: its size is not chosen, so each of the 4 bumps of the catalog is one compiled cause; this one is bump_100x5cm",
+    "asset": "bump = bump_100x5cm",
+    "position_range": "bbox(Segment_final) + 0.85 m (0.35 robot footprint + 0.5 half of bump_100x5cm), clipped to the catalog"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "spawn_static_object",
+    "parameters": {
+     "asset": "bump_100x5cm",
+     "position_range": {
+      "x": [
+       -1.85,
+       0.85
+      ],
+      "y": [
+       -0.85,
+       0.85
+      ],
+      "z": [
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H01_bump_100x10cm",
+   "rank": 1,
+   "mechanism": "obstacle_traversed",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_ObstacleTraversed",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": "Segment_final",
+    "interval": null
+   },
+   "qualitative_parameters": {
+    "shape": "bump"
+   },
+   "expected_trace": [
+    "pitch_rate_peak",
+    "vertical_accel_peak"
+   ],
+   "rationale": "The recording shows a significant pitch rate peak and vertical acceleration peak shortly before the fall, which is consistent with driving over a bump.",
+   "llm_title": "Bump on final segment",
+   "title": "Undetected bump on the last 1 m of the path before the fall (bump_100x10cm)",
+   "family": "external",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_on_segment: mean speed on Segment_final 0.112 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_on_segment",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed on Segment_final",
+         "value": 0.112,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed on Segment_final 0.112 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "obstacle_jolt",
+      "kind": "contrast_rule",
+      "effect": "inform",
+      "status": "to_calibrate",
+      "reads": [
+       "pitch_rate_peak",
+       "vertical_accel_peak"
+      ],
+      "conditions": [
+       {
+        "quantity": "pitch_rate_peak",
+        "value": 1.0,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       },
+       {
+        "quantity": "vertical_accel_peak",
+        "value": 2.81,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       }
+      ],
+      "verdict": "undetermined",
+      "reason": "pitch_rate_peak 1 > 3 x baseline ? = ? (unknown) or vertical_accel_peak 2.81 > 3 x baseline ? = ? (unknown)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "split": "bump: its size is not chosen, so each of the 4 bumps of the catalog is one compiled cause; this one is bump_100x10cm",
+    "asset": "bump = bump_100x10cm",
+    "position_range": "bbox(Segment_final) + 0.85 m (0.35 robot footprint + 0.5 half of bump_100x10cm), clipped to the catalog"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "spawn_static_object",
+    "parameters": {
+     "asset": "bump_100x10cm",
+     "position_range": {
+      "x": [
+       -1.85,
+       0.85
+      ],
+      "y": [
+       -0.85,
+       0.85
+      ],
+      "z": [
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H02",
+   "rank": 2,
+   "mechanism": "obstacle_traversed",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_ObstacleTraversed",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": "Segment_final",
+    "interval": null
+   },
+   "qualitative_parameters": {
+    "shape": "cable"
+   },
+   "expected_trace": [
+    "pitch_rate_peak",
+    "vertical_accel_peak"
+   ],
+   "rationale": "A cable could also cause the observed vertical and pitch disturbances.",
+   "llm_title": "Cable on final segment",
+   "title": "Undetected cable on the last 1 m of the path before the fall",
+   "family": "external",
+   "status": "not_simulable",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_on_segment: mean speed on Segment_final 0.112 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_on_segment",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed on Segment_final",
+         "value": 0.112,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed on Segment_final 0.112 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "obstacle_jolt",
+      "kind": "contrast_rule",
+      "effect": "inform",
+      "status": "to_calibrate",
+      "reads": [
+       "pitch_rate_peak",
+       "vertical_accel_peak"
+      ],
+      "conditions": [
+       {
+        "quantity": "pitch_rate_peak",
+        "value": 1.0,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       },
+       {
+        "quantity": "vertical_accel_peak",
+        "value": 2.81,
+        "value_expr": null,
+        "op": ">",
+        "limit": null,
+        "limit_expr": "3 x baseline ?",
+        "holds": null
+       }
+      ],
+      "verdict": "undetermined",
+      "reason": "pitch_rate_peak 1 > 3 x baseline ? = ? (unknown) or vertical_accel_peak 2.81 > 3 x baseline ? = ? (unknown)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "asset": "cable = cylinder_bump_10m"
+   },
+   "cost_in_simulations": 1,
+   "testable": false,
+   "untestable_reason": "Not simulable here: The catalog cannot orient the cable, which lies along x, and Segment_final runs almost parallel to it (heading 0 deg, |cos| = 1.00 > 0.71).",
+   "simulation_blueprint": {
+    "intervention": null,
+    "parameters": {},
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H03",
+   "rank": 3,
+   "mechanism": "robot_push",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_RobotPush",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {
+    "direction": "any"
+   },
+   "expected_trace": [
+    "lateral_accel_peak"
+   ],
+   "rationale": "There is a lateral acceleration peak and a sustained horizontal acceleration peak, suggesting an external force acting on the robot.",
+   "llm_title": "External push",
+   "title": "Push on the robot during the last 14.4 s before the fall",
+   "family": "external",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "",
+     "preconditions": []
+    },
+    "contrast": [
+     {
+      "check": "robot_jolt",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "to_calibrate",
+      "reads": [
+       "lateral_accel_peak",
+       "speed_ratio",
+       "yaw_change"
+      ],
+      "conditions": [
+       {
+        "quantity": "lateral_accel_peak",
+        "value": 1.0,
+        "value_expr": null,
+        "op": "<=",
+        "limit": null,
+        "limit_expr": "2 x baseline ?",
+        "holds": null
+       },
+       {
+        "quantity": "|speed_ratio - 1|",
+        "value": null,
+        "value_expr": null,
+        "op": "<=",
+        "limit": 0.15,
+        "limit_expr": null,
+        "holds": null
+       },
+       {
+        "quantity": "|yaw_change - r x commanded|",
+        "value": null,
+        "value_expr": null,
+        "op": "<",
+        "limit": 3.0,
+        "limit_expr": null,
+        "holds": null
+       }
+      ],
+      "verdict": "undetermined",
+      "reason": "lateral_accel_peak 1 <= 2 x baseline ? = ? (unknown) and |speed_ratio - 1| ? <= 0.15 (unknown) and |yaw_change - r x commanded| ? < 3 (unknown)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "force_range": "150-500 N (from a light to a strong push), direction any",
+    "activation_window": "Interval_fall / H = [0.546, 14.955] / 17.955"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "apply_external_force",
+    "parameters": {
+     "target": "robot",
+     "force_range": {
+      "x": [
+       -500.0,
+       500.0
+      ],
+      "y": [
+       -500.0,
+       500.0
+      ],
+      "z": [
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "activation_window": {
+     "start_fraction": 0.03,
+     "end_fraction": 0.833
+    }
+   }
+  },
+  {
+   "hypothesis_id": "H04",
+   "rank": 4,
+   "mechanism": "uncommanded_motion",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_UncommandedMotion",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {
+    "kind": "jerk"
+   },
+   "expected_trace": [
+    "longitudinal_accel_peak"
+   ],
+   "rationale": "A longitudinal acceleration peak is present without a corresponding setpoint step, suggesting an uncommanded jerk.",
+   "llm_title": "Uncommanded jerk",
+   "title": "Uncommanded jerk during the last 14.4 s before the fall",
+   "family": "internal",
+   "status": "not_simulable",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_in_interval: mean speed in Interval_fall 0.242 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_in_interval",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed in Interval_fall",
+         "value": 0.242,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed in Interval_fall 0.242 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "speed_ratio_and_jolt",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "to_calibrate",
+      "reads": [
+       "longitudinal_accel_peak",
+       "speed_ratio"
+      ],
+      "conditions": [
+       {
+        "quantity": "|speed_ratio - 1|",
+        "value": null,
+        "value_expr": null,
+        "op": "<=",
+        "limit": 0.15,
+        "limit_expr": null,
+        "holds": null
+       },
+       {
+        "quantity": "longitudinal_accel_peak",
+        "value": 3.0,
+        "value_expr": null,
+        "op": "<=",
+        "limit": null,
+        "limit_expr": "2 x baseline ?",
+        "holds": null
+       }
+      ],
+      "verdict": "undetermined",
+      "reason": "|speed_ratio - 1| ? <= 0.15 (unknown) and longitudinal_accel_peak 3 <= 2 x baseline ? = ? (unknown)"
+     }
+    ]
+   },
+   "grounding_trace": {},
+   "cost_in_simulations": 1,
+   "testable": false,
+   "untestable_reason": "Not simulable: Its realization (Intervention_override_setpoint) is experimental, only in experiments/: it enters the catalog if task B1 shows on 16/10 that it tips the bottle (contract decision 10).",
+   "simulation_blueprint": {
+    "intervention": null,
+    "parameters": {},
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H05",
+   "rank": 5,
+   "mechanism": "bottle_push",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_BottlePush",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {
+    "direction": "any"
+   },
+   "expected_trace": [],
+   "rationale": "An external object or gust could have pushed the bottle; this explains the fall without requiring specific robot motion traces.",
+   "llm_title": "External bottle push",
+   "title": "Push on the bottle during the last 14.4 s before the fall",
+   "family": "external",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "bottle_supported: start of Interval_fall 0.546 >= support start = 0 and start of Interval_fall 0.546 < support end = 14.955",
+     "preconditions": [
+      {
+       "check": "bottle_supported",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "start of Interval_fall",
+         "value": 0.546,
+         "value_expr": null,
+         "op": ">=",
+         "limit": 0.0,
+         "limit_expr": "support start",
+         "holds": true
+        },
+        {
+         "quantity": "start of Interval_fall",
+         "value": 0.546,
+         "value_expr": null,
+         "op": "<",
+         "limit": 14.955,
+         "limit_expr": "support end",
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "start of Interval_fall 0.546 >= support start = 0 and start of Interval_fall 0.546 < support end = 14.955"
+      }
+     ]
+    },
+    "contrast": []
+   },
+   "grounding_trace": {
+    "force_range": "3-30 N (from a light to a strong push), direction any",
+    "activation_window": "Interval_fall / H = [0.546, 14.955] / 17.955"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "apply_external_force",
+    "parameters": {
+     "target": "bottle",
+     "force_range": {
+      "x": [
+       -30.0,
+       30.0
+      ],
+      "y": [
+       -30.0,
+       30.0
+      ],
+      "z": [
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "activation_window": {
+     "start_fraction": 0.03,
+     "end_fraction": 0.833
+    }
+   }
+  },
+  {
+   "hypothesis_id": "H06",
+   "rank": 6,
+   "mechanism": "slippery_floor",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_SlipperyFloor",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": null
+   },
+   "qualitative_parameters": {},
+   "expected_trace": [
+    "max_sustained_horizontal_accel"
+   ],
+   "rationale": "The presence of max sustained horizontal acceleration could be a sign of wheel slip on a slippery surface.",
+   "llm_title": "Slippery floor",
+   "title": "Slippery floor in the whole room",
+   "family": "external",
+   "status": "over_budget",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "",
+     "preconditions": []
+    },
+    "contrast": [
+     {
+      "check": "traction_vs_friction",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "fixed",
+      "reads": [
+       "max_sustained_horizontal_accel"
+      ],
+      "conditions": [
+       {
+        "quantity": "max_sustained_horizontal_accel",
+        "value": 1.414,
+        "value_expr": null,
+        "op": ">",
+        "limit": 3.2373,
+        "limit_expr": "1.1 x 0.3 x g",
+        "holds": false
+       }
+      ],
+      "verdict": "survives",
+      "reason": "max_sustained_horizontal_accel 1.414 > 1.1 x 0.3 x g = 3.237 (no)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "lateral_friction_range": "mu in [0.01, 0.3] (from very slippery to slippery)"
+   },
+   "cost_in_simulations": 1,
+   "testable": false,
+   "untestable_reason": "Over budget: k = 6 compiled causes, 6 already used.",
+   "simulation_blueprint": {
+    "intervention": "set_friction",
+    "parameters": {
+     "target": "floor",
+     "lateral_friction_range": [
+      0.01,
+      0.3
+     ]
+    },
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H07",
+   "rank": 7,
+   "mechanism": "bottle_removed_by_person",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_BottleRemovedByPerson",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {},
+   "expected_trace": [
+    "person_distance_min"
+   ],
+   "rationale": "A person could have taken the bottle, although the minimum distance of 3m makes this unlikely.",
+   "llm_title": "Person took bottle",
+   "title": "A person removed the bottle during the last 14.4 s before the fall",
+   "family": "external",
+   "status": "discarded",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "",
+     "preconditions": []
+    },
+    "contrast": [
+     {
+      "check": "person_within_reach",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "fixed",
+      "reads": [
+       "person_distance_min"
+      ],
+      "conditions": [
+       {
+        "quantity": "person_distance_min",
+        "value": 3.0,
+        "value_expr": null,
+        "op": ">",
+        "limit": 1.5,
+        "limit_expr": null,
+        "holds": true
+       }
+      ],
+      "verdict": "discards",
+      "reason": "person_distance_min 3 > 1.5"
+     }
+    ]
+   },
+   "grounding_trace": {},
+   "cost_in_simulations": 0,
+   "testable": false,
+   "untestable_reason": "Discarded before simulating by person_within_reach: person_distance_min 3 > 1.5.",
+   "simulation_blueprint": {
+    "intervention": null,
+    "parameters": {},
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H08",
+   "rank": 8,
+   "mechanism": "perception_failure",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_PerceptionFailure",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {},
+   "expected_trace": [
+    "bottle_reacquired"
+   ],
+   "rationale": "The bottle might not have fallen, but the sensor lost it; however, it was not reacquired.",
+   "llm_title": "Perception loss",
+   "title": "False loss of the bottle during the last 14.4 s before the fall",
+   "family": "internal",
+   "status": "discarded",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "",
+     "preconditions": []
+    },
+    "contrast": [
+     {
+      "check": "bottle_reacquired",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "to_calibrate",
+      "reads": [
+       "bottle_reacquired"
+      ],
+      "conditions": [
+       {
+        "quantity": "bottle_reacquired",
+        "value": false,
+        "value_expr": null,
+        "op": "==",
+        "limit": false,
+        "limit_expr": null,
+        "holds": true
+       }
+      ],
+      "verdict": "discards",
+      "reason": "bottle_reacquired: no"
+     }
+    ]
+   },
+   "grounding_trace": {},
+   "cost_in_simulations": 0,
+   "testable": false,
+   "untestable_reason": "Discarded before simulating by bottle_reacquired: bottle_reacquired: no.",
+   "simulation_blueprint": {
+    "intervention": null,
+    "parameters": {},
+    "activation_window": null
+   }
+  }
+ ],
+ "generation_metrics": {
+  "llm_elapsed_seconds": 3.337,
+  "attempts": [
+   {
+    "attempt": 1,
+    "model": "gemma4:31b-cloud",
+    "elapsed_seconds": 3.335,
+    "ollama_native": {
+     "total_duration_seconds": 3.106,
+     "prompt_eval_count": 4281,
+     "eval_count": 981
+    },
+    "status": "success"
+   }
+  ]
+ }
+}
