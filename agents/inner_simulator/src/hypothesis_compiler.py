@@ -90,6 +90,28 @@ def _compile_spawn_static_object(params: dict[str, Any], blueprint: dict[str, An
     return payload
 
 
+def _compile_spawn_scaled_dome(params: dict[str, Any], blueprint: dict[str, Any], catalog: dict[str, Any]) -> dict[str, Any]:
+    """A bump of unknown size: the area it must reach and the size ranges; the cause draws the
+    diameter, height and centre of each repetition (causes/implementations/cause_bump_scaled.py)."""
+    spec = catalog["interventions"]["spawn_scaled_dome"]
+    mesh = (REPO_ROOT / str(spec["mesh"])).resolve()
+    if not mesh.exists():
+        raise HypothesisCompilationError(f"Intervention 'spawn_scaled_dome' points to a missing mesh: {mesh}")
+    bounds = spec["parameters"]["area"].get("bounds", {})
+    return {
+        "mesh_file": str(mesh),
+        "mesh_dimensions_m": [float(v) for v in spec["mesh_dimensions_m"]],
+        "area_x": [float(v) for v in params["area"]["x"]],
+        "area_y": [float(v) for v in params["area"]["y"]],
+        "diameter_range": [float(v) for v in params["diameter_range"]],
+        "height_range": [float(v) for v in params["height_range"]],
+        "bounds_x": [float(v) for v in bounds["x"]] if "x" in bounds else None,
+        "bounds_y": [float(v) for v in bounds["y"]] if "y" in bounds else None,
+        "num_of_repetitions": int(spec.get("repetitions", 36)),
+        "seed": 0,
+    }
+
+
 def _compile_disable_wheel(params: dict[str, Any], blueprint: dict[str, Any], catalog: dict[str, Any]) -> dict[str, Any]:
     start, end = _window_fractions(blueprint)
     return {
@@ -125,6 +147,7 @@ def _compile_set_friction(params: dict[str, Any], blueprint: dict[str, Any], cat
 
 INTERVENTION_COMPILERS = {
     "spawn_static_object": _compile_spawn_static_object,
+    "spawn_scaled_dome": _compile_spawn_scaled_dome,
     "disable_wheel": _compile_disable_wheel,
     "apply_external_force": _compile_apply_external_force,
     "set_friction": _compile_set_friction,

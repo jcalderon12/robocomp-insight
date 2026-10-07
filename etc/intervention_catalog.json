@@ -22,6 +22,39 @@
         }
       }
     },
+    "spawn_scaled_dome": {
+      "description": "Place a dome-shaped bump of unknown size on the floor before the episode replay starts. Each repetition draws its diameter and height within the given ranges and places it so that it reaches the given area: its centre is drawn in the area dilated by half the drawn diameter. Models undetected bumps whose size is not known.",
+      "cause_name": "bump_scaled",
+      "phase": "setup",
+      "uses_activation_window": false,
+      "repetitions": 36,
+      "budget_cost": 4,
+      "mesh": "etc/URDFs/bump/Bump_100x10cm.stl",
+      "mesh_dimensions_m": [1.0, 1.0, 0.0994],
+      "parameters": {
+        "area": {
+          "type": "range3d",
+          "required": true,
+          "bounds": {"x": [-6.0, 3.0], "y": [-3.0, 3.0], "z": [0.0, 0.3]},
+          "units": "m",
+          "description": "The floor area the bump must reach (world frame, meters): the anchored path plus the robot footprint. Objects rest on the floor, so z is not used."
+        },
+        "diameter_range": {
+          "type": "range1d",
+          "required": true,
+          "bounds": [0.10, 1.00],
+          "units": "m",
+          "description": "[min, max] diameter of the dome: from the size of a wheel to the size of the robot; longer is a slope, not a bump."
+        },
+        "height_range": {
+          "type": "range1d",
+          "required": true,
+          "bounds": [0.01, 0.10],
+          "units": "m",
+          "description": "[min, max] height of the dome: up to the drive wheel radius (100 mm); higher is a wall the robot cannot climb."
+        }
+      }
+    },
     "disable_wheel": {
       "description": "One of the two drive wheels of the differential base stops at some instant inside the activation window and stays braked. Models a motor, driver or transmission failure in the locomotion subsystem.",
       "cause_name": "wheel",
