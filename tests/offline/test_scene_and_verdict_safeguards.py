@@ -182,8 +182,8 @@ def test_verdict_safeguards():
     nominal = [_repetition(imu, UPRIGHT)]
 
     # 1. Tie-break: identical IMU (identical score); the fall closer to the
-    #    observed instant wins, whatever the list order.
-    late = [_repetition(imu, FALLEN_NEAR, fall_time=16.0, robot_at_fall=(0.0, 0.0, 30.0))]
+    #    observed instant wins, whatever the list order (both within the span).
+    late = [_repetition(imu, FALLEN_NEAR, fall_time=12.75, robot_at_fall=(0.0, 0.0, 30.0))]
     early = [_repetition(imu, FALLEN_NEAR, fall_time=12.5, robot_at_fall=(0.0, 0.0, 30.0))]
     verdict = build_verdict("tie", imu, ENTRIES, [nominal, late, early], initial_bottle_z=780.0,
                             observed_effect_time=12.3)
@@ -208,6 +208,24 @@ def test_verdict_safeguards():
     by_id = {h["hypothesis_id"]: h for h in verdict["hypotheses"]}
     assert by_id["B_late"]["invalid_repetitions"] == 1 and by_id["B_late"]["effect_rate"] == 0.0
     assert verdict["accepted_hypothesis_id"] == "A_early"
+
+    # 2c. The fall must happen when the recording says the bottle left: within
+    #     [t_obs - 3, t_obs + 0.5]. Too early or too late, it is not the observed effect.
+    too_late = [_repetition(imu, FALLEN_NEAR, fall_time=13.2, robot_at_fall=(0.0, 0.0, 30.0))]
+    too_early = [_repetition(imu, FALLEN_NEAR, fall_time=9.0, robot_at_fall=(0.0, 0.0, 30.0))]
+    verdict = build_verdict("timing", imu, ENTRIES, [nominal, too_late, too_early], initial_bottle_z=780.0,
+                            observed_effect_time=12.3)
+    by_id = {h["hypothesis_id"]: h for h in verdict["hypotheses"]}
+    assert all(by_id[h]["effect_rate"] == 0.0 and by_id[h]["mistimed_effects"] == 1 for h in ("A_early", "B_late"))
+    assert verdict["accepted_hypothesis_id"] is None
+    assert verdict["decision_rule"]["fall_span_s"] == [12.3 - 3.0, 12.3 + 0.5]
+    in_span = [_repetition(imu, FALLEN_NEAR, fall_time=9.4, robot_at_fall=(0.0, 0.0, 30.0))]
+    verdict = build_verdict("timing", imu, ENTRIES, [nominal, too_late, in_span], initial_bottle_z=780.0,
+                            observed_effect_time=12.3)
+    assert verdict["accepted_hypothesis_id"] == "A_early", verdict["accepted_hypothesis_id"]
+    # Without an observed effect there is no span.
+    verdict = build_verdict("no_time", imu, ENTRIES, [nominal, too_late, too_early], initial_bottle_z=780.0)
+    assert all(h["mistimed_effects"] == 0 for h in verdict["hypotheses"]) and verdict["decision_rule"]["fall_span_s"] is None
 
     # 3. The nominal run reproduces the effect: abstain, but keep the per-hypothesis outcome.
     nominal_falls = [_repetition(imu, FALLEN_NEAR, fall_time=12.0, robot_at_fall=(0.0, 0.0, 30.0))]
