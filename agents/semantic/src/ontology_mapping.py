@@ -21,7 +21,8 @@ INSIGHT = Namespace("http://insight.local/instances#")
 
 # Bottle slips from robot tray:
 # Remove relation: bottle -> has location -> robot
-# Add relation: bottle -> has location -> room
+# Nothing is added: where the bottle ends is not observed (concept_bottle deletes the robot->bottle
+# RT edge and, since 2026-05-20, no longer hangs the bottle from the room).
 
 
 AGENT_PERSON = INSIGHT.Agent_Person
@@ -215,20 +216,16 @@ class DSRSemanticWrapper:
         self.set_fact(person_existe and room_existe, str(AGENT_PERSON), str(DUL.hasLocation), str(PHYSICAL_PLACE_ROOM))
 
     def sync_bottle(self, dsr_graph) -> None:
-        room_existe = dsr_graph.get_node("room") is not None
         robot_existe = dsr_graph.get_node("robot") is not None
         bottle_existe = dsr_graph.get_node("bottle") is not None
 
         self.set_fact(bottle_existe, str(PHYSICAL_OBJECT_BOTTLE), str(RDF.type), str(DUL.PhysicalObject))
 
         bottle_on_robot = (bottle_existe and robot_existe and self._has_edge(dsr_graph, "robot", "bottle", "RT"))
-        bottle_in_room = (bottle_existe and room_existe and self._has_edge(dsr_graph, "room", "bottle", "RT"))
-
-        location_on_robot = bottle_on_robot
-        location_in_room = bottle_in_room and not bottle_on_robot
-
-        self.set_fact(location_on_robot, str(PHYSICAL_OBJECT_BOTTLE), str(DUL.hasLocation), str(AGENT_ROBOT))
-        self.set_fact(location_in_room, str(PHYSICAL_OBJECT_BOTTLE), str(DUL.hasLocation), str(PHYSICAL_PLACE_ROOM))
+        self.set_fact(bottle_on_robot, str(PHYSICAL_OBJECT_BOTTLE), str(DUL.hasLocation), str(AGENT_ROBOT))
+        # A lost bottle has no location: the robot does not see where it went. Older agents hung it
+        # from the room, which asserted a place nobody observed.
+        self.set_fact(False, str(PHYSICAL_OBJECT_BOTTLE), str(DUL.hasLocation), str(PHYSICAL_PLACE_ROOM))
 
     def sync_follow(self, dsr_graph) -> None:
         robot_existe = dsr_graph.get_node("robot") is not None

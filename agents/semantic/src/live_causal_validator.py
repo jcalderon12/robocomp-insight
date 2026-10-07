@@ -8,7 +8,6 @@ from src.ontology_mapping import (
     AGENT_ROBOT,
     DUL,
     PHYSICAL_OBJECT_BOTTLE,
-    PHYSICAL_PLACE_ROOM,
 )
 
 # ! If we want to model causes relation when a candidate is accepted -> SOMA.causes, so for example: Event_bumpColission -> causes -> Event_observedLossofBottle
@@ -29,7 +28,6 @@ class LiveCausalValidator:
     def __init__(self) -> None:
         self._bottle = str(PHYSICAL_OBJECT_BOTTLE)
         self._robot = str(AGENT_ROBOT)
-        self._room = str(PHYSICAL_PLACE_ROOM)
         self._follow = str(ACTION_FOLLOW)
 
         self._has_location = str(DUL.hasLocation)
@@ -45,7 +43,8 @@ class LiveCausalValidator:
         """Validate only high-level structural changes from a state delta.
 
         Current policy: the loss of bottle location from robot requires
-        explicit causal evidence. In its absence, the change is unexplained.
+        explicit causal evidence. In its absence, the change is unexplained. Where the bottle went
+        is not asked: the robot does not observe it.
         """
         retract = (self._bottle, self._has_location, self._robot)
         if retract not in removed:
@@ -59,23 +58,10 @@ class LiveCausalValidator:
                 retract=retract,
             )
 
-        moved_to_room = (self._bottle, self._has_location, self._room) in added or (
-            self._bottle,
-            self._has_location,
-            self._room,
-        ) in current
-
         if self._has_explicit_cause(current):
             return ValidationResult(
                 unexplained=False,
                 reason="Bottle location change has explicit causal evidence.",
-                retract=retract,
-            )
-
-        if moved_to_room:
-            return ValidationResult(
-                unexplained=True,
-                reason="Bottle moved from robot to room without explicit causal evidence.",
                 retract=retract,
             )
 
