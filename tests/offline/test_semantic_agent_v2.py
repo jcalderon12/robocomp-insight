@@ -1,0 +1,456 @@
+"""Offline test: the semantic agent with the generation v2 (task A4, subpaso 3.3), without robot.
+
+The agent's own code (agents/semantic/src/specificworker.py) runs on a simulated DSR (the working
+and the episodic graphs), a simulated GraphDB and a scripted LLM, over the 12:29 recording of
+2026-09-24. Criterion of subpaso 3.3, fixed before:
+  1. the agent builds, with the episodic-memory API, the same episode as the file reader;
+  2. it publishes a valid 3b batch and leaves its path where the inner simulator reads it (the
+     `hypotheses_filepath` attribute of the `unexplained` intention node);
+  3. the simulator's compiler takes that batch;
+  4. with a verdict that accepts the bump (a dome of unknown size), GraphDB gets the case explained by obstacle_traversed on
+     Segment_final, with the title written from the mechanism; what the consolidation wrote before
+     in the live graph is written as it was, and nothing is removed from it.
+Also: the agent waits for the recording as the inner simulator does (a running "Search Problem
+Cause" mission and the "Follow Person" file path), keeps the episode in its own named graph, and
+ignores a verdict that does not answer its batch (the simulator's static causes, when it finds
+the recording before the batch is out).
+
+GraphDB does not pile up one case per run: when a case starts, the live graph goes back to the
+mirror of the working memory alone and the episode graphs of previous cases are dropped; what the
+case writes stays until the next one (a second case, on the 12:40 recording, finds none of the
+first). Other named graphs are left alone.
+
+Two faults of the first run in Webots (06/10) are checked too:
+  * the loop runs under a decimal-comma numeric locale, as in the agent, where Qt takes the
+    locale from the environment: the episodic-memory API then read "-3.699979" as -3, and the
+    episode lost every decimal;
+  * every slot the agent connects to a DSR signal is annotated as pydsr requires: pydsr picks the
+    signal a callback serves from its annotations, and update_node_att, with an unannotated
+    `attribute_names`, was taken for a node-deletion handler, which killed the agent when it
+    deleted the `unexplained` node.
+
+Needs PySide6, pydsr and the episodic-memory API (/opt/robocomp/lib), Ice and RoboComp's
+ConfigLoader; without them the test is skipped. The recordings are not in git
+(agents/mission_controller/recorded_missions/), nor is experiments/: both travel in the hand-over
+package.
+
+Run from the repo root:  python3 tests/offline/test_semantic_agent_v2.py
+"""
+import inspect
+import json
+import locale
+import re
+import sys
+import tempfile
+import threading
+import types
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+SEMANTIC = REPO / "agents" / "semantic"
+RECORDINGS = REPO / "agents" / "mission_controller" / "recorded_missions"
+RECORDING_1229 = RECORDINGS / "mission_Follow_Person_24092026_122924.txt"
+RECORDING_1240 = RECORDINGS / "mission_Follow_Person_24092026_124030.txt"
+TBOX = SEMANTIC / "data" / "insight_tbox.ttl"
+for path in (Path("/home/javi/robocomp/core/classes/ConfigLoader"), SEMANTIC / "generated", Path("/opt/robocomp/lib"),
+             REPO / "agents" / "inner_simulator" / "src", REPO / "experiments", Path(__file__).resolve().parent,
+             SEMANTIC):
+    sys.path.insert(0, str(path))
+
+try:
+    from PySide6 import QtCore  # noqa: F401  (before pydsr: both load Qt)
+    import pydsr  # noqa: F401
+    from src import specificworker
+except ImportError as error:
+    print(f"SKIP: the semantic agent cannot be imported here ({error})")
+    sys.exit(0)
+
+from hypothesis_compiler import compile_batch  # noqa: E402
+from rdflib import OWL, RDF, RDFS, Dataset, Graph, Literal, Namespace, URIRef  # noqa: E402
+from src.episode_memory_reader import recording_to_explain  # noqa: E402
+from src.episode_rdf import EPISODES, graph_iri  # noqa: E402
+from src.graphdb_client import GraphDBClient, GraphDBConfig  # noqa: E402
+from src.hypothesis_config import ConfigError, HypothesisGeneratorConfig  # noqa: E402
+from src.verdict_ingestor import build_case_triples  # noqa: E402
+from test_episode_builder import differences  # noqa: E402
+
+DUL = Namespace("http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#")
+INSIGHT = Namespace("http://insight.local/ontology#")
+INST = Namespace("http://insight.local/instances#")
+
+
+# --------------------------------------------------------------------------- #
+# A simulated DSR, GraphDB and LLM
+# --------------------------------------------------------------------------- #
+def node(name, node_id, **attrs):
+    return types.SimpleNamespace(name=name, type="intention", id=node_id,
+                                 attrs={k: types.SimpleNamespace(value=v) for k, v in attrs.items()})
+
+
+class FakeGraph:
+    """The calls the agent makes on a DSR graph."""
+
+    def __init__(self, *nodes):
+        self.nodes = {n.name: n for n in nodes}
+        self.next_id = 100
+
+    def get_node(self, key):
+        return next((n for n in self.nodes.values() if key in (n.name, n.id)), None)
+
+    def get_nodes(self):
+        return list(self.nodes.values())
+
+    def insert_node(self, dsr_node):
+        self.next_id += 1
+        self.nodes[dsr_node.name] = types.SimpleNamespace(name=dsr_node.name, type=dsr_node.type, id=self.next_id,
+                                                          attrs={})
+        return self.next_id
+
+    def update_node(self, updated):
+        self.nodes[updated.name] = updated
+        return True
+
+    def insert_or_assign_edge(self, edge):
+        return True
+
+    def delete_node(self, node_id):
+        self.nodes = {name: n for name, n in self.nodes.items() if n.id != node_id}
+        return True
+
+
+class FakeGraphDB:
+    """The live graph as a set of triples, and the named graphs in a dataset."""
+
+    def __init__(self):
+        self.live, self.removed, self.dataset = set(), set(), Dataset()
+
+    def apply_delta(self, *, added, removed):
+        self.live |= set(added)
+        self.live -= set(removed)
+        self.removed |= set(removed)
+
+    def replace_graph(self, turtle_payload, graph=None):
+        context = self.dataset.graph(URIRef(graph))
+        context.remove((None, None, None))
+        context.parse(data=turtle_payload, format="turtle")
+
+    def add_to_graph(self, turtle_payload, graph):
+        self.dataset.graph(URIRef(graph)).parse(data=turtle_payload, format="turtle")
+
+    def replace_with_triples(self, triples, graph=None):
+        assert graph is None, "only the live graph is replaced with triples"
+        self.live = set(triples)
+
+    def drop_graphs(self, prefix):
+        for context in list(self.dataset.contexts()):
+            if str(context.identifier).startswith(prefix):
+                self.dataset.remove_graph(context)
+
+    def episode_graphs(self):
+        return {str(c.identifier) for c in self.dataset.contexts() if str(c.identifier).startswith(EPISODES) and len(c)}
+
+
+#: What the agent mirrors of the working memory (a few of the 9 triples).
+MIRROR = {(str(INST.Agent_Robot), str(DUL.hasLocation), str(INST.PhysicalPlace_Room)),
+          (str(INST.PhysicalObject_Bottle), str(DUL.hasLocation), str(INST.Agent_Robot))}
+
+
+class ScriptedLLM:
+    def __init__(self, answer):
+        self.answer, self.calls = answer, 0
+
+    def __call__(self, messages):
+        self.calls += 1
+        return self.answer, {}
+
+
+ANSWER = json.dumps({"hypotheses": [
+    {"mechanism": "obstacle_traversed", "segment": "Segment_final", "interval": None,
+     "qualitative_parameters": {"shape": "bump"}, "expected_trace": ["pitch_rate_peak"],
+     "rationale": "A pitch peak just before the loss.", "title": "Bump"},
+    {"mechanism": "bottle_push", "segment": None, "interval": "Interval_fall",
+     "qualitative_parameters": {"direction": "any"}, "expected_trace": [], "rationale": "", "title": "Push"},
+]})
+
+WORKER_METHODS = ("compute", "deactivate_follow_affordance", "insert_intention_hanging_for_robot",
+                  "generate_hypotheses_json", "_generate_from_episode", "_store_episode", "_trigger_summary",
+                  "_publish_path_attribute", "_check_and_ingest_verdict", "_resolve_unexplained_cycle",
+                  "_log_hypothesis_event", "_reset_previous_cases")
+
+
+def make_worker(output_dir):
+    """The agent's state after an unexplained change, with its own methods bound to it."""
+    config = HypothesisGeneratorConfig(
+        enabled=True, output_dir=Path(output_dir), description_path=REPO / "description.md",
+        catalog_path=REPO / "etc" / "intervention_catalog.json", primary_model="scripted", fallback_model="",
+        ollama_base_url="", request_timeout_seconds=1.0, internal_count=3, external_count=3,
+        preferred_client="ollama_http", description_char_limit=12000, generation="v2", budget=6, max_attempts=3)
+    worker = types.SimpleNamespace(
+        g=FakeGraph(node("robot", 1)), episodic_g=FakeGraph(), agent_id=9, graphdb_client=FakeGraphDB(),
+        hypothesis_config=config, hypothesis_service=None, llm=ScriptedLLM(ANSWER),
+        unexplained=True, unexplained_reason="Bottle lost location on robot without explicit causal evidence.",
+        trigger_added=frozenset(), trigger_removed=frozenset(), stop_inserted=False,
+        hypothesis_generation_done=False, last_hypotheses_path=None, hypotheses_path_published=False,
+        ingested_verdict_paths=set(), _parsed_ingestions={}, _graphdb_retry_at=0.0,
+        current_batch=None, _waiting_for_recording=False, _foreign_verdict_paths=set(),
+        mapper=types.SimpleNamespace(get_state=lambda: types.SimpleNamespace(
+            triples=frozenset(MIRROR), signature=tuple(sorted(MIRROR)))),
+        _sync_lock=threading.Lock(), last_triples=set(), last_signature=None)
+    for name in WORKER_METHODS:
+        setattr(worker, name, types.MethodType(getattr(specificworker.SpecificWorker, name), worker))
+    return worker
+
+
+def publish_verdict(worker, path, verdict):
+    Path(path).write_text(json.dumps(verdict), encoding="utf-8")
+    intention = worker.g.get_node("unexplained")
+    intention.attrs["verdict_filepath"] = types.SimpleNamespace(value=str(path))
+
+
+# --------------------------------------------------------------------------- #
+# Checks
+# --------------------------------------------------------------------------- #
+def check_recording_rule():
+    follow = node("Follow Person-1", 10, status="stopped", filepath="/rec/a.txt")
+    assert recording_to_explain([follow]) is None                                   # no search mission
+    assert recording_to_explain([follow, node("Search Problem Cause-1", 11, status="pending")]) is None
+    running = node("Search Problem Cause-1", 11, status="running")
+    assert recording_to_explain([follow, running]) == "/rec/a.txt"
+    later = node("Follow Person-2", 12, status="stopped", filepath="/rec/b.txt")
+    assert recording_to_explain([follow, later, running]) == "/rec/b.txt"            # the last one, as the simulator
+    assert recording_to_explain([node("Follow Person-3", 13, status="stopped", filepath=""), running]) is None
+    try:
+        HypothesisGeneratorConfig.from_config({"hypothesisGenerator": {
+            "PrimaryModel": "m", "OllamaBaseUrl": "u", "PreferredClient": "c", "OutputDir": "o",
+            "DescriptionPath": "d", "CatalogPath": "c", "RequestTimeoutSeconds": 1, "InternalCount": 3,
+            "ExternalCount": 3, "DescriptionCharLimit": 12000, "Generation": "v3"}}, REPO)
+    except ConfigError:
+        pass
+    else:
+        raise AssertionError("an unknown generation was accepted")
+
+
+#: A numeric locale with a decimal comma, as the agent runs on Javi's machine (es_ES).
+COMMA_LOCALES = ("es_ES.UTF-8", "es_ES.utf8", "de_DE.UTF-8", "fr_FR.UTF-8")
+
+
+def comma_locale():
+    """Switch LC_NUMERIC to a decimal-comma locale; the previous one, or None if none is installed."""
+    previous = locale.setlocale(locale.LC_NUMERIC)
+    for name in COMMA_LOCALES:
+        try:
+            locale.setlocale(locale.LC_NUMERIC, name)
+            return previous
+        except locale.Error:
+            continue
+    return None
+
+
+def check_agent_loop():
+    from episode_series import episode_from_recording
+
+    previous = comma_locale()
+    if previous is None:
+        print("  (no decimal-comma locale installed: the loop runs under the current one)")
+    try:
+        run_agent_loop(episode_from_recording)
+    finally:
+        if previous is not None:
+            locale.setlocale(locale.LC_NUMERIC, previous)
+
+
+#: Signal -> annotations pydsr needs to route a callback to it (signal_function_caster.h).
+SLOT_ANNOTATIONS = {
+    "UPDATE_NODE": ["<class 'int'>", "<class 'str'>"],
+    "UPDATE_NODE_ATTR": ["<class 'int'>", "[<class 'str'>]"],
+    "UPDATE_EDGE": ["<class 'int'>", "<class 'int'>", "<class 'str'>"],
+    "UPDATE_EDGE_ATTR": ["<class 'int'>", "<class 'int'>", "<class 'str'>", "[<class 'str'>]"],
+    "DELETE_EDGE": ["<class 'int'>", "<class 'int'>", "<class 'str'>"],
+    "DELETE_NODE": ["<class 'int'>"],
+}
+
+
+def check_slot_annotations():
+    source = inspect.getsource(specificworker.SpecificWorker.__init__)
+    connections = re.findall(r"^\s*signals\.connect\(self\.g, signals\.(\w+), self\.(\w+)\)", source, re.MULTILINE)
+    assert connections, "no DSR signal connected"
+    for signal, slot in connections:
+        annotations = getattr(specificworker.SpecificWorker, slot).__annotations__
+        got = [str(value) for name, value in annotations.items() if name != "return"]
+        assert got == SLOT_ANNOTATIONS[signal], (signal, slot, got)
+    # The attribute slots, connected or not, are annotated for their own signal.
+    for slot, signal in (("update_node_att", "UPDATE_NODE_ATTR"), ("update_edge_att", "UPDATE_EDGE_ATTR")):
+        annotations = getattr(specificworker.SpecificWorker, slot).__annotations__
+        assert [str(v) for k, v in annotations.items() if k != "return"] == SLOT_ANNOTATIONS[signal], slot
+
+
+def run_agent_loop(episode_from_recording):
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = make_worker(tmp)
+        follow = node("Follow Person-24092026", 10, status="running", filepath=str(RECORDING_1229))
+        worker.episodic_g = FakeGraph(follow)
+        # GraphDB still holds a previous case, and a graph that is not the agent's.
+        db = worker.graphdb_client
+        db.live = MIRROR | build_case_triples("wheel", "old_case")
+        db.dataset.graph(URIRef(EPISODES + "rec_old")).add((URIRef(EPISODES + "rec_old#Episode"), RDF.type,
+                                                             INSIGHT.Episode))
+        other = db.dataset.graph(URIRef("urn:other:graph"))
+        other.add((INST.Agent_Robot, RDF.type, DUL.PhysicalAgent))
+
+        # The change is unexplained, but the follow mission has not stopped: the agent waits.
+        worker.compute()
+        assert worker.g.get_node("unexplained") is not None
+        assert not worker.hypothesis_generation_done and worker.last_hypotheses_path is None
+        assert worker.llm.calls == 0
+        assert db.episode_graphs() == {EPISODES + "rec_old"}                # nothing cleared yet
+
+        # The mission stops and the search starts: the episode, the batch and its path on the DSR.
+        follow.attrs["status"].value = "stopped"
+        worker.episodic_g.nodes["Search Problem Cause-1"] = node("Search Problem Cause-1", 11, status="running")
+        worker.compute()
+        assert worker.llm.calls == 1
+        intention = worker.g.get_node("unexplained")
+        published = intention.attrs["hypotheses_filepath"].value
+        batch = json.loads(Path(published).read_text(encoding="utf-8"))
+        assert batch["schema_version"] == "2.0" and batch["status"] == "success" and batch["arm"] == "llm_full"
+        assert batch["case_id"].startswith("semantic_unexplained_") and batch["attempts"] == 1
+        assert batch["trigger"]["unexplained_reason"].startswith("Bottle lost location")
+
+        # 1. The episode is the one of the file reader.
+        episode = json.loads(Path(batch["episode"]["path"]).read_text(encoding="utf-8"))
+        assert episode["source"]["reader"] == "episodic_memory_api"
+        from_file = episode_from_recording(RECORDING_1229)
+        for one in (episode, from_file):
+            one["source"].pop("reader")
+            one["source"].pop("path")
+        found = differences(from_file, episode)
+        assert not found, found[:5]
+        assert batch["episode"]["id"] == episode["episode_id"] == "rec_mission_Follow_Person_24092026_122924"
+
+        # The case starts from a clean GraphDB: the mirror alone, and no previous episode.
+        assert db.live == MIRROR, db.live - MIRROR
+        assert worker.last_triples == MIRROR
+        assert len(db.dataset.graph(URIRef("urn:other:graph"))) == 1        # not the agent's: left alone
+        # The episode is kept in the semantic memory, in its own named graph.
+        episode_iri = graph_iri(episode["episode_id"])
+        assert db.episode_graphs() == {str(episode_iri)}
+        stored = worker.graphdb_client.dataset.graph(episode_iri)
+        ep = Namespace(str(episode_iri) + "#")
+        assert (ep.Accident_1, DUL.hasLocation, ep.Segment_final) in stored
+
+        # 2 and 3. The simulator's compiler takes the published batch.
+        compiled = compile_batch(batch)
+        to_simulate = [h["hypothesis_id"] for h in batch["hypotheses"] if h["status"] == "to_simulate"]
+        assert [e["hypothesis_id"] for e in compiled["entries"][1:]] == to_simulate, compiled["skipped"]
+        # The bump is one dome of unknown size (cost 4) and the push one cause: 5 of 6.
+        assert to_simulate == ["H01", "H02"] and batch["budget"]["used"] == 5, to_simulate
+        assert compiled["entries"][1]["cause"]["name"] == "bump_scaled"
+        assert db.live == MIRROR
+
+        # A verdict that does not answer our batch (the simulator's static causes) is ignored.
+        publish_verdict(worker, Path(tmp) / "static_verdict.json",
+                        {"case_id": "static_causes", "accepted_hypothesis_id": None, "hypotheses": []})
+        worker.compute()
+        assert worker.unexplained and worker.g.get_node("unexplained") is not None
+        assert db.live == MIRROR
+
+        # 4. The verdict on our batch accepts the true bump.
+        verdict = {"case_id": batch["case_id"], "accepted_hypothesis_id": "H01",
+                   "hypotheses": [{"hypothesis_id": e["hypothesis_id"], "cause": e["cause"]}
+                                  for e in compiled["entries"]]}
+        publish_verdict(worker, Path(tmp) / "verdict.json", verdict)
+        worker.compute()
+        # What the consolidation wrote before, as it was; nothing removed.
+        assert db.live == MIRROR | build_case_triples("bump_scaled", batch["case_id"])
+        assert not db.removed
+        # The verified mechanism, in the episode's graph.
+        stored = worker.graphdb_client.dataset.graph(episode_iri)
+        case = INST[f"Case_{batch['case_id']}"]
+        cause = ep["Cause_H01"]
+        assert (case, INST.explainedBy, cause) in stored
+        assert (cause, DUL.isDescribedBy, INSIGHT.Mechanism_ObstacleTraversed) in stored
+        assert (cause, DUL.hasLocation, ep.Segment_final) in stored
+        assert (cause, RDFS.label, Literal("Undetected bump on the last 1 m of the path before the fall")) in stored
+        # Asked as a question, with the TBox: which mechanism explains the case, and where.
+        merged = Graph().parse(TBOX)
+        for triple in stored:
+            merged.add(triple)
+        rows = list(merged.query("""
+            PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+            PREFIX insight: <http://insight.local/ontology#>
+            PREFIX inst: <http://insight.local/instances#>
+            SELECT ?mechanism ?where ?t WHERE {
+              ?case inst:explainedBy ?cause . ?cause a insight:VerifiedCause ; dul:isDescribedBy ?m ;
+                    dul:hasLocation ?place . ?m insight:mechanismId ?mechanism .
+              ?place dul:hasRegion ?region . ?region insight:toX ?where .
+              ?fall a <http://www.ease-crc.org/ont/SOMA.owl#Accident> ; insight:timeS ?t }"""))
+        assert [(str(m), float(x), float(t)) for m, x, t in rows] == [("obstacle_traversed", -0.507, 13.685)], rows
+        # Only TBox terms in the consolidation.
+        tbox = Graph().parse(TBOX)
+        properties = {s for kind in (OWL.ObjectProperty, OWL.DatatypeProperty) for s in tbox.subjects(RDF.type, kind)}
+        classes = set(tbox.subjects(RDF.type, OWL.Class))
+        mechanism_triples = [t for t in stored if t[0] in (case, cause) or t[2] == cause]
+        assert {p for _, p, _ in mechanism_triples} - {RDF.type, RDFS.label} <= properties
+        assert {o for _, p, o in mechanism_triples if p == RDF.type} - {OWL.NamedIndividual} <= classes
+        # The cycle is closed; what the case wrote stays until the next one.
+        assert not worker.unexplained and worker.g.get_node("unexplained") is None and worker.current_batch is None
+        assert db.episode_graphs() == {str(episode_iri)} and case_triples_in(db.live) == {str(case)}
+
+        # A second case, on the 12:40 recording: it finds nothing of the first.
+        worker.unexplained = True
+        worker.llm = ScriptedLLM(ANSWER)
+        follow.attrs["filepath"].value = str(RECORDING_1240)
+        worker.compute()
+        second = json.loads(Path(worker.g.get_node("unexplained").attrs["hypotheses_filepath"].value)
+                            .read_text(encoding="utf-8"))
+        assert second["episode"]["id"] == "rec_mission_Follow_Person_24092026_124030"
+        assert db.episode_graphs() == {str(graph_iri(second["episode"]["id"]))}
+        assert db.live == MIRROR and not case_triples_in(db.live)
+
+
+def case_triples_in(live):
+    return {s for s, p, o in live if p == str(RDF.type) and o == str(INST.AnomalyCase)}
+
+
+def check_graphdb_client_requests():
+    """The real client: the live graph replaced with the mirror, and only the episode graphs dropped."""
+    calls = []
+
+    class Session:
+        def post(self, url, **kwargs):
+            calls.append(("post", kwargs))
+            return types.SimpleNamespace(raise_for_status=lambda: None)
+
+        def put(self, url, **kwargs):
+            calls.append(("put", kwargs))
+            return types.SimpleNamespace(raise_for_status=lambda: None)
+
+    client = GraphDBClient(GraphDBConfig(enabled=True, endpoint="http://db", repository="insight",
+                                         named_graph="urn:insight:semantic:live", timeout_seconds=1.0))
+    client.session = Session()
+    client.replace_with_triples(MIRROR)
+    method, request = calls[-1]
+    assert method == "put" and request["params"] == {"context": "<urn:insight:semantic:live>"}, request
+    sent = Graph().parse(data=request["data"].decode("utf-8"), format="nt")
+    assert {(str(s), str(p), str(o)) for s, p, o in sent} == MIRROR
+
+    client.drop_graphs(EPISODES)
+    method, request = calls[-1]
+    assert method == "post" and request["headers"]["Content-Type"].startswith("application/sparql-update")
+    dataset = Dataset()
+    for name in (EPISODES + "rec_a", EPISODES + "rec_b", "urn:insight:semantic:live"):
+        dataset.graph(URIRef(name)).add((INST.Agent_Robot, RDF.type, DUL.PhysicalAgent))
+    dataset.update(request["data"].decode("utf-8"))
+    left = {str(c.identifier) for c in dataset.contexts() if len(c)}
+    assert left == {"urn:insight:semantic:live"}, left
+
+
+def main():
+    for check in (check_recording_rule, check_slot_annotations, check_graphdb_client_requests, check_agent_loop):
+        check()
+        print(f"OK {check.__name__}")
+    print("Semantic agent v2: all checks passed")
+
+
+if __name__ == "__main__":
+    main()

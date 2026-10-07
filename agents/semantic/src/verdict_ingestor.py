@@ -3,6 +3,11 @@
     insight:Case_<case_id>  rdf:type               insight:AnomalyCase
     insight:Case_<case_id>  insight:concernsEvent  insight:Event_BottleLocationChange
     insight:Case_<case_id>  insight:explainedBy    insight:Event_<Intervention>
+
+With the generation v2 (contract 3), the verified mechanism is consolidated too, in the named
+graph of the episode (mechanism_graph): the accepted hypothesis, found in the semantic agent's own
+batch, becomes a verified cause described by its mechanism and located at its anchors. The triples
+above stay as they were: other consumers read them.
 """
 
 from __future__ import annotations
@@ -12,7 +17,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from rdflib import RDF
+from rdflib import OWL, RDF, RDFS, Graph, Literal, URIRef
+
+from src.episode_rdf import DUL, INSIGHT as INSIGHT_TBOX, episode_namespace
 
 from src.ontology_mapping import (
     ANOMALY_CASE_CLASS,
@@ -120,3 +127,41 @@ def ingest_verdict(verdict_path: str | Path) -> VerdictIngestion:
         accepted_intervention=cause_name,
         triples=frozenset(build_case_triples(cause_name, case_id)),
     )
+
+
+def mechanism_graph(batch: dict, accepted_hypothesis_id: str) -> Optional[Graph]:
+    """The verified mechanism of an accepted hypothesis of a v2 batch, for the episode's named graph.
+
+        ep:Cause_<id>  a insight:VerifiedCause ; rdfs:label <title from the mechanism> ;
+                       insight:hypothesisId <id> ; dul:isDescribedBy <mechanism> ;
+                       dul:hasLocation ep:<segment> ; dul:hasTimeInterval ep:<interval> .
+        ep:Episode     dul:isSettingFor ep:Cause_<id> .
+        insight:Case_<case_id>  insight:explainedBy  ep:Cause_<id> .
+
+    The title is the one written from the mechanism and its anchors, not the LLM's. None if the
+    batch is not a v2 one or does not hold the hypothesis.
+    """
+    if str(batch.get("schema_version")) != "2.0" or not batch.get("episode"):
+        return None
+    hypothesis = next((h for h in batch.get("hypotheses", []) if h.get("hypothesis_id") == accepted_hypothesis_id), None)
+    if hypothesis is None or not hypothesis.get("mechanism_iri"):
+        return None
+    ep = episode_namespace(batch["episode"]["id"])
+    cause = ep[f"Cause_{accepted_hypothesis_id}"]
+    graph = Graph()
+    graph.bind("ep", ep)
+    graph.bind("dul", DUL)
+    graph.bind("insight", INSIGHT_TBOX)
+    graph.add((cause, RDF.type, OWL.NamedIndividual))
+    graph.add((cause, RDF.type, INSIGHT_TBOX.VerifiedCause))
+    graph.add((cause, RDFS.label, Literal(hypothesis["title"])))
+    graph.add((cause, INSIGHT_TBOX.hypothesisId, Literal(accepted_hypothesis_id)))
+    graph.add((cause, DUL.isDescribedBy, URIRef(hypothesis["mechanism_iri"])))
+    anchors = hypothesis.get("anchors") or {}
+    if anchors.get("segment"):
+        graph.add((cause, DUL.hasLocation, ep[anchors["segment"]]))
+    if anchors.get("interval"):
+        graph.add((cause, DUL.hasTimeInterval, ep[anchors["interval"]]))
+    graph.add((ep.Episode, DUL.isSettingFor, cause))
+    graph.add((INSIGHT[f"{CASE_PREFIX}{batch['case_id']}"], EXPLAINED_BY, cause))
+    return graph

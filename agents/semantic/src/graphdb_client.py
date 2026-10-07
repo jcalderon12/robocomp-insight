@@ -98,10 +98,29 @@ class GraphDBClient:
         self._execute_update(combined_update)
 
 
-    def replace_graph(self, turtle_payload: str) -> None:
-        response = self.session.put(
+    def replace_graph(self, turtle_payload: str, graph: str | None = None) -> None:
+        """Replace a named graph (the live one by default) with the Turtle payload."""
+        self._send_graph("put", turtle_payload, graph)
+
+    def add_to_graph(self, turtle_payload: str, graph: str) -> None:
+        """Add the Turtle payload to a named graph, keeping what it already holds."""
+        self._send_graph("post", turtle_payload, graph)
+
+    def replace_with_triples(self, triples, graph: str | None = None) -> None:
+        """Replace a named graph (the live one by default) with exactly these triples."""
+        self.replace_graph("\n".join(self._triple_to_ntriple(triple) for triple in sorted(triples)), graph)
+
+    def drop_graphs(self, prefix: str) -> None:
+        """Empty every named graph whose IRI starts with the prefix."""
+        self._execute_update(
+            f'DELETE {{ GRAPH ?g {{ ?s ?p ?o }} }} WHERE {{ GRAPH ?g {{ ?s ?p ?o }} '
+            f'FILTER(STRSTARTS(STR(?g), "{prefix}")) }}'
+        )
+
+    def _send_graph(self, method: str, turtle_payload: str, graph: str | None) -> None:
+        response = getattr(self.session, method)(
             self.config.statements_url,
-            params={"context": f"<{self.config.named_graph}>"},
+            params={"context": f"<{graph or self.config.named_graph}>"},
             data=turtle_payload.encode('utf-8'),
             headers={"Content-Type": "text/turtle; charset=utf-8"},
             auth=self._auth(),

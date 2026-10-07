@@ -37,13 +37,18 @@ import interfaces as ifaces
 sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
 
+import json
+
 from src.ontology_mapping import DSRSemanticWrapper, UNEXPLAINED_INTENTION_NAME, FOLLOW_AFFORDANCE_NAME
+from src.episode_memory_reader import episode_from_memory, recording_to_explain
+from src.episode_rdf import EPISODES, episode_graph, graph_iri
 from src.graphdb_client import GraphDBClient, GraphDBConfig
 from src.hypothesis_config import HypothesisGeneratorConfig
-from src.hypothesis_context import build_hypothesis_generation_context
+from src.hypothesis_context import build_hypothesis_generation_context, compact_timestamp_token
+from src.hypothesis_generator import generate_batch, ollama_chat
 from src.hypothesis_service import SemanticHypothesisService
 from src.live_causal_validator import LiveCausalValidator
-from src.verdict_ingestor import ingest_verdict
+from src.verdict_ingestor import ingest_verdict, mechanism_graph
 
 # DSR contract with the inner simulator (attributes of the intention node)
 HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
@@ -61,6 +66,11 @@ class SpecificWorker(GenericWorker):
     def __init__(self, proxy_map, configData, startup_check=False):
         super(SpecificWorker, self).__init__(proxy_map, configData)
         self.Period = configData["Period"]["Compute"]
+        # Two DSR graphs, as the inner simulator: the working memory and the episodic one, where
+        # the "Follow Person" mission publishes the path of its recording. With a single graph in
+        # the config, there is no episodic one and the generation v2 cannot find the episode.
+        self.g = self.graphs.get("work", self.g)
+        self.episodic_g = self.graphs.get("episodic")
 
         # Coalescing infrastructure. Initialized first because everything below may
         # mutate semantic state, and from this point on slots could (in principle)
@@ -96,18 +106,36 @@ class SpecificWorker(GenericWorker):
         self._graphdb_retry_at = 0.0
         self.component_root = Path(__file__).resolve().parent.parent
         self.hypothesis_config = HypothesisGeneratorConfig.from_config(configData, self.component_root)
+        enabled = self.hypothesis_config.enabled
+        v2 = self.hypothesis_config.generation == "v2"
         self.hypothesis_service = (
             SemanticHypothesisService(self.hypothesis_config, log_hook=self._log_hypothesis_event)
-            if self.hypothesis_config.enabled
+            if enabled and not v2
             else None
         )
+        # Generation v2: the LLM, and the batch of the case being explained (to consolidate the
+        # verified mechanism and to recognise the verdict that answers it).
+        self.llm = (
+            ollama_chat(self.hypothesis_config.primary_model, self.hypothesis_config.ollama_base_url,
+                        self.hypothesis_config.request_timeout_seconds)
+            if enabled and v2
+            else None
+        )
+        self.current_batch = None
+        self._waiting_for_recording = False
+        self._foreign_verdict_paths: set[str] = set()
 
         self.mapper.initialize_from_dsr(self.g)
         self._bootstrap_remote_state()
         ##
 
         try:
-            signals.connect(self.g, signals.UPDATE_NODE_ATTR, self.update_node_att)
+            # pydsr routes a callback by the annotations of its parameters, not by the signal named
+            # here: every connected slot must be annotated exactly as its signal (an unannotated
+            # `attribute_names` made update_node_att a node-deletion handler, called with the id
+            # only). The attribute signals stay off, as they were in effect: the mirror follows
+            # node and edge updates, and robot or IMU attributes change tens of times per second.
+            # signals.connect(self.g, signals.UPDATE_NODE_ATTR, self.update_node_att)
             signals.connect(self.g, signals.UPDATE_NODE, self.update_node)
             signals.connect(self.g, signals.DELETE_NODE, self.delete_node)
             signals.connect(self.g, signals.UPDATE_EDGE, self.update_edge)
@@ -164,7 +192,7 @@ class SpecificWorker(GenericWorker):
                     style="red",
                 )
 
-        if self.unexplained and self.hypothesis_service is not None and not self.hypothesis_generation_done:
+        if self.unexplained and self.hypothesis_config.enabled and not self.hypothesis_generation_done:
             self.generate_hypotheses_json()
 
         # Publish (and retry until the node accepts it) the hypotheses batch path so
@@ -237,12 +265,31 @@ class SpecificWorker(GenericWorker):
             console.print(f"Verdict at '{verdict_path}' could not be ingested: {ingestion.reason}", style="red")
             return
 
+        # Generation v2: only the verdict on our own batch answers the case. The simulator may first
+        # simulate its static causes, if it finds the recording before the batch is out.
+        if self.current_batch is not None and ingestion.case_id != self.current_batch.get("case_id"):
+            if verdict_path not in self._foreign_verdict_paths:
+                self._foreign_verdict_paths.add(verdict_path)
+                console.print(
+                    f"Verdict for case '{ingestion.case_id}' does not answer batch "
+                    f"'{self.current_batch.get('case_id')}': waiting for its own.",
+                    style="yellow",
+                )
+            return
+
         if ingestion.triples:
+            mechanism = (mechanism_graph(self.current_batch, ingestion.accepted_hypothesis_id)
+                         if self.current_batch is not None else None)
             if self.graphdb_client is not None:
                 if time.monotonic() < self._graphdb_retry_at:
                     return
                 try:
                     self.graphdb_client.apply_delta(added=set(ingestion.triples), removed=set())
+                    if mechanism is not None:
+                        self.graphdb_client.add_to_graph(
+                            mechanism.serialize(format="turtle"),
+                            str(graph_iri(self.current_batch["episode"]["id"])),
+                        )
                 except Exception as exc:
                     self._graphdb_retry_at = time.monotonic() + GRAPHDB_RETRY_SECONDS
                     console.print(f"Could not consolidate causal triples in GraphDB: {exc}", style="red")
@@ -252,6 +299,14 @@ class SpecificWorker(GenericWorker):
                 f"'{ingestion.accepted_intervention}' ({len(ingestion.triples)} triples).",
                 style="green",
             )
+            if mechanism is not None:
+                accepted = next(h for h in self.current_batch["hypotheses"]
+                                if h["hypothesis_id"] == ingestion.accepted_hypothesis_id)
+                console.print(
+                    f"Verified mechanism '{accepted['mechanism']}': {accepted['title']} "
+                    f"({len(mechanism)} triples in the episode graph).",
+                    style="green",
+                )
         else:
             console.print(
                 f"Verdict for case '{ingestion.case_id}' accepted no hypothesis: {ingestion.reason}",
@@ -275,6 +330,9 @@ class SpecificWorker(GenericWorker):
         self.hypotheses_path_published = False
         self.trigger_added = frozenset()
         self.trigger_removed = frozenset()
+        self.current_batch = None
+        self._waiting_for_recording = False
+        self._foreign_verdict_paths = set()
         console.print("Unexplained cycle resolved and re-armed.", style="green")
 
     def deactivate_follow_affordance(self) -> None:
@@ -488,6 +546,9 @@ class SpecificWorker(GenericWorker):
         )
 
     def generate_hypotheses_json(self) -> None:
+        if self.hypothesis_config.generation == "v2":
+            self._generate_from_episode()
+            return
         if self.hypothesis_service is None:
             return
 
@@ -515,6 +576,7 @@ class SpecificWorker(GenericWorker):
             style="cyan",
         )
 
+        self._reset_previous_cases()
         try:
             generation_started_at = time.perf_counter()
             result = self.hypothesis_service.generate(context)
@@ -544,10 +606,100 @@ class SpecificWorker(GenericWorker):
                 style="red",
             )
 
+    def _generate_from_episode(self) -> None:
+        """Generation v2 (contract 3): the episode from the recording of the episodic memory, the
+        LLM in symbols, then coherence, contrast, grounding and budget (hypothesis_generator).
+
+        The recording holds the fall and the reaction once the follow mission stops: wait for it as
+        the inner simulator does (recording_to_explain). One attempt per unexplained change. A
+        batch whose LLM attempts all failed is published too: it has no hypotheses, the simulator
+        only runs the nominal, and the case stays unexplained.
+        """
+        nodes = self.episodic_g.get_nodes() if self.episodic_g is not None else []
+        recording = recording_to_explain(nodes)
+        if recording is None:
+            if not self._waiting_for_recording:
+                self._waiting_for_recording = True
+                console.print(
+                    "[Generation v2] Waiting for the recording of the follow mission in the episodic memory"
+                    + ("." if self.episodic_g is not None else ": no episodic graph in the config!"),
+                    style="yellow",
+                )
+            return
+        self._waiting_for_recording = False
+        self.hypothesis_generation_done = True
+        self._reset_previous_cases()
+        config = self.hypothesis_config
+        case_id = f"semantic_unexplained_{compact_timestamp_token()}"
+        started = time.perf_counter()
+        try:
+            episode = episode_from_memory(recording)
+            config.output_dir.mkdir(parents=True, exist_ok=True)
+            episode_path = config.output_dir / f"{case_id}_episode.json"
+            episode_path.write_text(json.dumps(episode, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+            self._store_episode(episode)
+            result = generate_batch(
+                episode, self.llm, model=config.primary_model, output_dir=config.output_dir, case_id=case_id,
+                budget=config.budget, max_attempts=config.max_attempts, self_model_path=config.description_path,
+                episode_path=str(episode_path), trigger=self._trigger_summary(),
+                log=lambda message: console.print(f"[Generation v2] {message}", style="cyan"),
+            )
+        except Exception as exc:
+            console.print(f"[Generation v2] No batch for '{recording}': {exc}", style="red")
+            return
+        self.current_batch = result.batch
+        self.last_hypotheses_path = result.batch_path
+        self.hypotheses_path_published = False
+        to_simulate = sum(h["status"] == "to_simulate" for h in result.batch["hypotheses"])
+        console.print(
+            f"[Generation v2] Batch '{case_id}' ({result.batch['status']}) at {result.batch_path}: "
+            f"{len(result.batch['hypotheses'])} hypotheses, {to_simulate} to simulate, "
+            f"{result.batch['attempts']} LLM attempts. Elapsed: {time.perf_counter() - started:.3f}s.",
+            style="cyan" if result.ok else "yellow",
+        )
+
+    def _reset_previous_cases(self) -> None:
+        """Each case starts from a clean semantic memory in GraphDB: the live graph goes back to the
+        mirror of the working memory alone, and the episode graphs of previous cases are dropped.
+        What a case writes (its episode, its explanation) stays until the next case starts, so it
+        can be inspected after a run. Nothing in the loop reads previous cases back: this keeps
+        GraphDB from piling up one case per run."""
+        if self.graphdb_client is None:
+            return
+        with self._sync_lock:
+            state = self.mapper.get_state()
+            mirror = set(state.triples)
+        try:
+            self.graphdb_client.replace_with_triples(mirror)
+            self.graphdb_client.drop_graphs(EPISODES)
+        except Exception as exc:
+            console.print(f"Could not clear the previous cases from GraphDB: {exc}", style="yellow")
+            return
+        with self._sync_lock:
+            self.last_triples = mirror
+            self.last_signature = state.signature
+        console.print("GraphDB cleared of previous cases: only the mirror of the working memory.", style="cyan")
+
+    def _store_episode(self, episode: dict) -> None:
+        """Keep the episode in the semantic memory: its own named graph in GraphDB."""
+        if self.graphdb_client is None:
+            return
+        try:
+            self.graphdb_client.replace_graph(episode_graph(episode).serialize(format="turtle"),
+                                              str(graph_iri(episode["episode_id"])))
+        except Exception as exc:
+            console.print(f"[Generation v2] Could not store the episode in GraphDB: {exc}", style="yellow")
+
+    def _trigger_summary(self) -> dict:
+        def listed(triples):
+            return [{"subject": s, "predicate": p, "object": o} for s, p, o in sorted(triples)]
+        return {"unexplained_reason": self.unexplained_reason, "removed_triples": listed(self.trigger_removed),
+                "added_triples": listed(self.trigger_added)}
+
     # =============== DSR SLOTS  ================
     # =============================================
 
-    def update_node_att(self, id: int, attribute_names):
+    def update_node_att(self, id: int, attribute_names: [str]):
         node = self.g.get_node(id)
         node_type = getattr(node, "type", None) if node is not None else None
         with self._sync_lock:
@@ -580,7 +732,7 @@ class SpecificWorker(GenericWorker):
 
         console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
 
-    def update_edge_att(self, fr: int, to: int, type: str, attribute_names):
+    def update_edge_att(self, fr: int, to: int, type: str, attribute_names: [str]):
         with self._sync_lock:
             semantic_changed = self.mapper.updated_edge(self.g, type)
         if semantic_changed:
