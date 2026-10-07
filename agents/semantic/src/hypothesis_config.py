@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 class ConfigError(ValueError):
@@ -15,6 +15,17 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_budget(value: Any) -> Optional[int]:
+    """`Budget`: "all" (or absent) simulates everything that survives and can be simulated; a number k
+    caps the compiled causes, as the evaluation's comparisons do."""
+    if value is None or str(value).strip().strip('"').strip("'").lower() in {"", "all", "none"}:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        raise ConfigError(f"Config key 'hypothesisGenerator.Budget' must be \"all\" or a number, got '{value}'.")
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -91,6 +102,13 @@ class HypothesisGeneratorConfig:
     external_count: int
     preferred_client: str
     description_char_limit: int
+    #: "v2" (default): episode, mechanisms and grounding (hypothesis_generator); "v1": the LLM writes
+    #: the blueprints itself (SemanticHypothesisService, 3 internal + 3 external).
+    generation: str = "v2"
+    #: v2 only: compiled causes simulated per case (the nominal is free; None: everything that survives and
+    #: can be simulated) and LLM attempts.
+    budget: Optional[int] = None
+    max_attempts: int = 3
 
     @classmethod
     def from_config(
@@ -122,6 +140,9 @@ class HypothesisGeneratorConfig:
 
         enabled = _as_bool(section.get("Enabled"), False)
         fallback_model = _as_str(section.get("FallbackModel"), "")
+        generation = _as_str(section.get("Generation"), "v2").strip('"').strip("'").lower()
+        if generation not in {"v1", "v2"}:
+            raise ConfigError(f"Config key '{section_name}.Generation' must be v1 or v2, got '{generation}'.")
 
         return cls(
             enabled=enabled,
@@ -136,4 +157,7 @@ class HypothesisGeneratorConfig:
             external_count=max(1, _as_int(external_count_raw, 1)),
             preferred_client=preferred_client,
             description_char_limit=max(500, _as_int(description_char_limit_raw, 500)),
+            generation=generation,
+            budget=_as_budget(section.get("Budget")),
+            max_attempts=max(1, _as_int(section.get("MaxAttempts"), 3)),
         )

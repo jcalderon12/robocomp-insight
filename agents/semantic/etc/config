@@ -5,21 +5,29 @@ Agent.name = "semantic"
 
 # --- Single Instance Configuration ---
 # Use this if you only have one graph.
-Agent.configFile = ""
-Agent.domain = 0
-Agent.tree = true
-Agent.graph = true
-Agent.2d = true
-Agent.3d = true
+#Agent.configFile = ""
+#Agent.domain = 0
+#Agent.tree = true
+#Agent.graph = true
+#Agent.2d = true
+#Agent.3d = true
 
-# --- Multiple Instance Template ---
-# If you define sub-instances, the single instance config above will be ignored.
-# Agent.instance_name.configFile = ""
-# Agent.instance_name.domain = 1
-# Agent.instance_name.tree = true
-# Agent.instance_name.graph = true
-# Agent.instance_name.2d = true
-# Agent.instance_name.3d = true
+# --- Multiple Instance Configuration ---
+# The working memory, and the episodic one: the "Follow Person" mission publishes there the path
+# of its recording, from which the generation v2 builds the episode (as the inner simulator does).
+Agent.work.configFile = ""
+Agent.work.domain = 0
+Agent.work.tree = true
+Agent.work.graph = true
+Agent.work.2d = true
+Agent.work.3d = true
+
+Agent.episodic.configFile = ""
+Agent.episodic.domain = 1
+Agent.episodic.tree = false
+Agent.episodic.graph = false
+Agent.episodic.2d = false
+Agent.episodic.3d = false
 
 Period.Compute = 100
 Period.Emergency = 500
@@ -55,6 +63,13 @@ hypothesisGenerator.PreferredClient = "ollama_http"
 # The whole robot self-model (description.md, ~6 KB) must reach the prompt: its grounding
 # rules, diagnostic regions and invalid-fault examples come last and were being cut at 3500.
 hypothesisGenerator.DescriptionCharLimit = 12000
+# v2: episode, mechanisms and grounding by the memory (contract 3); v1: the LLM writes the blueprints.
+hypothesisGenerator.Generation = "v2"
+# v2 only: compiled causes simulated per case and LLM attempts. "all": every hypothesis that survives
+# the contrast and can be simulated is simulated (the nominal run is always free); a number k caps the
+# causes, in the LLM's order, as the evaluation's comparisons do.
+hypothesisGenerator.Budget = "all"
+hypothesisGenerator.MaxAttempts = 3
 
 # Available models ollama cloud:
 # gemma4:31b-cloud
