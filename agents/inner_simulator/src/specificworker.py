@@ -298,8 +298,8 @@ class SpecificWorker(GenericWorker):
             robot_position_fixed = [fp[1] , fp[0] , fp[2]]
             self.sim_scene.initial_robot_position = robot_position_fixed
             self.sim_scene.initial_robot_orientation = self.robot_initial_orientation
-            self.sim_scene.bottle_position = fp[1] + self.bottle_position_offset[1], fp[0] + self.bottle_position_offset[0], fp[2] + self.bottle_position_offset[2]
-            self.sim_scene.bottle_orientation = self.robot_initial_orientation[0], self.robot_initial_orientation[1], self.robot_initial_orientation[2], self.robot_initial_orientation[3]
+            self.sim_scene.bottle_position = [fp[1] + self.bottle_position_offset[1], fp[0] + self.bottle_position_offset[0], fp[2] + self.bottle_position_offset[2]]
+            self.sim_scene.bottle_orientation = [self.robot_initial_orientation[0], self.robot_initial_orientation[1], self.robot_initial_orientation[2], self.robot_initial_orientation[3]]
 
             self.logger.log(f"Initial robot position set for simulation: {robot_position_fixed} (m)", style="green")
         else:
