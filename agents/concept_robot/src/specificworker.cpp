@@ -17,9 +17,12 @@
  *    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "specificworker.h"
+#include <filesystem>
+#include <fstream>
 
 SpecificWorker::SpecificWorker(const ConfigLoader& configLoader, TuplePrx tprx, bool startup_check) : GenericWorker(configLoader, tprx)
 {
+	setlocale(LC_NUMERIC, "C");
 	this->startup_check_flag = startup_check;
 	if(this->startup_check_flag)
 	{
@@ -103,9 +106,37 @@ void SpecificWorker::initialize()
 	last_odometry = {0.0f, 0.0f, 0.0f};
 
 	if (simulated)
-		desired_distance = configLoader.get<double>("Desired_distance") / 1000;
+		{
+			desired_distance = configLoader.get<double>("Desired_distance") / 1000;
+			std::cout << "Desired distance (simulated): " << desired_distance << std::endl;
+		}
 	else
-		desired_distance = configLoader.get<double>("Desired_distance");
+		{
+			desired_distance = configLoader.get<double>("Desired_distance");
+			std::cout << "Desired distance (real): " << desired_distance << std::endl;
+		}
+
+	// Segundos que hay que aguantar a la distancia deseada para dar follow_person por terminada.
+	follow_hold_seconds = configLoader.get<double>("Follow_hold_seconds");
+
+	// Parámetros de la misión de fotos: en el config van en grados, aquí se pasan a radianes.
+	const float deg2rad = std::numbers::pi_v<float> / 180.f;
+	photo_angular_step  = configLoader.get<double>("Photo_angular_step") * deg2rad;
+	photo_front_window  = configLoader.get<double>("Photo_front_window") * deg2rad;
+	photo_back_window   = configLoader.get<double>("Photo_back_window") * deg2rad;
+	photo_settle_seconds = configLoader.get<double>("Photo_settle_seconds");
+	photo_spin_speed    = configLoader.get<double>("Photo_spin_speed_factor") * WEBOTS_MAX_ANGULAR_SPEED;
+
+	// Una carpeta y un log por ejecución, para no mezclar tandas.
+	auto session_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()).count();
+	photo_session_dir = (std::filesystem::path(photo_save_dir) / std::to_string(session_ms)).string();
+	std::filesystem::create_directories(photo_session_dir);
+	photo_log_path = (std::filesystem::path(photo_session_dir) / "shots.csv").string();
+	std::ofstream(photo_log_path) << "label,angle_to_bump_deg,dist_to_bump_m,path\n";
+	std::cout << "Fotos de esta sesión en: " << photo_session_dir << std::endl;
+
+	std::cout << "Numeric locale active: " << setlocale(LC_NUMERIC, nullptr) << std::endl;
 }
 
 
@@ -114,18 +145,33 @@ void SpecificWorker::compute()
 {
 	auto_localization();
 
-    if (queck_affordance_active())
+    if (check_affordance_active())
 	{
-		follow_target(1.0f, 1.0f, desired_distance);
+		// Si el TARGET es el bache, la misión es la de fotos; si no, seguimiento normal.
+		if (is_photo_target())
+			photo_spin();
+		else
+		{
+			reset_photo_spin();
+			follow_target(1.0f, 1.0f, desired_distance);
+			check_follow_reached();
+		}
 	}
 	else{
 		stop_robot();
+		was_following = false;  // next follow_target() call starts a fresh D-term baseline
+		follow_holding = false;
+		last_target_distance = -1.f;
+		reset_photo_spin();
 	}
 
 	std::vector<float> actual_velocities = getVelocitiesFromDSR();
 
-	if (has_significant_change(actual_velocities, last_velocities_readed)) 
-		this->omnirobot_proxy->setSpeedBase(0.0 , actual_velocities[0], -actual_velocities[1]);
+	if (has_significant_change(actual_velocities, last_velocities_readed)) {
+		this->omnirobot_proxy->setSpeedBase(0.0, actual_velocities[0], actual_velocities[1]);
+		if(print_extra_info)
+			std::cout << "setSpeedBase -> advx: " << actual_velocities[0] << " | rot: " << actual_velocities[1] << std::endl;
+	}
 
 	last_velocities_readed = actual_velocities;	
 	
@@ -207,6 +253,8 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     float distance_to_target = std::sqrt(x*x + y*y);
     float angle_to_target    = std::atan2(x, y);
 
+    last_target_distance = distance_to_target;   // la lee check_follow_reached()
+
     float distance_error = 0.0f;
     if (distance_to_target > 1e-3f)
         distance_error = (distance_to_target - desired_distance) / distance_to_target;
@@ -221,14 +269,22 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 	float dt = std::chrono::duration<float>(now - last_follow_time).count();
 	last_follow_time = now;
 
-	if (dt > 1e-4f)
+	// Skip the derivative term on the first cycle after (re)starting to follow a target:
+	// prev_distance_error/prev_angle_error/last_follow_time are otherwise stale (from
+	// whatever target was last tracked, possibly a different mission), producing a bogus
+	// error jump that briefly kicks linear_velocity/angular_velocity hard at start.
+	if (dt > 1e-4f && was_following)
 	{
 		d_distance_error = (distance_error - prev_distance_error) / dt;
-		d_angle_error    = (angle_to_target - prev_angle_error)   / dt;
+		float angle_diff = angle_to_target - prev_angle_error;
+		angle_diff = std::atan2(std::sin(angle_diff), std::cos(angle_diff));
+		d_angle_error = angle_diff / dt;
+		// d_angle_error    = (angle_to_target - prev_angle_error)   / dt;
 	}
 
 	prev_distance_error = distance_error;
 	prev_angle_error    = angle_to_target;
+	was_following = true;
 
     const float Kp_lin = 0.8f;
     const float Kd_lin = 0.1f;   
@@ -237,7 +293,7 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     const float Kd_ang = 0.1f;   
 
 	float linear_velocity  = Kp_lin * distance_error + Kd_lin * d_distance_error;
-	float angular_velocity = Kp_ang * angle_to_target + Kd_ang * d_angle_error;
+	float angular_velocity = -(Kp_ang * angle_to_target + Kd_ang * d_angle_error);
 
 	float angle_attenuation = std::cos(std::clamp(angle_to_target, -HALF_PI, HALF_PI));
 	linear_velocity *= angle_attenuation;
@@ -254,17 +310,28 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
 		WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
 	);
 
-    if (print_extra_info)
-        std::cout << "Distance: "    << distance_to_target
-                  << "  Error: "     << distance_error
-                  << "  dError/dt: " << d_distance_error
-                  << "  Angle: "     << angle_to_target
-                  << "  Linear Vel: "<< linear_velocity
-                  << "  Angular Vel:"<< angular_velocity << std::endl;
+    if (print_extra_info){
+		auto ts_robot = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count();
+	
+		std::cout << "[" << ts_robot << "] RT target translation -> x: " << x << " | y: " << y
+				  << " | angle_to_target: " << angle_to_target
+				  << " | linear_v: " << linear_velocity
+				  << " | angular_v: " << angular_velocity << std::endl;
+	}    
+	
+	// std::cout << "Distance: "    << distance_to_target
+        //          << "  Error: "     << distance_error
+        //          << "  dError/dt: " << d_distance_error
+        //          << "  Angle: "     << angle_to_target
+        //          << "  Linear Vel: "<< linear_velocity
+        //          << "  Angular Vel:"<< angular_velocity
+	 	//		  << "RT target translation -> x: " << x << " | y: " << y 
+		//		  << std::endl;
 
-    G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
-    G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
-    G->update_node(robot_node);
+	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
+	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
+	G->update_node(robot_node);
 }
 
 std::vector<float> SpecificWorker::auto_localization()
@@ -272,8 +339,8 @@ std::vector<float> SpecificWorker::auto_localization()
 	std::vector<float> robot_pose = {0,0,0,0,0,0,1}; // {x, y, z, qx, qy, qz, qw}
 	if (simulated){
 		auto webots_pose = this->webots2robocomp_proxy->getObjectPose(robot_DEF);
-		robot_pose[0] = webots_pose.position.x / 1000.f;
-		robot_pose[1] = webots_pose.position.y / 1000.f;
+		robot_pose[0] = webots_pose.position.y / 1000.f;
+		robot_pose[1] = webots_pose.position.x / 1000.f;
 		robot_pose[2] = webots_pose.position.z / 1000.f;
 		Eigen::Quaternionf quat(webots_pose.orientation.w, webots_pose.orientation.x, webots_pose.orientation.y, webots_pose.orientation.z);
 		quat.normalize();
@@ -304,9 +371,9 @@ std::vector<float> SpecificWorker::auto_localization()
 	}
 
 	auto robot_node_opt = G->get_node("robot");
-    auto room_node_opt = G->get_node("room");
+    auto root_node_opt = G->get_node("root");
 
-	DSR::Node room_node, robot_node;
+	DSR::Node root_node, robot_node;
 
 	if (!robot_node_opt.has_value())
 	{
@@ -317,21 +384,21 @@ std::vector<float> SpecificWorker::auto_localization()
 	else 
 		robot_node = robot_node_opt.value();
 
-	if (!room_node_opt.has_value())
+	if (!root_node_opt.has_value())
 	{
-		std::cerr << "Room node not found in DSR. Creating new room node." << std::endl;
-		room_node = DSR::Node::create<room_node_type>("room");
-		G->insert_node(room_node);
+		std::cerr << "Root node not found in DSR. Creating new root node." << std::endl;
+		root_node = DSR::Node::create<root_node_type>("root");
+		G->insert_node(root_node);
 	}
 	else
-		room_node = room_node_opt.value();
+		root_node = root_node_opt.value();
 
-	auto rt_edge_opt = rt->get_edge_RT(room_node, robot_node.id());
+	auto rt_edge_opt = rt->get_edge_RT(root_node, robot_node.id());
 	if (!rt_edge_opt.has_value())
 	{
-		std::cerr << "RT edge between room and robot not found. Creating new RT edge." << std::endl;
+		std::cerr << "RT edge between root and robot not found. Creating new RT edge." << std::endl;
 		DSR::Edge new_rt_edge;
-		new_rt_edge.from(room_node.id());
+		new_rt_edge.from(root_node.id());
 		new_rt_edge.to(robot_node.id());
 		new_rt_edge.type("RT");
 		G->add_or_modify_attrib_local<rt_translation_att>(new_rt_edge, (std::vector<float>){robot_pose[0], robot_pose[1], robot_pose[2]});
@@ -461,7 +528,7 @@ void SpecificWorker::update_or_create_imu_node()
 	}
 }
 
-bool SpecificWorker::queck_affordance_active()
+bool SpecificWorker::check_affordance_active()
 {
 	auto target_edges = G->get_edges_by_type("TARGET");
 	auto has_intention_edges = G->get_edges_by_type("has_intention");
@@ -505,6 +572,274 @@ void SpecificWorker::stop_robot()
 }
 
 #pragma endregion DSR
+
+#pragma region PHOTO_MISSION
+
+bool SpecificWorker::is_photo_target()
+{
+	auto target_edges = G->get_edges_by_type("TARGET");
+	if (target_edges.empty())
+		return false;
+	auto target_node_opt = G->get_node(target_edges[0].to());
+	return target_node_opt.has_value() && target_node_opt.value().name() == "bump";
+}
+
+void SpecificWorker::reset_photo_spin()
+{
+	spin_stage = SpinStage::TURNING;
+	spin_accumulated = 0.f;
+	spin_since_shot = photo_angular_step;   // dispara ya en el rumbo de partida
+	spin_heading_valid = false;
+}
+
+void SpecificWorker::spin_in_place(float angular_speed)
+{
+	auto robot_node_opt = G->get_node("robot");
+	if (!robot_node_opt.has_value())
+	{
+		std::cerr << "Robot node not found in DSR." << std::endl;
+		return;
+	}
+	DSR::Node robot_node = robot_node_opt.value();
+
+	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, 0.0f);
+	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_speed);
+	G->update_node(robot_node);
+}
+
+void SpecificWorker::drive_forward(float speed)
+{
+	auto robot_node_opt = G->get_node("robot");
+	if (!robot_node_opt.has_value())
+	{
+		std::cerr << "Robot node not found in DSR." << std::endl;
+		return;
+	}
+	DSR::Node robot_node = robot_node_opt.value();
+
+	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, std::abs(speed));
+	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, 0.0f);
+	G->update_node(robot_node);
+}
+
+void SpecificWorker::finish_photo_mission()
+{
+	auto target_edges = G->get_edges_by_type("TARGET");
+	for (const auto& target_edge : target_edges)
+	{
+		// Publica la ruta de las fotos en el nodo del concepto, antes de cerrar la misión: es
+		// como el agente que lo representa sabe con qué imágenes entrenar y que ya están todas.
+		auto concept_node_opt = G->get_node(target_edge.to());
+		if (concept_node_opt.has_value())
+		{
+			DSR::Node concept_node = concept_node_opt.value();
+			G->runtime_checked_add_or_modify_attrib_local(concept_node, "photo_session_dir",
+				std::filesystem::absolute(photo_session_dir).string());
+			G->update_node(concept_node);
+		}
+
+	}
+	clear_target_affordance();
+}
+
+// Pone aff_interacting=false en la afordance alcanzada por TARGET -> has_intention, que es como
+// se le señala a mission_controller que la misión ha terminado.
+void SpecificWorker::clear_target_affordance()
+{
+	auto target_edges = G->get_edges_by_type("TARGET");
+	auto has_intention_edges = G->get_edges_by_type("has_intention");
+	for (const auto& target_edge : target_edges)
+		for (const auto& intention_edge : has_intention_edges)
+			if (intention_edge.from() == target_edge.to())
+			{
+				auto affordance_node_opt = G->get_node(intention_edge.to());
+				if (affordance_node_opt.has_value())
+				{
+					DSR::Node affordance_node = affordance_node_opt.value();
+					G->add_or_modify_attrib_local<aff_interacting_att>(affordance_node, false);
+					G->update_node(affordance_node);
+					return;
+				}
+			}
+}
+
+// Da follow_person por terminada tras aguantar follow_hold_seconds a la distancia deseada;
+// alejarse o derivar durante la espera reinicia la cuenta.
+void SpecificWorker::check_follow_reached()
+{
+	if (last_target_distance < 0.f)
+		return;
+
+	// El controlador nunca retrocede, así que se acepta la distancia deseada o menos; el margen
+	// cubre que los últimos centímetros se recorren a milímetros por segundo.
+	if (last_target_distance > desired_distance + FOLLOW_REACHED_MARGIN)
+	{
+		follow_holding = false;
+		return;
+	}
+
+	auto now = std::chrono::steady_clock::now();
+	if (!follow_holding)
+	{
+		follow_holding = true;
+		follow_hold_start = now;
+		follow_hold_distance = last_target_distance;
+		return;
+	}
+
+	// Deriva respecto a la distancia que había al empezar: el objetivo se ha movido.
+	if (std::fabs(last_target_distance - follow_hold_distance) > FOLLOW_HOLD_DRIFT)
+	{
+		follow_holding = false;
+		return;
+	}
+
+	if (std::chrono::duration<float>(now - follow_hold_start).count() >= follow_hold_seconds)
+	{
+		std::cout << "follow_person: " << follow_hold_seconds << " s a " << last_target_distance
+		          << " m del objetivo; misión completada." << std::endl;
+		clear_target_affordance();
+		follow_holding = false;
+		last_target_distance = -1.f;
+	}
+}
+
+void SpecificWorker::take_photo(const std::string& label, float angle_to_bump, float distance_to_bump)
+{
+	try
+	{
+		auto img = camerargbdsimple_proxy->getImage("camera");
+		if (img.image.empty() || img.width <= 0 || img.height <= 0)
+		{
+			std::cerr << "photo_spin: imagen vacía de CameraRGBDSimple, disparo descartado." << std::endl;
+			return;
+		}
+
+		std::filesystem::path dir = std::filesystem::path(photo_session_dir) / label;
+		std::filesystem::create_directories(dir);
+		std::filesystem::path filepath = dir / (label + "_" + std::to_string(photo_counter++) + ".jpg");
+
+		// La imagen llega en RGB y OpenCV guarda asumiendo BGR: hay que invertir los canales.
+		cv::Mat rgb(img.height, img.width, CV_8UC3, const_cast<unsigned char*>(img.image.data()));
+		cv::Mat bgr;
+		cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
+		if (!cv::imwrite(filepath.string(), bgr))
+		{
+			std::cerr << "photo_spin: cv::imwrite falló en " << filepath.string() << std::endl;
+			return;
+		}
+
+		float angle_deg = angle_to_bump * 180.f / std::numbers::pi_v<float>;
+		std::cout << "photo_spin: " << filepath.string()
+			<< " (ángulo al bache " << angle_deg << " deg, distancia " << distance_to_bump << " m)" << std::endl;
+
+		std::ofstream log(photo_log_path, std::ios::app);
+		if (log.is_open())
+			log << label << "," << angle_deg << "," << distance_to_bump << "," << filepath.string() << "\n";
+	}
+	catch (const std::exception& e)
+	{
+		std::cerr << "photo_spin: fallo al tomar la foto: " << e.what() << std::endl;
+	}
+}
+
+void SpecificWorker::photo_spin()
+{
+	auto robot_node_opt = G->get_node("robot");
+	auto root_node_opt  = G->get_node("root");
+	auto target_edges = G->get_edges_by_type("TARGET");
+	if (!robot_node_opt.has_value() || !root_node_opt.has_value() || target_edges.empty())
+		return;
+	DSR::Node robot_node = robot_node_opt.value();
+
+	// Posición del bache en el marco del robot (RT publicada por concept_bump). Sólo se usa
+	// para etiquetar, y siempre con el robot parado, así que su refresco lento no molesta.
+	auto bump_rt_opt = rt->get_edge_RT(robot_node, target_edges[0].to());
+	if (!bump_rt_opt.has_value())
+		return;
+	auto t_rb_opt = G->get_attrib_by_name<rt_translation_att>(bump_rt_opt.value());
+	if (!t_rb_opt.has_value())
+		return;
+	std::vector<float> t_rb = t_rb_opt.value();
+	float angle_to_bump = std::atan2(t_rb[1], t_rb[0]);
+	float dist_to_bump  = std::sqrt(t_rb[0] * t_rb[0] + t_rb[1] * t_rb[1]);
+
+	// Rumbo del robot desde la RT root->robot, que auto_localization() refresca cada ciclo: es la
+	// señal rápida con la que se mide el giro acumulado.
+	auto root_robot_rt_opt = rt->get_edge_RT(root_node_opt.value(), robot_node.id());
+	if (!root_robot_rt_opt.has_value())
+		return;
+	auto q_rr_opt = G->get_attrib_by_name<rt_quaternion_att>(root_robot_rt_opt.value());
+	if (!q_rr_opt.has_value())
+		return;
+	std::vector<float> q_rr = q_rr_opt.value();
+	Eigen::Quaternionf q(q_rr[3], q_rr[0], q_rr[1], q_rr[2]);
+	q.normalize();
+	float robot_heading = std::atan2(2.f * (q.w() * q.z() + q.x() * q.y()),
+		1.f - 2.f * (q.y() * q.y() + q.z() * q.z()));
+
+	const float PI = std::numbers::pi_v<float>;
+	auto wrap = [PI](float a) { return std::atan2(std::sin(a), std::cos(a)); };
+
+	switch (spin_stage)
+	{
+		case SpinStage::TURNING:
+		{
+			// Acumular el giro real hecho desde el ciclo anterior.
+			if (spin_heading_valid)
+			{
+				float delta = std::abs(wrap(robot_heading - spin_last_heading));
+				spin_accumulated += delta;
+				spin_since_shot  += delta;
+			}
+			spin_last_heading = robot_heading;
+			spin_heading_valid = true;
+
+			if (spin_accumulated >= 2.f * PI)
+			{
+				stop_robot();
+				spin_stage = SpinStage::DONE;
+			}
+			else if (spin_since_shot >= photo_angular_step)
+			{
+				stop_robot();
+				spin_settle_start = std::chrono::steady_clock::now();
+				spin_stage = SpinStage::SETTLING;
+			}
+			else
+				spin_in_place(photo_spin_speed);
+			break;
+		}
+
+		case SpinStage::SETTLING:
+		{
+			// Esperar a que se pare del todo y a que llegue una lectura fresca del bache.
+			stop_robot();
+			if (std::chrono::duration<float>(std::chrono::steady_clock::now() - spin_settle_start).count() < photo_settle_seconds)
+				break;
+
+			float a = std::abs(angle_to_bump);
+			if (a <= photo_front_window)
+				take_photo("con_bache", angle_to_bump, dist_to_bump);
+			else if (a >= PI - photo_back_window)
+				take_photo("sin_bache", angle_to_bump, dist_to_bump);
+			// Los laterales no se guardan: el bache no se ve ni se deja de ver con claridad.
+
+			spin_since_shot = 0.f;
+			spin_stage = SpinStage::TURNING;
+			break;
+		}
+
+		case SpinStage::DONE:
+		{
+			stop_robot();
+			finish_photo_mission();
+			break;
+		}
+	}
+}
+
+#pragma endregion PHOTO_MISSION
 
 //SUBSCRIPTION to newFullPose method from FullPoseEstimationPub interface
 // void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimation::FullPoseEuler pose)

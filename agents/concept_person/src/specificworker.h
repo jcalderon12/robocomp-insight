@@ -165,7 +165,7 @@ public slots:
 	 * \param relative_position The relative position between the robot and the person
 	 * \return True if the position was actually updated in DSR
 	 */
-	bool update_relative_position_to_person(const std::vector<float>& relative_position);
+	bool update_relative_position_to_person(const std::vector<float>& relative_position, std::uint64_t now_ms);
 
 	/**
 	 * \brief Calculate the speed that the robot must have to reach the person
@@ -184,7 +184,7 @@ private:
 	/**
 	 * \brief Flag to indicate if want many info
 	 */
-	bool print_extra_info = false;
+	bool print_extra_info = configLoader.get<bool>("print_extra_info");
 
 	bool simulated = configLoader.get<bool>("Simulated");
 

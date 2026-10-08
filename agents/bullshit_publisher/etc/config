@@ -2,7 +2,7 @@
 # Change id
 Agent.id = 0
 Agent.name = "bullshit_publisher"
-Agent.configFile = ""
+Agent.configFile = "insight_dsr.json"
 ViewAgent.tree = true
 ViewAgent.graph = true
 ViewAgent.2d = true

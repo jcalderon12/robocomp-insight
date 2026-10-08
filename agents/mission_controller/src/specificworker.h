@@ -71,7 +71,7 @@ public:
 	std::vector<std::string> getAvailableMissions() const
 	{
 		return {
-			"Follow Person",
+			"follow_person",
 			"Search Problem Cause"
 		};
 	}
@@ -115,7 +115,10 @@ public slots:
 	/**
 	 * \brief Slot triggered when the "Start Mission" button is clicked.
 	 */
-	void on_startMission_clicked();
+	bool on_startMission_clicked();  // Returns true only if the active affordance existed and aff_interacting was set
+	// Structural lookup, no hardcoded node names: active TARGET edge -> its "has_intention"
+	// edge -> the affordance node. Same algorithm as concept_robot::check_affordance_active().
+	std::optional<DSR::Node> get_active_affordance_node(const std::shared_ptr<DSR::DSRGraph>& graph) const;
 	
 	// Historic debugger slots
 	void local_changes_management(int value);
@@ -130,6 +133,7 @@ public slots:
 	void modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to, const std::string &type, const std::vector<std::string>& att_names){};
 	void del_edge_slot(std::uint64_t from, std::uint64_t to, const std::string &edge_tag){};
 	void del_node_slot(std::uint64_t from){};     
+	
 private:
 
 	/**
@@ -213,6 +217,8 @@ private:
 	void update_mission_status_episodic(uint64_t mission_id, const std::string &status);
 	void create_mission_target_edge(uint64_t mission_id);
 	void delete_mission_target_edge(uint64_t mission_id);
+	void delete_active_target_edge(); 
+	void set_dsr_target_edge(const std::string& from_name, const std::string& to_name);  // TARGET robot->objetivo de la mision activa
 	std::optional<uint64_t> find_mission_node_by_name(const std::string &mission_name);
 	
 	// Affordance and mission monitoring
@@ -220,9 +226,12 @@ private:
 	void monitor_mission_execution_state();           // Monitor aff_interacting and mission status
 	void create_or_check_follow_person_mission();     // Create follow_person if it doesn't exist
 	void create_search_problem_cause_mission();       // Create search_cause once after a failure stop
+	void create_take_photos_mission();                // Create take-photos mission once the cause is resolved (problem_position set)
 	void disable_autopilot_and_reset();               // Reset autopilot state and UI
 	bool bottle_rt_exists() const;                    // Minimal structural check
-	
+	bool problem_node_exists() const;                 // Check if problem node exists in DSR graph
+	void stop_active_mission(); 					  // Stop currently active mission and update UI
+
 	/**
 	 * \brief Get mission type string ("Follow Person", "Search Problem Cause", etc) from mission ID.
 	 * \param mission_id The DSR mission node ID.

@@ -31,6 +31,8 @@ module RoboCompFullPoseEstimation
 		float m32;
 		float m33;
 		long timestamp;
+		long simTimestamp;
+		bool simulated;
 	};
 	struct CovMatrix
 	{
@@ -100,6 +102,8 @@ module RoboCompFullPoseEstimation
 		CovMatrix accCov;
 		int confidence;
 		long timestamp;
+		long simTimestamp;
+		bool simulated;
 	};
 	interface FullPoseEstimation
 	{

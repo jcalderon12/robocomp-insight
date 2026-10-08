@@ -43,3 +43,4 @@ Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
 
 Simulated = false
+print_extra_info = false

@@ -2,7 +2,7 @@
 Proxies.TopicManager = "IceStorm/TopicManager:default -p 9999"
 
 # Proxies for required interfaces
-Proxies.Camera360RGB = "camera360rgb:tcp -h localhost -p 10098"
+Proxies.CameraRGBDSimple = "camerargbdsimple:tcp -h localhost -p 10096"
 Proxies.IMU = "imu:tcp -h localhost -p 10007"
 Proxies.Lidar3D = "lidar3d:tcp -h localhost -p 11988"
 Proxies.OmniRobot = "omnirobot:tcp -h localhost -p 10010"
@@ -47,4 +47,16 @@ Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
 
 Simulated = False
+print_extra_info = false
 Desired_distance = 1800.0
+
+# Fin de follow_person: segundos seguidos a la distancia deseada
+Follow_hold_seconds = 3.0
+
+# Misión de fotos (concept_robot::photo_spin())
+Photo_angular_step = 5.0
+Photo_front_window = 30.0
+Photo_back_window = 30.0
+Photo_settle_seconds = 0.7
+Photo_spin_speed_factor = 0.1
+Photo_save_dir = "photos"

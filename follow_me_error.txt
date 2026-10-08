@@ -1,0 +1,22 @@
+- Problema
+
+Robot entraba en un patrón de movimiento circular errático en lugar de seguir a la persona correctamente.
+Realizaba saltos erráticos y microajustes bruscos en su rotación durante le trayecto.
+Se observó un comportamiento divergente entre máquinas, funcionando bien solo en la máquina original.
+
+- Causas
+
+1. Marcos de referencia inconsistentes
+"concept_person" calcuaba la posición relativa de la persona restando las coordenadas globales del mundo de webots.
+"concept_robot" asumía que ese vector ya estaba transformado a coordenadas locales del robot.
+Cuando el robot giraba, su eje frontal dejaba de coincidir con el eje del mundo.
+
+2. Ángulos invertidos
+"concept_robot" tenía un signo negativo que invertía el valor de la velocidad rotacional (-angular_velocity).
+Esto provocaba un giro en el sentido opuesto.
+
+3. Error en el eje de referencia en la trigonometría
+"concept_robot" usaba en "follow_target()" la función atan2 con los parámetros invertidos, lo que resultaba en un ángulo de referencia incorrecto.
+Al invertir los parámetros, provocaba que el controlador del robot creyera que la persona estaba a 90 grados de su posición real.
+
+- 

@@ -33,7 +33,13 @@
 
 #include <genericworker.h>
 #include "ui_bullshit_publisher.h"
+#include "ui_agent_generator.h"
 #include <experimental/random>
+#include <QProcess>
+#include <QCoreApplication>
+#include <QDir>
+#include <vector>
+#include <utility>
 
 /**
  * \brief Class SpecificWorker implements the core functionality of the component.
@@ -55,6 +61,9 @@ public:
      */
 	~SpecificWorker();
 
+	// Mission layout control for graph visualization
+	int missions_in_current_row = 0;
+	float current_y_offset = 200.0f;
 
 public slots:
 
@@ -97,8 +106,7 @@ public slots:
 	void add_node();
 	void delete_node();
 	void modify_node();
-	void test_vector_attribute();
-	
+
 	// Edges
 	void add_edge();
 	void add_RT_edge();
@@ -106,8 +114,19 @@ public slots:
 	void delete_RT_edge();
 	void modify_edge();
 	void modify_edge_RT();
-	
+
+	// Attributes (on the node selected in node_from_list). No type/value UI fields yet:
+	// create/modify store a placeholder bool.
+	void add_attr();
+	void delete_attr();
+	void modify_attr();
+
+private slots:
+	void refresh_attr_list();  // repopulates attr_list from node_from_list's currently selected node
+
 private:
+	void refresh_node_combos();  // repopulates node_list/node_from_list/node_to_list from the DSR
+	std::pair<float, float> next_layout_position();  // next pos_x/pos_y for a newly created test node
 
 	/**
      * \brief Flag indicating whether startup checks are enabled.
@@ -115,9 +134,15 @@ private:
 	bool startup_check_flag;
 
 	Ui::bullshit_publisher bullshit_publisher_ui;
-	QWidget bullshit_publisher_widget;
+	Ui::agent_generator agent_generator_ui;
+	QWidget bullshit_publisher_widget, agent_generator_widget;
 
 	std::unique_ptr<DSR::RT_API> rt;
+
+	// Process to manage the created agent's execution
+	QProcess *agent_process;
+	std::vector<QString> generated_agents;
+	QString current_agent_name;
 
 signals:
 	//void customSignal();

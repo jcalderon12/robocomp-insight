@@ -9,7 +9,7 @@
     },
     {
         "name":"wheel",
-        "wheel_wheel": "BR",
+        "wheel_wheel": "R",
         "num_of_repetitions": 40
     }
 ]

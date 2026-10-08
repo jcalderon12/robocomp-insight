@@ -79,13 +79,13 @@
 
 #include <fullposeestimationpubI.h>
 
-#include <Camera360RGB.h>
 #include <CameraRGBDSimple.h>
 #include <FullPoseEstimation.h>
 #include <FullPoseEstimationPub.h>
 #include <GenericBase.h>
 #include <Gridder.h>
 #include <IMU.h>
+#include <KinovaArm.h>
 #include <Lidar3D.h>
 #include <OmniRobot.h>
 #include <Webots2Robocomp.h>
@@ -241,7 +241,7 @@ int concept_robot::run(int argc, char* argv[])
 	std::shared_ptr<IceStorm::TopicPrx> fullposeestimationpub_topic;
 	Ice::ObjectPrxPtr fullposeestimationpub;
 
-	RoboCompCamera360RGB::Camera360RGBPrxPtr camera360rgb_proxy;
+	RoboCompCameraRGBDSimple::CameraRGBDSimplePrxPtr camerargbdsimple_proxy;
 	RoboCompIMU::IMUPrxPtr imu_proxy;
 	RoboCompLidar3D::Lidar3DPrxPtr lidar3d_proxy;
 	RoboCompOmniRobot::OmniRobotPrxPtr omnirobot_proxy;
@@ -249,8 +249,8 @@ int concept_robot::run(int argc, char* argv[])
 
 
 	//Require code
-	require<RoboCompCamera360RGB::Camera360RGBPrx, RoboCompCamera360RGB::Camera360RGBPrxPtr>(communicator(),
-	                    configLoader.get<std::string>("Proxies.Camera360RGB"), "Camera360RGBProxy", camera360rgb_proxy);
+	require<RoboCompCameraRGBDSimple::CameraRGBDSimplePrx, RoboCompCameraRGBDSimple::CameraRGBDSimplePrxPtr>(communicator(),
+	                    configLoader.get<std::string>("Proxies.CameraRGBDSimple"), "CameraRGBDSimpleProxy", camerargbdsimple_proxy);
 	require<RoboCompIMU::IMUPrx, RoboCompIMU::IMUPrxPtr>(communicator(),
 	                    configLoader.get<std::string>("Proxies.IMU"), "IMUProxy", imu_proxy);
 	require<RoboCompLidar3D::Lidar3DPrx, RoboCompLidar3D::Lidar3DPrxPtr>(communicator(),
@@ -279,7 +279,7 @@ int concept_robot::run(int argc, char* argv[])
 		return EXIT_FAILURE;
 	}
 
-	tprx = std::make_tuple(camera360rgb_proxy,imu_proxy,lidar3d_proxy,omnirobot_proxy,webots2robocomp_proxy);
+	tprx = std::make_tuple(camerargbdsimple_proxy,imu_proxy,lidar3d_proxy,omnirobot_proxy,webots2robocomp_proxy);
 	SpecificWorker *worker = new SpecificWorker(this->configLoader, tprx, startup_check_flag);
 	QObject::connect(worker, SIGNAL(kill()), &a, SLOT(quit()));
 

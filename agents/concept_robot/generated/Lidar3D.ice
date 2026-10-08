@@ -32,6 +32,8 @@ module RoboCompLidar3D
 	struct TDataImage
 	{
 		long timestamp;
+		long simTimestamp;
+		bool simulated;
 		TFloatArray XArray;
 		TFloatArray YArray;
 		TFloatArray ZArray;
@@ -43,6 +45,8 @@ module RoboCompLidar3D
 		TPoints points;
 		float period;
 		long timestamp;
+		long simTimestamp;
+		bool simulated;
 	};
 	struct TDataCategory
 	{
@@ -52,6 +56,8 @@ module RoboCompLidar3D
 		TCategories CategoriesArray;
 		float period;
 		long timestamp;
+		long simTimestamp;
+		bool simulated;
 	};
 	struct TColorCloudData
 	{
@@ -62,6 +68,8 @@ module RoboCompLidar3D
 		TByteArray G;
 		TByteArray B;
 		long timestamp;
+		long simTimestamp;
+		bool simulated;
 		long numberPoints;
 		bool compressed;
 		TByteArray cX;

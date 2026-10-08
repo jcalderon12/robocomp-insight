@@ -34,6 +34,9 @@
 #include <genericworker.h>
 #include <vector>
 #include <cmath>
+#include <numbers>
+#include <string>
+#include <opencv2/opencv.hpp>
 
 // Robot maximum speeds
 static constexpr float WEBOTS_MAX_LINEAR_SPEED  = 1.5f; //meters per second
@@ -129,16 +132,67 @@ public slots:
 	std::vector<float> auto_localization();
 
 	/**
-	 * \brief Method to check if there is an active affordance in the DSR graph. 
+	 * \brief Method to check if there is an active affordance in the DSR graph.
 	 * An active affordance is an affordance node that comes from the person node target and has the attribute aff_interacting_att to true.
 	 * \return Return true if there is an active affordance. false otherwise.
 	 */
-	bool queck_affordance_active();
+	bool check_affordance_active();
 
 	/**
 	 * \brief Method to set the robot speed in zero.
 	 */
 	void stop_robot();
+
+	/**
+	 * \brief True when the current TARGET points at the "bump" node, i.e. this is the photo
+	 * mission (photo_spin()) and not a plain follow (follow_target()).
+	 */
+	bool is_photo_target();
+
+	/**
+	 * \brief Photo mission: approaches the bump with follow_target(), then spins in place a full
+	 * turn stopping every Photo_angular_step degrees to take a picture. Never translates while
+	 * spinning. Each shot is labelled from the live angle to the bump: facing it -> "con_bache",
+	 * facing away -> "sin_bache", sideways -> discarded.
+	 */
+	void photo_spin();
+
+	/**
+	 * \brief Spins in place at a constant angular speed (linear speed 0, no closed loop).
+	 */
+	void spin_in_place(float angular_speed);
+
+	/**
+	 * \brief Drives straight ahead at a constant speed (angular speed 0, no closed loop).
+	 */
+	void drive_forward(float speed);
+
+	/**
+	 * \brief Grabs one CameraRGBDSimple frame and saves it as .jpg under Photo_save_dir/<session>/<label>/.
+	 */
+	void take_photo(const std::string& label, float angle_to_bump, float distance_to_bump);
+
+	/**
+	 * \brief Publishes photo_session_dir on the concept node and closes the mission.
+	 */
+	void finish_photo_mission();
+
+	/**
+	 * \brief Clears aff_interacting on the affordance reached via TARGET->has_intention, which is
+	 * what mission_controller watches to complete the mission. Shared by both missions.
+	 */
+	void clear_target_affordance();
+
+	/**
+	 * \brief Completes follow_person once the robot holds the desired distance to the target for
+	 * Follow_hold_seconds; leaving the distance or drifting resets the wait.
+	 */
+	void check_follow_reached();
+
+	/**
+	 * \brief Resets photo_spin() progress so the next photo mission starts from scratch.
+	 */
+	void reset_photo_spin();
 
 	void modify_node_slot(std::uint64_t, const std::string &type){};
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){};
@@ -168,8 +222,21 @@ private:
 	float prev_distance_error;
 	float prev_angle_error;
 	std::chrono::steady_clock::time_point last_follow_time;
+	bool was_following = false;  // skip the PID D-term on the first cycle after (re)starting to follow a target
 
-	bool print_extra_info = false;
+	// ---- Fin de follow_person por permanencia a la distancia deseada ----
+	// Holgura sobre desired_distance: la aproximacion es asintotica y los ultimos centimetros se
+	// recorren a milimetros por segundo, asi que exigir la distancia exacta puede no cumplirse nunca.
+	static constexpr float FOLLOW_REACHED_MARGIN = 0.1f;   // metros
+	// Deriva de la distancia durante la espera que se interpreta como que la persona se ha movido.
+	static constexpr float FOLLOW_HOLD_DRIFT     = 0.25f;  // metros
+	float follow_hold_seconds;           // segundos que hay que aguantar a la distancia deseada
+	float last_target_distance = -1.f;   // distancia medida en el ultimo follow_target()
+	bool  follow_holding = false;        // ya a la distancia deseada, contando
+	float follow_hold_distance = 0.f;    // distancia al empezar la espera, para medir la deriva
+	std::chrono::steady_clock::time_point follow_hold_start;
+
+	bool print_extra_info = configLoader.get<bool>("print_extra_info");
 	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
 
@@ -180,6 +247,25 @@ private:
 	long long last_timestamp = 0;
 
 	std::unique_ptr<DSR::RT_API> rt;
+
+	// ---- Misión de fotos (photo_spin()) ----
+	enum class SpinStage { TURNING, SETTLING, DONE };
+	SpinStage spin_stage = SpinStage::TURNING;
+	float spin_accumulated = 0.f;       // radianes girados en total en esta vuelta
+	float spin_since_shot = 0.f;        // radianes girados desde la última parada de disparo
+	float spin_last_heading = 0.f;      // rumbo del ciclo anterior, para acumular el giro
+	bool spin_heading_valid = false;
+	std::chrono::steady_clock::time_point spin_settle_start;
+	int photo_counter = 0;
+
+	float photo_angular_step;     // radianes entre disparos
+	float photo_front_window;     // radianes; |ángulo al bache| <= esto -> con_bache
+	float photo_back_window;      // radianes; |ángulo al bache| >= PI - esto -> sin_bache
+	float photo_settle_seconds;   // espera tras parar, antes de leer el ángulo y disparar
+	float photo_spin_speed;       // rad/s del giro
+	std::string photo_save_dir  = configLoader.get<std::string>("Photo_save_dir");
+	std::string photo_session_dir;  // photo_save_dir/<session_ms>
+	std::string photo_log_path;     // una fila por disparo
 
 signals:
 	//void customSignal();

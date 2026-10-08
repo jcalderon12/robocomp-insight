@@ -1,0 +1,337 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+#
+#    Copyright (C) 2026 by YOUR NAME HERE
+#
+#    This file is part of RoboComp
+#
+#    RoboComp is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    RoboComp is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with RoboComp.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+import glob
+import math
+import os
+import shutil
+import time
+
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+from rich.console import Console
+from genericworker import *
+import interfaces as ifaces
+
+sys.path.append('/opt/robocomp/lib')
+console = Console(highlight=False)
+
+from pydsr import *
+from pydsr import Node, Edge, rt_api, Attribute
+
+# Node name this agent tracks in the DSR graph and Webots DEF label of its Solid
+# (Webots DEF convention: uppercase). Set by semantic when it creates the node.
+CONCEPT_NAME = "{{concept_name}}"
+
+
+class SpecificWorker(GenericWorker):
+    """Keeps a live robot->{{concept_name}} RT edge, the same way concept_person does for
+    "person". Does no affordance/state-machine management: whatever agent created the
+    CONCEPT_NAME node owns that; this agent's only job is geometry, while the node exists."""
+
+    def __init__(self, proxy_map, configData, startup_check=False):
+        super(SpecificWorker, self).__init__(proxy_map, configData)
+        self.Period = configData["Period"]["Compute"]
+
+        self.concept_def = CONCEPT_NAME.upper()
+        self.robot_def = "shadow"
+        self.simulated = configData["Simulated"]
+
+        self.print_extra_info = False
+        self.last_relative_pose = [0.0, 0.0, 0.0]
+        self.pending_relative_position = [0.0, 0.0, 0.0]
+        self.has_published_once = False  # force the very first RT write, don't rely on read noise
+        self.consecutive_large_jump_confirmations = 0
+        self.required_large_jump_confirmations = 3
+        self.large_jump_threshold = 1.0             # meters (static concept: a jump this big means bad data, not motion)
+        self.large_jump_candidate_tolerance = 0.2    # meters
+
+        # Clasificador del concepto: se entrena en caliente con las fotos de la misión.
+        self.dinov3_repo = configData["Dinov3_repo"]
+        self.dinov3_weights = configData["Dinov3_weights"]
+        self.inference_period_cycles = configData["Inference_period_cycles"]
+        self.local_photos_dir = "photos"
+        self.model_dir = "model"
+        self.backbone = None
+        self.classifier = None
+        self.trained_session = None
+        self.cycle_count = 0
+
+        if startup_check:
+            self.startup_check()
+        else:
+            self.rt_api = rt_api(self.g)
+            # Prime last_relative_pose so the first has_significant_change() in compute() compares
+            # against a real reading, not the [0,0,0] default. has_published_once (not this) is what
+            # actually guarantees the first RT write happens.
+            self.last_relative_pose = self.get_relative_position()
+
+            self.timer.timeout.connect(self.compute)
+            self.timer.start(self.Period)
+
+    def __del__(self):
+        """Destructor"""
+
+    @QtCore.Slot()
+    def compute(self):
+        concept_node = self.g.get_node(CONCEPT_NAME)
+        if concept_node is None:
+            return  # not created yet -> nothing to track.
+
+        now_ms = int(time.time() * 1000)
+        relative_position = self.get_relative_position()
+
+        if self.print_extra_info:
+            console.print(f"[{now_ms}] relative_position -> {relative_position}", style="cyan")
+
+        changed = (not self.has_published_once) or self.has_significant_change(relative_position, self.last_relative_pose)
+        if changed:
+            if self.update_relative_position(relative_position):
+                self.last_relative_pose = relative_position
+                self.has_published_once = True
+
+        # Mientras no haya fotos de una misión nueva no hace nada; en cuanto las hay, entrena una
+        # vez y a partir de ahí clasifica la vista actual cada cierto número de ciclos.
+        if self.classifier is None:
+            self.maybe_train_classifier(concept_node)
+        else:
+            self.cycle_count += 1
+            if self.cycle_count % self.inference_period_cycles == 0:
+                self.classify_current_view()
+
+        return True
+
+    def startup_check(self):
+        QTimer.singleShot(200, QApplication.instance().quit)
+
+    # ================ Geometric calculations ================
+
+    def has_significant_change(self, a, b, atol=0.001):
+        if len(a) != len(b):
+            return True
+        return any(abs(x - y) > atol for x, y in zip(a, b))
+
+    def get_relative_position(self):
+        """Relative position between the robot and CONCEPT_NAME, in the robot's local frame
+        (meters). Simulated: Webots ground truth for both robot and concept (DEF lookup), same
+        2D-yaw projection concept_person uses. Real: TODO, needs a CONCEPT_NAME label from
+        ImageSegmentation (not trained yet)."""
+        relative_position = [0.0, 0.0, 0.0]
+
+        if self.simulated:
+            concept_pose = self.webots2robocomp_proxy.getObjectPose(self.concept_def)
+            robot_pose = self.webots2robocomp_proxy.getObjectPose(self.robot_def)
+
+            dx = (concept_pose.position.x - robot_pose.position.x) / 1000.0
+            dy = (concept_pose.position.y - robot_pose.position.y) / 1000.0
+            dz = (concept_pose.position.z - robot_pose.position.z) / 1000.0
+
+            q = robot_pose.orientation
+            theta = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            local_x = -math.sin(theta) * dx + math.cos(theta) * dy
+            local_y = -math.cos(theta) * dx - math.sin(theta) * dy
+
+            relative_position = [local_x, local_y, dz]
+        else:
+            # TODO: no trained detector for CONCEPT_NAME yet. Wire this up once a real detector
+            # exists; until then this branch returns [0,0,0] and never publishes on the real robot.
+            segmented_objects = self.imagesegmentation_proxy.getSegmentedObjects(True, False)
+            for obj in segmented_objects:
+                if obj.label == CONCEPT_NAME:
+                    pc = obj.points3D
+                    if len(pc.X) > 0:
+                        relative_position = [pc.X[0], pc.Y[0], pc.Z[0]]
+                    break
+
+        return relative_position
+
+    def update_relative_position(self, relative_position):
+        """Update the robot->CONCEPT_NAME RT edge in the DSR. Debounces large single-sample
+        jumps the same way concept_person does, requiring several consecutive confirmations
+        before accepting a big position change (protects against a single noisy reading).
+        Returns True if the position was actually written to the DSR."""
+        robot_node = self.g.get_node("robot")
+        concept_node = self.g.get_node(CONCEPT_NAME)
+
+        if robot_node is None or concept_node is None:
+            console.print(f"Robot or {CONCEPT_NAME} node not found in DSR.", style="bold red")
+            return False
+
+        if len(relative_position) != 3:
+            console.print("Invalid relative position size.", style="bold red")
+            return False
+
+        if self.has_published_once:
+            dx = relative_position[0] - self.last_relative_pose[0]
+            dy = relative_position[1] - self.last_relative_pose[1]
+            dz = relative_position[2] - self.last_relative_pose[2]
+            jump_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+            if jump_distance > self.large_jump_threshold:
+                pdx = relative_position[0] - self.pending_relative_position[0]
+                pdy = relative_position[1] - self.pending_relative_position[1]
+                pdz = relative_position[2] - self.pending_relative_position[2]
+                pending_distance = math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz)
+
+                if pending_distance > self.large_jump_candidate_tolerance:
+                    self.pending_relative_position = relative_position
+                    self.consecutive_large_jump_confirmations = 1
+                    if self.print_extra_info:
+                        console.print(f"Large jump detected, waiting for confirmation (1/{self.required_large_jump_confirmations})", style="yellow")
+                    return False
+                else:
+                    self.consecutive_large_jump_confirmations += 1
+                    if self.consecutive_large_jump_confirmations < self.required_large_jump_confirmations:
+                        return False
+
+        self.rt_api.insert_or_assign_edge_RT(robot_node, concept_node.id, relative_position, [0.0, 0.0, 0.0])
+        self.consecutive_large_jump_confirmations = 0
+        self.pending_relative_position = relative_position
+        return True
+
+    # ================ Clasificador del concepto ================
+
+    def maybe_train_classifier(self, concept_node):
+        """Entrena cuando el nodo del concepto trae la ruta de una tanda de fotos nueva, que es
+        lo que publica concept_robot al terminar la misión."""
+        if "photo_session_dir" not in concept_node.attrs:
+            return
+
+        session_dir = concept_node.attrs["photo_session_dir"].value
+        if not session_dir or session_dir == self.trained_session or not os.path.isdir(session_dir):
+            return
+
+        # Copia las fotos dentro del propio agente: se regenera entero en cada ejecución, así que
+        # cada entrenamiento parte sólo de las imágenes de su misión.
+        shutil.rmtree(self.local_photos_dir, ignore_errors=True)
+        shutil.copytree(session_dir, self.local_photos_dir)
+        console.print(f"Fotos de la misión copiadas a {self.local_photos_dir}", style="cyan")
+
+        # Marca la tanda como intentada haya ido bien o mal: un intento por tanda. Si falla, el
+        # agente se queda sin clasificador pero sigue publicando la RT, y la siguiente misión
+        # traerá una tanda nueva con su propia oportunidad.
+        trained = self.train_classifier(self.local_photos_dir)
+        self.trained_session = session_dir
+        if not trained:
+            console.print("Entrenamiento fallido para esta tanda; no se reintenta.", style="bold red")
+
+    def load_backbone(self):
+        """Carga DINOv3 desde el repo y los pesos locales. Importa aquí dentro para que faltar
+        torch/sklearn no impida al agente seguir publicando la RT."""
+        import torch
+
+        if self.dinov3_repo not in sys.path:
+            sys.path.insert(0, self.dinov3_repo)
+        from dinov3.hub.backbones import dinov3_vits16
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        backbone = dinov3_vits16(weights=self.dinov3_weights).eval().to(device)
+        console.print(f"DINOv3 cargado en {device} (embed_dim={backbone.embed_dim}, patch={backbone.patch_size})", style="green")
+        return backbone, device
+
+    def embed_image(self, rgb_array):
+        """Token CLS de una imagen RGB (H, W, 3) a resolución nativa."""
+        import torch
+        from torchvision import transforms
+
+        # Alto y ancho tienen que ser múltiplo del patch size. A 1280x720 no recorta nada; sólo
+        # actúa si algún día cambia la resolución de la cámara.
+        patch = self.backbone.patch_size
+        h = (rgb_array.shape[0] // patch) * patch
+        w = (rgb_array.shape[1] // patch) * patch
+        cropped = rgb_array[:h, :w, :]
+
+        tensor = transforms.functional.to_tensor(cropped)
+        tensor = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(tensor)
+        with torch.no_grad():
+            cls = self.backbone(tensor.unsqueeze(0).to(self.device))
+        return cls.squeeze(0).cpu().numpy()
+
+    def train_classifier(self, photos_dir):
+        try:
+            import numpy as np
+            from PIL import Image
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.model_selection import LeaveOneOut, cross_val_predict
+            from sklearn.metrics import accuracy_score, confusion_matrix
+        except ImportError as e:
+            console.print(f"Sin dependencias para entrenar ({e}); el agente sigue publicando la RT.", style="bold red")
+            return False
+
+        try:
+            self.backbone, self.device = self.load_backbone()
+
+            features, labels = [], []
+            for label, folder in ((1, "con_bache"), (0, "sin_bache")):
+                for path in sorted(glob.glob(os.path.join(photos_dir, folder, "*.jpg"))):
+                    features.append(self.embed_image(np.array(Image.open(path).convert("RGB"))))
+                    labels.append(label)
+
+            if len(set(labels)) < 2 or len(labels) < 4:
+                console.print(f"Fotos insuficientes para entrenar ({len(labels)}).", style="bold red")
+                self.backbone = None
+                return False
+
+            features, labels = np.array(features), np.array(labels)
+            console.print(f"Embeddings: {features.shape} ({int(sum(labels))} con_bache, {int(len(labels) - sum(labels))} sin_bache)", style="cyan")
+
+            # Con tan pocas imágenes, leave-one-out es la única validación que dice algo.
+            clf = LogisticRegression(max_iter=2000)
+            predicted = cross_val_predict(clf, features, labels, cv=LeaveOneOut())
+            console.print(f"Leave-one-out accuracy: {accuracy_score(labels, predicted) * 100:.1f}%", style="bold green")
+            console.print(f"Matriz de confusión (filas=real, cols=predicho):\n{confusion_matrix(labels, predicted)}")
+
+            clf.fit(features, labels)
+            self.classifier = clf
+
+            os.makedirs(self.model_dir, exist_ok=True)
+            import joblib
+            joblib.dump(clf, os.path.join(self.model_dir, "logreg.joblib"))
+            console.print(f"Clasificador guardado en {self.model_dir}/logreg.joblib", style="green")
+            return True
+
+        except Exception as e:
+            console.print(f"Fallo entrenando el clasificador: {e}", style="bold red")
+            self.backbone = None
+            self.classifier = None
+            return False
+
+    def classify_current_view(self):
+        """Clasifica el frame actual de la cámara y deja el resultado en consola y en CSV."""
+        try:
+            import numpy as np
+
+            img = self.camerargbdsimple_proxy.getImage("camera")
+            if img.width <= 0 or img.height <= 0 or len(img.image) == 0:
+                return
+
+            rgb = np.frombuffer(bytes(img.image), dtype=np.uint8).reshape(img.height, img.width, 3)
+            probabilities = self.classifier.predict_proba(self.embed_image(rgb).reshape(1, -1))[0]
+            label = "con_bache" if probabilities[1] >= 0.5 else "sin_bache"
+
+            console.print(f"Vista actual: {label} (p={probabilities[1]:.3f})",
+                          style="bold green" if label == "con_bache" else "bold blue")
+
+            with open(os.path.join(self.model_dir, "inference.csv"), "a") as log:
+                log.write(f"{int(time.time() * 1000)},{label},{probabilities[1]:.4f}\n")
+
+        except Exception as e:
+            console.print(f"Fallo clasificando la vista actual: {e}", style="bold red")

@@ -1,0 +1,39 @@
+# This property is used by the clients to connect to IceStorm.
+Proxies.TopicManager = "IceStorm/TopicManager:default -p 9999"
+
+# Proxies for required interfaces
+Proxies.ImageSegmentation = "imagesegmentation:tcp -h localhost -p 14111"
+Proxies.Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 10006"
+Proxies.CameraRGBDSimple = "camerargbdsimple:tcp -h localhost -p 10096"
+
+
+# --- Common Agent Data ---
+Agent.id = {{agent_id}}
+Agent.name = "concept_{{concept_name}}"
+
+# --- Single Instance Configuration ---
+# Use this if you only have one graph.
+Agent.configFile = ""
+Agent.domain = 0
+Agent.tree = false
+Agent.graph = false
+Agent.2d = false
+Agent.3d = false
+
+Period.Compute = 100
+Period.Emergency = 500
+
+Component.Debug.Verbose = false
+
+Ice.Warn.Connections = "0"
+Ice.Trace.Network = "0"
+Ice.Trace.Protocol = "0"
+Ice.MessageSizeMax = "20004800"
+
+Simulated = true
+
+# Clasificador del concepto: backbone DINOv3 y cada cuántos ciclos se clasifica la vista
+# actual una vez entrenado. La ruta de las fotos llega por el atributo photo_session_dir.
+Dinov3_repo = "/home/robolab/software/dinov3"
+Dinov3_weights = "/home/robolab/robocomp/components/robocomp-insight/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+Inference_period_cycles = 10
