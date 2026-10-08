@@ -33,13 +33,9 @@ ADV_SPEED = "adv_speed"
 HISTORY = "history"
 
 # Positions of the bodies in the scene (millimeters)
-ROBOT_POS = [-3700.0, -300.0, 32.5]
-PROBLEM_POS = [0.0, 40.0, 1.0]
-BOTTLE_POS = [0.0, 50.0, 795.0]
-
-# episodic memory's root->robot RT (concept_robot) is in METERS; SimulationScene/sim_scene.json
-# is contracted in MILLIMETERS (see ROBOT_POS/PROBLEM_POS/BOTTLE_POS above). Convert on the way in.
-M_TO_MM = 1000.0
+ROBOT_POS = [-3.700, -0.300, 0.0325]
+PROBLEM_POS = [0.0, 0.040, 0.001]
+BOTTLE_POS = [0.0, 0.050, 0.795]
 
 import os
 import sys
@@ -84,6 +80,7 @@ import json
 import episodic_memory_api as mem
 import numpy as np
 import locale
+import math
 
 from concurrent.futures import ProcessPoolExecutor
 from agent_generation.agent_generator import *
@@ -198,7 +195,6 @@ class SpecificWorker(GenericWorker):
         self.sim_scene = SimulationScene.model_construct()
         # Set initial pose (Debugging purposes)
         self.sim_scene.gravity = -9.81
-        self.sim_scene.initial_robot_position, self.sim_scene.initial_robot_orientation = ROBOT_POS, [0,0,0,1]
 
         # ================ EPISODIC MEMORY API =================
         # ======================================================
@@ -210,9 +206,8 @@ class SpecificWorker(GenericWorker):
         self.physicsClient = p.connect(p.GUI)
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         p.setGravity(0, 0, -9.81)
-        # p.setRealTimeSimulation(1) # Enable real-time simulation
-        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15,
-                                     cameraTargetPosition=[0.8, -0.9, 0.2])
+        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-50,
+                                     cameraTargetPosition=[0.8, -0.9, 2.])
         
         self.dt = 1.0 / 240.0  # Simulation time step    
         p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
@@ -225,28 +220,38 @@ class SpecificWorker(GenericWorker):
         # LOAD PLANE IN THE SIMULATION
         self.plane = p.loadURDF("../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0]) 
 
-        # LOAD OBSTACLES IN THE SIMULATION
-        # self.bump_100x5cm = p.loadURDF("./URDFs/bump/bump_100x5cm.urdf", [0, -0.33, 0.001], flags=flags)
-        # self.bump_1000x10cm = p.loadURDF("./URDFs/bump/bump_100x10cm.urdf", [0, -0.33, 0.001], flags=flags)
-        # self.cylinder_bump_10m = p.loadURDF("./URDFs/bump/cylinder_bump_10m.urdf", [0, -0.8, 0.001], p.getQuaternionFromEuler([0, 0, np.pi/2]), flags=flags)
-
         # LOAD ROBOT IN THE SIMULATION
-        self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", [0, 0.0, 0.04], flags=flags)
+        self.robot_initial_position = [0, 0, 0.005]  # Small Z offset in meters to place robot slightly above the ground
+        self.robot_initial_orientation = p.getQuaternionFromEuler([0, 0, -math.pi / 2])
+        self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", self.robot_initial_position, self.robot_initial_orientation, flags=flags)
 
-        # LOAD A CYLINDER IN THE SIMULATION
-        # self.cylinder = p.loadURDF("../../etc/URDFs/cylinder/cylinder.urdf", [1.3, -0.7, 0.0], flags=flags)
+        self.bottle_position_offset = [0.15, 0.11, 0.802] # Position of the bottle relative to the robot's base_link frame (in meters)
 
-        time.sleep(0.5)
+        # LOAD BOTTLE IN THE SIMULATION
+        self.bottle = p.loadURDF("../../etc/URDFs/bottle/bottle.urdf", [self.robot_initial_position[0] + self.bottle_position_offset[0], 
+                                                                        self.robot_initial_position[1] + self.bottle_position_offset[1], 
+                                                                        self.robot_initial_position[2] + self.bottle_position_offset[2]], 
+                                 self.robot_initial_orientation, flags=flags)
 
+        time.sleep(1)  # Wait for a second to ensure the models are loaded properly
+
+        
+        # ================ START SIMULATION ================
+        # ==================================================
+
+        p.setRealTimeSimulation(1) # Enable real-time simulation
 
         # ================ ROBOT PARAMETERS  ===============
         # ==================================================
 
-        self.wheels_radius = 0.1
-        self.distance_between_wheels = 0.44
-        self.distance_from_center_to_wheels = self.distance_between_wheels / 2
+        self.wheels_radius = 0.1                 # m (igual que antes)
+        self.wheels_width = 0.05                 # m, ancho de cada rueda
+        self.distance_between_wheels = 0.518     # m, entre centros de rueda (axesLength del driver)
+        self.distance_from_center_to_wheels = self.distance_between_wheels / 2   # 0.259 m
 
-        self.motors = ["frame_back_right2motor_back_right", "frame_back_left2motor_back_left", "frame_front_right2motor_front_right", "frame_front_left2motor_front_left"]
+        self.base_width = 0.44                   # m, ancho de la caja del chasis (boundingObject)
+
+        self.motors = ["wheel_right_joint", "wheel_left_joint"]
         self.joints_name = self.get_joints_info(self.robot)
         self.links_name = self.get_link_info(self.robot)
 
@@ -267,8 +272,7 @@ class SpecificWorker(GenericWorker):
 
     def set_simulation_scene(self,
                              simulation_length, 
-                             list_of_target_velocities, 
-                             num_of_repetitions=200) -> None:
+                             list_of_target_velocities) -> None:
         """
             Set the simulation scene as the real one when the problem was detected, 
             with the same target velocities that the robot had in the real world, 
@@ -277,13 +281,12 @@ class SpecificWorker(GenericWorker):
             Args:
                 simulation_length (float): The length of the simulation in seconds.
                 list_of_target_velocities (list[tuple[float, float]]): A list of tuples with the forward and angular velocities of the robot at each timestamp in the real world.
-                num_of_repetitions (int): The number of times that each cause will be simulated to check for consistency in the results.
         """
         robot_positions = self.get_robot_positions_relative_to_problem()
         if robot_positions is not None and robot_positions.get("last_position_before_problem") is not None:
             lpbp = robot_positions["last_position_before_problem"]
             # lpbp comes from episodic's root->robot RT, in METERS; sim_scene wants mm.
-            problem_position_fixed = [lpbp[1] * M_TO_MM, lpbp[0] * M_TO_MM, lpbp[2] * M_TO_MM]
+            problem_position_fixed = [lpbp[1] , lpbp[0] , lpbp[2]]
             self.sim_scene.problem_position = problem_position_fixed
             self.logger.log(f"Problem position set for simulation: {problem_position_fixed} (mm)", style="green")
         else:
@@ -292,19 +295,25 @@ class SpecificWorker(GenericWorker):
 
         if robot_positions is not None and robot_positions.get("first_position") is not None:
             fp = robot_positions["first_position"]
-            robot_position_fixed = [fp[1] * M_TO_MM, fp[0] * M_TO_MM, fp[2] * M_TO_MM]
+            robot_position_fixed = [fp[1] , fp[0] , fp[2]]
             self.sim_scene.initial_robot_position = robot_position_fixed
-            self.logger.log(f"Initial robot position set for simulation: {robot_position_fixed} (mm)", style="green")
+            self.sim_scene.initial_robot_orientation = self.robot_initial_orientation
+            self.sim_scene.bottle_position = fp[1] + self.bottle_position_offset[1], fp[0] + self.bottle_position_offset[0], fp[2] + self.bottle_position_offset[2]
+            self.sim_scene.bottle_orientation = self.robot_initial_orientation[0], self.robot_initial_orientation[1], self.robot_initial_orientation[2], self.robot_initial_orientation[3]
+
+            self.logger.log(f"Initial robot position set for simulation: {robot_position_fixed} (m)", style="green")
         else:
             self.logger.log("Could not read initial robot position from episodic memory, using default ROBOT_POS", style="yellow")
             self.sim_scene.initial_robot_position = ROBOT_POS
         
-        self.sim_scene.initial_robot_orientation = [0,0,0,1]
         self.sim_scene.simulation_length = simulation_length
         self.sim_scene.list_of_target_velocities = list_of_target_velocities
-        self.sim_scene.num_of_repetitions = num_of_repetitions
-        self.sim_scene.bottle_position = BOTTLE_POS
-        self.sim_scene.bottle_orientation = [0,0,0,0]
+
+
+
+        print(type(self.sim_scene.simulation_length), repr(self.sim_scene.simulation_length))
+
+
         self.sim_scene.model_validate(self.sim_scene.__dict__)
         file = open("src/sim_scene.json", "w")
         file.write(self.sim_scene.model_dump_json(indent=4))
@@ -319,8 +328,7 @@ class SpecificWorker(GenericWorker):
        robot_positions = self.get_robot_positions_relative_to_problem()
        if robot_positions is not None and robot_positions.get("last_position_before_problem") is not None:
            lpbp = robot_positions["last_position_before_problem"]
-           # lpbp comes from episodic's root->robot RT, in METERS; sim_scene wants mm.
-           problem_position_fixed = [lpbp[1] * M_TO_MM, lpbp[0] * M_TO_MM, lpbp[2] * M_TO_MM]
+           problem_position_fixed = [lpbp[1] , lpbp[0] , lpbp[2] ]
            self.sim_scene.problem_position = problem_position_fixed
        else:
            self.sim_scene.problem_position = PROBLEM_POS
@@ -329,15 +337,14 @@ class SpecificWorker(GenericWorker):
 
        if robot_positions is not None and robot_positions.get("first_position") is not None:
            fp = robot_positions["first_position"]
-           robot_position_fixed = [fp[1] * M_TO_MM, fp[0] * M_TO_MM, fp[2] * M_TO_MM]
+           robot_position_fixed = [fp[1] , fp[0] , fp[2]]
            self.sim_scene.initial_robot_position = robot_position_fixed
        else:
            self.sim_scene.initial_robot_position = ROBOT_POS
        
-       self.sim_scene.initial_robot_orientation = [0,0,0,1]
+       self.sim_scene.initial_robot_orientation = self.robot_initial_orientation
        self.sim_scene.simulation_length = self.get_simulation_length_from_episodic_memory()
        self.sim_scene.list_of_target_velocities = self.get_robot_adv_speed_history() if self.get_robot_adv_speed_history() is not None else []
-       self.sim_scene.num_of_repetitions = 1
        self.sim_scene.bottle_position = BOTTLE_POS
        self.sim_scene.bottle_orientation = [0,0,0,0]
        self.sim_scene.model_validate(self.sim_scene.__dict__)
@@ -384,7 +391,10 @@ class SpecificWorker(GenericWorker):
 
                 case "SIMULATE_REASON":
 
-                    self.set_simulation_scene(self.get_simulation_length_from_episodic_memory(), self.get_robot_adv_speed_history(), num_of_repetitions=200)
+                    length = self.get_simulation_length_from_episodic_memory()
+                    print(type(length), repr(length))
+
+                    self.set_simulation_scene(self.get_simulation_length_from_episodic_memory(), self.get_robot_adv_speed_history())
 
                     # return True # We return here to let the simulation run for a while and the robot to reach the problem position, so we can get a more accurate history from the episodic memory. We will return to SIMULATE_REASON state in the next compute calls.
 
@@ -435,31 +445,11 @@ class SpecificWorker(GenericWorker):
                     self.convert_episodic_to_imu_history(list_of_ts)
                     print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
 
-                    # Graph an example of the real IMU history (accelerometer and gyro)
-                    axis_labels = ["X", "Y", "Z"]
-                    axis_colors = ["tab:red", "tab:blue", "tab:blue"]
-                    plt.figure(figsize=(12, 5))
-                    plt.suptitle("Real IMU history from Episodic Memory", fontsize=16)
-                    # Accelerometer
-                    plt.subplot(1, 2, 1)
-                    plt.title("Accelerometer")
-                    for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
-                        real_acc = [v[j] for v in self.imu_history[ACCELEROMETER]]
-                        plt.plot(self.imu_history[TIMESTAMP], real_acc, color=color, linestyle="-", label=f"Real {axis}")
-                    plt.xlabel("Time (s)")
-                    plt.ylabel("Acceleration (m/s^2)")
-                    plt.legend()
-                    # Gyroscope
-                    plt.subplot(1, 2, 2)
-                    plt.title("Gyroscope")
-                    for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
-                        real_gyro = [v[j] for v in self.imu_history[GYROSCOPE]]
-                        plt.plot(self.imu_history[TIMESTAMP], real_gyro, color=color, linestyle="-", label=f"Real {axis}")
-                    plt.xlabel("Time (s)")
-                    plt.ylabel("Angular Velocity (rad/s)")
-                    plt.legend()
-                    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-                    # plt.show()
+                    self.plot_imu_series(
+                        self.imu_history[TIMESTAMP],
+                        self.imu_history[ACCELEROMETER],
+                        self.imu_history[GYROSCOPE],
+                        show=True)
 
                     # ---- score EVERY recording of EVERY cause (normalized DTW), in parallel ----
                     cause_defs = list(self.causes_data)
@@ -496,73 +486,22 @@ class SpecificWorker(GenericWorker):
                                      default=str),
                         style="bold magenta")
 
-                    # Write results to JSON file
-                    
-                    # Sim_output structure:
-                    # sim_out = {
-                    #     "sim_scene": {JSON data from sim_scene.json},
-                    #     "registers": [
-                    #         {
-                    #             "cause_definition": {JSON data from causes.json},
-                    #             "top_five": [
-                    #                 {
-                    #                     "timestamp": [ts1, ts2, ts3, ...],
-                    #                     "accelerometer": [[acc_x1, acc_y1, acc_z1
-                    #                                      [acc_x2, acc_y2, acc_z2],
-                    #                                      [acc_x3, acc_y3, acc_z3],
-                    #                                      ...],
-                    #                     "gyroscope": [[gyro_x1, gyro_y1, gyro_z1
-                    #                                    [gyro_x2, gyro_y2, gyro_z2],
-                    #                                    [gyro_x3, gyro_y3, gyro_z3],
-                    #                                    ...]
-                    #                 },
-                    #                 ... (up to 5 recordings)
-                    #             ]
-                    #         },
-                    #         ... (one for each cause)
-                    #     ]
-                    # }
-                    
                     # Show a graph comparing the real IMU history with the best recording of the top for each cause (a graph per cause)
-                    axis_labels = ["X", "Y", "Z"]
-                    axis_colors = ["tab:red", "tab:blue", "tab:blue"]
-
-                    # debug: make imu_history a flat line to easily compare with the simulated ones
-                    #self.imu_history[ACCELEROMETER] = [[0,0,0] for _ in self.imu_history[ACCELEROMETER]]
-                    #self.imu_history[GYROSCOPE] = [[0,0,0] for _ in self.imu_history[GYROSCOPE]]
-
                     for i, cause in enumerate(self.causes_data):
-                        best_recording = sim_out["registers"][i]["top_five"][0]  # Best recording for this cause
+                        top_five = sim_out["registers"][i]["top_five"]
+                        if not top_five:
+                            continue
+                        best_history = top_five[0][HISTORY]  # Best recording for this cause
 
-                        plt.figure(figsize=(12, 5))
-                        plt.suptitle(f"Comparison of real IMU history with best recording of cause: {cause['name']}", fontsize=16)
-
-                        # Accelerometer
-                        plt.subplot(1, 2, 1)
-                        plt.title("Accelerometer")
-                        for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
-                            real_acc = [v[j] for v in self.imu_history[ACCELEROMETER]]
-                            sim_acc = [v[j] for v in best_recording[HISTORY][ACCELEROMETER]]
-                            plt.plot(self.imu_history[TIMESTAMP], real_acc, color=color, linestyle="-", label=f"Real {axis}")
-                            plt.plot(best_recording[HISTORY][TIMESTAMP], sim_acc, color=color, linestyle="--", label=f"Sim {axis}")
-                        plt.xlabel("Time (s)")
-                        plt.ylabel("Acceleration (m/s^2)")
-                        plt.legend()
-
-                        # Gyroscope
-                        plt.subplot(1, 2, 2)
-                        plt.title("Gyroscope")
-                        for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
-                            real_gyro = [v[j] for v in self.imu_history[GYROSCOPE]]
-                            sim_gyro = [v[j] for v in best_recording[HISTORY][GYROSCOPE]]
-                            plt.plot(self.imu_history[TIMESTAMP], real_gyro, color=color, linestyle="-", label=f"Real {axis}")
-                            plt.plot(best_recording[HISTORY][TIMESTAMP], sim_gyro, color=color, linestyle="--", label=f"Sim {axis}")
-                        plt.xlabel("Time (s)")
-                        plt.ylabel("Angular Velocity (rad/s)")
-                        plt.legend()
-
-                        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-                        # plt.show()
+                        self.plot_imu_series(
+                            self.imu_history[TIMESTAMP],
+                            self.imu_history[ACCELEROMETER],
+                            self.imu_history[GYROSCOPE],
+                            sim_timestamps=best_history[TIMESTAMP],
+                            sim_accelerometer=best_history[ACCELEROMETER],
+                            sim_gyroscope=best_history[GYROSCOPE],
+                            title=f"Comparison of real IMU history with best recording of cause: {cause['name']}",
+                            show=True)
 
                     # Write the full result to a timestamped file (+ refresh stable sim_output.json),
                     # fully flushed before we touch the DSR so semantic never opens a half file.
@@ -626,14 +565,82 @@ class SpecificWorker(GenericWorker):
 
         self.forward_vel, self.angular_vel = self.get_velocities_from_dsr()
         wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.forward_vel, self.angular_vel)
+
         for motor_name in self.motors:
             p.setJointMotorControl2(bodyUniqueId=self.robot,
                                     jointIndex=self.joints_name[motor_name],
                                     controlMode=p.VELOCITY_CONTROL,
                                     targetVelocity=wheels_velocity[motor_name],
                                     force=10)
-            
-        p.stepSimulation()
+
+
+
+    # =============== PLOTTING GRAPHS  ================
+    # ==================================================
+
+    def plot_imu_series(self, timestamps, accelerometer, gyroscope,
+                        sim_timestamps=None, sim_accelerometer=None, sim_gyroscope=None,
+                        title="Real IMU history from Episodic Memory",
+                        save_path=None, show=False):
+        """
+        Plot an IMU time series (accelerometer and gyroscope), optionally overlaying a
+        simulated series (dashed lines, same color per axis).
+
+        :param timestamps: Sequence of N timestamps in seconds (real)
+        :param accelerometer: Sequence of N samples [ax, ay, az] in m/s^2 (real)
+        :param gyroscope: Sequence of N samples [gx, gy, gz] in rad/s (real)
+        :param sim_timestamps: Optional sequence of M timestamps in seconds (sim)
+        :param sim_accelerometer: Optional sequence of M samples [ax, ay, az] (sim)
+        :param sim_gyroscope: Optional sequence of M samples [gx, gy, gz] (sim)
+        :param title: Figure title
+        :param save_path: If given, save the figure to this path
+        :param show: If True, call plt.show()
+        :return: The matplotlib figure
+        """
+
+        def _check(t, acc, gyro, name):
+            t = np.asarray(t, dtype=float)
+            acc = np.asarray(acc, dtype=float)
+            gyro = np.asarray(gyro, dtype=float)
+            if acc.ndim != 2 or acc.shape[1] != 3 or gyro.ndim != 2 or gyro.shape[1] != 3:
+                raise ValueError(f"{name}: accelerometer and gyroscope must have shape (N, 3)")
+            if not (len(t) == len(acc) == len(gyro)):
+                raise ValueError(f"{name}: timestamps, accelerometer and gyroscope must have the same length")
+            return t, acc, gyro
+
+        t, acc, gyro = _check(timestamps, accelerometer, gyroscope, "real")
+
+        sim = None
+        if sim_timestamps is not None:
+            if sim_accelerometer is None or sim_gyroscope is None:
+                raise ValueError("sim_timestamps requires sim_accelerometer and sim_gyroscope")
+            sim = _check(sim_timestamps, sim_accelerometer, sim_gyroscope, "sim")
+
+        axis_labels = ["X", "Y", "Z"]
+        axis_colors = ["tab:red", "tab:blue", "tab:green"]
+
+        fig = plt.figure(figsize=(12, 5))
+        plt.suptitle(title, fontsize=16)
+
+        panels = [("Accelerometer", acc, None if sim is None else sim[1], "Acceleration (m/s^2)"),
+                  ("Gyroscope", gyro, None if sim is None else sim[2], "Angular Velocity (rad/s)")]
+        for k, (name, real_data, sim_data, ylabel) in enumerate(panels):
+            plt.subplot(1, 2, k + 1)
+            plt.title(name)
+            for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
+                plt.plot(t, real_data[:, j], color=color, linestyle="-", label=f"Real {axis}")
+                if sim_data is not None:
+                    plt.plot(sim[0], sim_data[:, j], color=color, linestyle="--", label=f"Sim {axis}")
+            plt.xlabel("Time (s)")
+            plt.ylabel(ylabel)
+            plt.legend()
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if save_path is not None:
+            fig.savefig(save_path, dpi=150)
+        if show:
+            plt.show()
+        return fig
 
     
     # =============== PYBULLET MODELS INFO  ================
@@ -693,46 +700,35 @@ class SpecificWorker(GenericWorker):
         """
         Get the forward velocity of the robot
 
-        :return: Forward velocity
+        :return: Forward velocity (m/s)
         """
-        wheel_velocities = {}
-        for motor_name in self.motors:
-            wheel_velocities[motor_name] = p.getJointState(self.robot, self.joints_name[motor_name])[1]
-        forward_velocity = (wheel_velocities["frame_front_left2motor_front_left"] +
-                            wheel_velocities["frame_front_right2motor_front_right"] +
-                            wheel_velocities["frame_back_left2motor_back_left"] +
-                            wheel_velocities["frame_back_right2motor_back_right"]) * self.wheels_radius / 4
+        w_left = p.getJointState(self.robot, self.joints_name["wheel_left_joint"])[1]
+        w_right = p.getJointState(self.robot, self.joints_name["wheel_right_joint"])[1]
+        forward_velocity = (w_left + w_right) * self.wheels_radius / 2
         return forward_velocity
 
     def get_angular_velocity(self):
         """
         Get the angular velocity of the robot
 
-        :return: Angular velocity
+        :return: Angular velocity (rad/s), positive = counterclockwise
         """
-        wheel_velocities = {}
-        for motor_name in self.motors:
-            wheel_velocities[motor_name] = p.getJointState(self.robot, self.joints_name[motor_name])[1]
-        angular_velocity = ((wheel_velocities["frame_front_right2motor_front_right"] +
-                            wheel_velocities["frame_back_right2motor_back_right"] -
-                            wheel_velocities["frame_front_left2motor_front_left"] -
-                            wheel_velocities["frame_back_left2motor_back_left"]) * self.wheels_radius /
-                            2 * self.distance_between_wheels)
+        w_left = p.getJointState(self.robot, self.joints_name["wheel_left_joint"])[1]
+        w_right = p.getJointState(self.robot, self.joints_name["wheel_right_joint"])[1]
+        angular_velocity = (w_right - w_left) * self.wheels_radius / self.distance_between_wheels
         return angular_velocity
 
     def get_wheels_velocity_from_forward_velocity_and_angular_velocity(self, forward_velocity=0, angular_velocity=0):
         """
-        Get the velocity of each wheel from the forward velocity of the robot
+        Get the velocity of each wheel from the forward and angular velocity of the robot
 
-        :param forward_velocity: Forward velocity of the robot
-        :param angular_velocity: Angular velocity of the robot
-        :return: Dictionary with the velocity of each wheel
+        :param forward_velocity: Forward velocity of the robot (m/s)
+        :param angular_velocity: Angular velocity of the robot (rad/s)
+        :return: Dictionary with the velocity (rad/s) of each wheel
         """
         wheels_velocity = {
-            "frame_front_left2motor_front_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_front_right2motor_front_right": forward_velocity / self.wheels_radius + self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_back_left2motor_back_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_back_right2motor_back_right": forward_velocity / self.wheels_radius + self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius}
+            "wheel_left_joint": (forward_velocity - self.distance_from_center_to_wheels * angular_velocity) / self.wheels_radius,
+            "wheel_right_joint": (forward_velocity + self.distance_from_center_to_wheels * angular_velocity) / self.wheels_radius}
         return wheels_velocity
     
     # ================= DSR INTERACTION  ================
@@ -1102,7 +1098,7 @@ class SpecificWorker(GenericWorker):
         if not withhold:
             loc = selection.get("location") or selection.get("fallback_location")
             if loc is not None:
-                problem_node.attrs["problem_position"] = Attribute([float(v) * M_TO_MM for v in loc], self.agent_id)
+                problem_node.attrs["problem_position"] = Attribute([float(v)  for v in loc], self.agent_id)
             problem_node.attrs["cause_confirmed"] = Attribute(True, self.agent_id)
 
         self.graphs["work"].update_node(problem_node)

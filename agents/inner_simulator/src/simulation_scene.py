@@ -10,5 +10,4 @@ class SimulationScene(BaseModel):
     problem_position:list[float] # Initial position of the problem in millimeters.
     problem_orientation:list[float] # Initial orientation of the problem.
     simulation_length:float # Length of the simulation.
-    num_of_repetitions:int # Number of times to run the simulation.
     list_of_target_velocities:dict # List of target velocities for the robot.
