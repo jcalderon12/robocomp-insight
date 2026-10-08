@@ -91,8 +91,6 @@ class SpecificWorker(GenericWorker):
     def startup_check(self):
         QTimer.singleShot(200, QApplication.instance().quit)
 
-
-
     def check_bottle_related_robot(self):
         bottle_node = self.g.get_node("bottle")
         if not bottle_node:
@@ -147,19 +145,14 @@ class SpecificWorker(GenericWorker):
                 self.handle_cause_confirmed()
 
     def handle_cause_confirmed(self):
-        # Valida el resultado de la búsqueda causal de inner_simulator: sustituye "problem" por
-        # "bump" + "photograph_me" (has_intention), el equivalente de follow_me/person para la
-        # misión de fotos.
         problem_node = self.g.get_node("problem")
         if problem_node is None:
             return
 
         if self.g.get_node("bump") is not None:
-            return  # Ya tratado; evita crearlo dos veces si la señal se repite.
+            return 
 
         if "problem_position" not in problem_node.attrs:
-            # Sólo es una comprobación de que la causa es espacial (¿aplica aquí la búsqueda en
-            # rejilla de inner_simulator?); el valor en sí ya no se usa.
             console.print("cause_confirmed sin problem_position (causa no espacial); se descarta 'problem'.", style='yellow')
             self.g.delete_node(problem_node.id)
             return
@@ -167,8 +160,7 @@ class SpecificWorker(GenericWorker):
         bump_node = Node(self.agent_id, "object", name="bump")
         bump_node.attrs["pos_x"] = Attribute(problem_node.attrs["pos_x"].value, self.agent_id)
         bump_node.attrs["pos_y"] = Attribute(problem_node.attrs["pos_y"].value, self.agent_id)
-        # Sin problem_position: la posición real del bache la publica concept_bump como una RT
-        # robot->bump viva, igual que concept_person con person, no como atributo global.
+        bump_node.attrs["world_position"] = Attribute([float(v) for v in problem_node.attrs["problem_position"].value], self.agent_id)
         self.g.insert_node(bump_node)
         bump_node = self.g.get_node("bump")
 
@@ -190,17 +182,12 @@ class SpecificWorker(GenericWorker):
         console.print("Creados 'bump' + 'photograph_me' a partir del 'problem' resuelto.", style='bold green')
 
     def launch_concept_agent(self, cause_name: str) -> bool:
-        # Genera concept_<cause_name> en caliente desde las plantillas de agent_generation
-        # (robocompdsl + cmake + make) y lanza el binario: Program Manager sólo arranca lo que
-        # tiene en su config estática, así que no hay a quién avisar.
         agent_name = f"concept_{cause_name}"
         console.print(f"Generando {agent_name} desde las plantillas...", style='bold yellow')
         if not generate_agent(cause_name, agents_root):
             return False
 
         agent_dir = os.path.join(agents_root, agent_name)
-        # Popen hereda la salida de este proceso, fácil de perder de vista; se redirige a un log
-        # para poder diagnosticar después si el agente casca al arrancar.
         log_path = os.path.join(agent_dir, f"{agent_name}.log")
         log_file = open(log_path, "w")
         subprocess.Popen(["bin/" + agent_name, "etc/config"], cwd=agent_dir, stdout=log_file, stderr=subprocess.STDOUT)

@@ -22,8 +22,10 @@
 import glob
 import math
 import os
-import shutil
 import time
+
+import cv2
+import numpy as np
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
@@ -37,9 +39,54 @@ console = Console(highlight=False)
 from pydsr import *
 from pydsr import Node, Edge, rt_api, Attribute
 
-# Node name this agent tracks in the DSR graph and Webots DEF label of its Solid
-# (Webots DEF convention: uppercase). Set by semantic when it creates the node.
 CONCEPT_NAME = "{{concept_name}}"
+ZED_MOUNT_OFFSET_M = [0.0, -0.075, 0.945]
+ZED_MOUNT_ROTATION_AXIS = [0.0, 0.0, 1.0]
+ZED_MOUNT_ROTATION_ANGLE_RAD = 1.57  # del Shadow.proto, valido en el marco de Webots
+STOPPED_SPEED_EPSILON = 1e-3 # <1e-3 m/s is considered stopped 
+
+
+class Stage:
+    """Etapas del agente: lo que hace en cada compute(), ademas de publicar su RT."""
+    IDLE = "idle"              # concept exists, no mission yet
+    SHOOTING = "shooting"      # mission started, shot when mission is running: triggered at each robot stop
+    TRAINING = "training"      # photos taken, training classifier
+    INFERRING = "inferring"    # classifier ready: classifier view every N cycles
+
+
+def _rotation_matrix_from_axis_angle(axis, angle):
+    """Rodrigues: matriz de rotacion 3x3 a partir de eje y angulo."""
+    axis = np.array(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    x, y, z = axis
+    c, s = np.cos(angle), np.sin(angle)
+    C = 1 - c
+    return np.array([
+        [x * x * C + c,     x * y * C - z * s, x * z * C + y * s],
+        [y * x * C + z * s, y * y * C + c,     y * z * C - x * s],
+        [z * x * C - y * s, z * y * C + x * s, z * z * C + c],
+    ])
+
+
+def _rotation_matrix_from_quaternion(qx, qy, qz, qw):
+    """Matriz de rotacion 3x3 a partir de un cuaternion (x, y, z, w)."""
+    n = np.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if n < 1e-9:
+        return np.eye(3)
+    qx, qy, qz, qw = qx / n, qy / n, qz / n, qw / n
+    return np.array([
+        [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw),     2 * (qx * qz + qy * qw)],
+        [2 * (qx * qy + qz * qw),     1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+        [2 * (qx * qz - qy * qw),     2 * (qy * qz + qx * qw),     1 - 2 * (qx * qx + qy * qy)],
+    ])
+
+
+def _homogeneous_transform(rotation_3x3, translation_3):
+    """Transformada homogenea 4x4 a partir de una rotacion 3x3 y una traslacion."""
+    t = np.eye(4)
+    t[:3, :3] = rotation_3x3
+    t[:3, 3] = translation_3
+    return t
 
 
 class SpecificWorker(GenericWorker):
@@ -64,25 +111,36 @@ class SpecificWorker(GenericWorker):
         self.large_jump_threshold = 1.0             # meters (static concept: a jump this big means bad data, not motion)
         self.large_jump_candidate_tolerance = 0.2    # meters
 
-        # Clasificador del concepto: se entrena en caliente con las fotos de la misión.
+        # photos mission, concept_robot stops, this agent captures and labels
+        self.camera_name = configData["Camera_name"]
+        self.expected_size_m = configData["Expected_size_m"]
+        self.label_margin_factor = configData["Label_margin_factor"]
+        self.stage = Stage.IDLE
+        self.mission_was_active = False
+        self.shot_at_this_stop = False
+        self.photo_counter = 0
+        self.session_trained = False
+        self.photo_session_dir = os.path.abspath(
+            os.path.join(configData["Photo_save_dir"], str(int(time.time() * 1000))))
+        os.makedirs(self.photo_session_dir, exist_ok=True)
+        self.photo_log_path = os.path.join(self.photo_session_dir, "shots.csv")
+        with open(self.photo_log_path, "w") as log:
+            log.write("label,u,v,depth_m,path\n")
+        console.print(f"Fotos de esta sesión en: {self.photo_session_dir}", style="cyan")
+
+        # concept classifier: trained on the fly with the photos of the mission
         self.dinov3_repo = configData["Dinov3_repo"]
         self.dinov3_weights = configData["Dinov3_weights"]
         self.inference_period_cycles = configData["Inference_period_cycles"]
-        self.local_photos_dir = "photos"
         self.model_dir = "model"
         self.backbone = None
         self.classifier = None
-        self.trained_session = None
         self.cycle_count = 0
 
         if startup_check:
             self.startup_check()
         else:
             self.rt_api = rt_api(self.g)
-            # Prime last_relative_pose so the first has_significant_change() in compute() compares
-            # against a real reading, not the [0,0,0] default. has_published_once (not this) is what
-            # actually guarantees the first RT write happens.
-            self.last_relative_pose = self.get_relative_position()
 
             self.timer.timeout.connect(self.compute)
             self.timer.start(self.Period)
@@ -94,10 +152,10 @@ class SpecificWorker(GenericWorker):
     def compute(self):
         concept_node = self.g.get_node(CONCEPT_NAME)
         if concept_node is None:
-            return  # not created yet -> nothing to track.
+            return  # not created yet
 
         now_ms = int(time.time() * 1000)
-        relative_position = self.get_relative_position()
+        relative_position = self.get_relative_position(concept_node)
 
         if self.print_extra_info:
             console.print(f"[{now_ms}] relative_position -> {relative_position}", style="cyan")
@@ -107,12 +165,13 @@ class SpecificWorker(GenericWorker):
             if self.update_relative_position(relative_position):
                 self.last_relative_pose = relative_position
                 self.has_published_once = True
+                self.publish_real_position()
 
-        # Mientras no haya fotos de una misión nueva no hace nada; en cuanto las hay, entrena una
-        # vez y a partir de ahí clasifica la vista actual cada cierto número de ciclos.
-        if self.classifier is None:
-            self.maybe_train_classifier(concept_node)
-        else:
+        if self.stage in (Stage.IDLE, Stage.SHOOTING):
+            self.serve_photo_mission(concept_node)
+        elif self.stage == Stage.TRAINING:
+            self.run_training()
+        elif self.stage == Stage.INFERRING:
             self.cycle_count += 1
             if self.cycle_count % self.inference_period_cycles == 0:
                 self.classify_current_view()
@@ -122,34 +181,43 @@ class SpecificWorker(GenericWorker):
     def startup_check(self):
         QTimer.singleShot(200, QApplication.instance().quit)
 
-    # ================ Geometric calculations ================
-
+    # Geometric calculations
     def has_significant_change(self, a, b, atol=0.001):
         if len(a) != len(b):
             return True
         return any(abs(x - y) > atol for x, y in zip(a, b))
 
-    def get_relative_position(self):
+    def get_relative_position(self, concept_node):
         """Relative position between the robot and CONCEPT_NAME, in the robot's local frame
-        (meters). Simulated: Webots ground truth for both robot and concept (DEF lookup), same
-        2D-yaw projection concept_person uses. Real: TODO, needs a CONCEPT_NAME label from
-        ImageSegmentation (not trained yet)."""
+        (meters). Simulated: world_position, i.e. what the simulation estimated, against the
+        robot's Webots pose. Real: TODO, needs a CONCEPT_NAME label from ImageSegmentation (not
+        trained yet)."""
         relative_position = [0.0, 0.0, 0.0]
 
         if self.simulated:
-            concept_pose = self.webots2robocomp_proxy.getObjectPose(self.concept_def)
-            robot_pose = self.webots2robocomp_proxy.getObjectPose(self.robot_def)
+            # El concepto se situa donde lo estimo la simulacion, no donde esta de verdad: es lo
+            # que este agente "cree" y es el objetivo al que se aproxima el robot.
+            if "world_position" not in concept_node.attrs:
+                return self.last_relative_pose
+            wp = concept_node.attrs["world_position"].value
 
-            dx = (concept_pose.position.x - robot_pose.position.x) / 1000.0
-            dy = (concept_pose.position.y - robot_pose.position.y) / 1000.0
-            dz = (concept_pose.position.z - robot_pose.position.z) / 1000.0
+            try:
+                robot_pose = self.webots2robocomp_proxy.getObjectPose(self.robot_def)
+            except Exception as e:
+                console.print(f"Sin pose de Webots ({e}); se mantiene la última RT.", style="bold red")
+                return self.last_relative_pose
+
+            # world_position va en metros; getObjectPose devuelve milimetros.
+            dx = float(wp[0]) - robot_pose.position.x / 1000.0
+            dy = float(wp[1]) - robot_pose.position.y / 1000.0
+            dz = float(wp[2]) - robot_pose.position.z / 1000.0
 
             q = robot_pose.orientation
             theta = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
             local_x = -math.sin(theta) * dx + math.cos(theta) * dy
             local_y = -math.cos(theta) * dx - math.sin(theta) * dy
 
-            relative_position = [local_x, local_y, dz]
+            relative_position = [local_y, local_x, dz]
         else:
             # TODO: no trained detector for CONCEPT_NAME yet. Wire this up once a real detector
             # exists; until then this branch returns [0,0,0] and never publishes on the real robot.
@@ -162,6 +230,31 @@ class SpecificWorker(GenericWorker):
                     break
 
         return relative_position
+
+    def publish_real_position(self):
+        """Publica en el nodo del concepto su posicion relativa REAL, con la misma convencion que
+        la RT. No la lee nadie: sirve para medir contra ella el error de world_position y de la
+        proyeccion cuando algo no cuadra."""
+        try:
+            concept_pose = self.webots2robocomp_proxy.getObjectPose(self.concept_def)
+            robot_pose = self.webots2robocomp_proxy.getObjectPose(self.robot_def)
+        except Exception:
+            return
+
+        dx = (concept_pose.position.x - robot_pose.position.x) / 1000.0
+        dy = (concept_pose.position.y - robot_pose.position.y) / 1000.0
+        dz = (concept_pose.position.z - robot_pose.position.z) / 1000.0
+
+        q = robot_pose.orientation
+        theta = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        local_x = -math.sin(theta) * dx + math.cos(theta) * dy
+        local_y = -math.cos(theta) * dx - math.sin(theta) * dy
+
+        node = self.g.get_node(CONCEPT_NAME)
+        if node is None:
+            return
+        node.attrs["real_position"] = Attribute([float(local_y), float(local_x), float(dz)], self.agent_id)
+        self.g.update_node(node)
 
     def update_relative_position(self, relative_position):
         """Update the robot->CONCEPT_NAME RT edge in the DSR. Debounces large single-sample
@@ -207,31 +300,194 @@ class SpecificWorker(GenericWorker):
         self.pending_relative_position = relative_position
         return True
 
-    # ================ Clasificador del concepto ================
+    # ================ Misión de fotos ================
 
-    def maybe_train_classifier(self, concept_node):
-        """Entrena cuando el nodo del concepto trae la ruta de una tanda de fotos nueva, que es
-        lo que publica concept_robot al terminar la misión."""
-        if "photo_session_dir" not in concept_node.attrs:
+    def photo_mission_active(self):
+        """La misión de fotos está en marcha si el TARGET apunta a este concepto y su afordance,
+        alcanzada por TARGET -> has_intention, tiene aff_interacting a true."""
+        concept_node = self.g.get_node(CONCEPT_NAME)
+        if concept_node is None:
+            return False
+
+        targets = [e for e in self.g.get_edges_by_type("TARGET") if e.destination == concept_node.id]
+        if not targets:
+            return False
+
+        for edge in self.g.get_edges_by_type("has_intention"):
+            if edge.origin != concept_node.id:
+                continue
+            affordance = self.g.get_node(edge.destination)
+            if affordance is not None and "aff_interacting" in affordance.attrs:
+                return bool(affordance.attrs["aff_interacting"].value)
+        return False
+
+    def robot_is_stopped(self):
+        """Velocidades de referencia del nodo robot a cero: es la parada que hace concept_robot
+        en cada paso del giro, y la señal con la que este agente dispara."""
+        robot_node = self.g.get_node("robot")
+        if robot_node is None:
+            return False
+        for name in ("robot_ref_adv_speed", "robot_ref_rot_speed"):
+            if name not in robot_node.attrs:
+                return False
+            if abs(robot_node.attrs[name].value) > STOPPED_SPEED_EPSILON:
+                return False
+        return True
+
+    def serve_photo_mission(self, concept_node):
+        """Dispara una vez por parada mientras la misión está activa, y cierra la tanda cuando la
+        afordance se apaga."""
+        active = self.photo_mission_active()
+
+        if active:
+            self.stage = Stage.SHOOTING
+            # one photo per stop, even if the stop lasts several cycles
+            if self.robot_is_stopped():
+                if not self.shot_at_this_stop:
+                    self.take_labelled_photo(concept_node)
+                    self.shot_at_this_stop = True
+            else:
+                self.shot_at_this_stop = False
+
+        if self.mission_was_active and not active and not self.session_trained:
+            console.print(f"Tanda cerrada con {self.photo_counter} fotos guardadas.", style="bold cyan")
+            self.stage = Stage.TRAINING
+        self.mission_was_active = active
+
+    def get_current_rgbd(self):
+        """Frame RGB y profundidad en metros del mismo instante, más el struct de imagen con las
+        intrínsecas que necesita la proyección."""
+        try:
+            rgbd = self.camerargbdsimple_proxy.getAll(self.camera_name)
+            image, depth = rgbd.image, rgbd.depth
+            if not image.image or image.width <= 0 or image.height <= 0:
+                return None, None, None
+
+            rgb = np.frombuffer(bytes(image.image), dtype=np.uint8).reshape(image.height, image.width, 3)
+
+            depth_m = None
+            if depth.depth and depth.width > 0 and depth.height > 0:
+                depth_m = np.frombuffer(bytes(depth.depth), dtype=np.float32).reshape(depth.height, depth.width)
+                depth_m = depth_m * depth.depthFactor
+                if depth_m.shape != rgb.shape[:2]:
+                    depth_m = cv2.resize(depth_m, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+            return rgb, depth_m, image
+        except Exception as e:
+            console.print(f"Fallo leyendo la cámara: {e}", style="bold red")
+            return None, None, None
+
+    def get_root_to_camera_transform(self):
+        """Compone la montura fija de la zed con la RT viva root->robot: transformada
+        root->cámara 4x4 en metros, o None si falta algo en el grafo."""
+        robot_node = self.g.get_node("robot")
+        root_node = self.g.get_node("root")
+        if robot_node is None or root_node is None:
+            return None
+
+        rt_edge = self.g.get_edge(root_node.id, robot_node.id, "RT")
+        if rt_edge is None or "rt_translation" not in rt_edge.attrs or "rt_quaternion" not in rt_edge.attrs:
+            return None
+
+        t = rt_edge.attrs["rt_translation"].value
+        translation = [float(t[1]), float(t[0]), float(t[2])]
+        qx, qy, qz, qw = rt_edge.attrs["rt_quaternion"].value
+
+        root_to_robot = _homogeneous_transform(_rotation_matrix_from_quaternion(qx, qy, qz, qw), translation)
+        robot_to_camera = _homogeneous_transform(
+            _rotation_matrix_from_axis_angle(ZED_MOUNT_ROTATION_AXIS, ZED_MOUNT_ROTATION_ANGLE_RAD),
+            ZED_MOUNT_OFFSET_M,
+        )
+        return root_to_robot @ robot_to_camera
+
+    def project_world_position(self, concept_node, image):
+        """Proyecta world_position (marco root, metros) en la imagen. A diferencia de la versión
+        de vision_sam devuelve también los puntos que caen fuera del encuadre: el etiquetado
+        necesita distinguir "fuera de cuadro" de "no proyectable"."""
+        if "world_position" not in concept_node.attrs:
+            return None
+        wp = concept_node.attrs["world_position"].value
+        point_root_m = [float(wp[0]), float(wp[1]), float(wp[2])]
+
+        root_to_camera = self.get_root_to_camera_transform()
+        if root_to_camera is None:
+            return None
+
+        point_camera = np.linalg.inv(root_to_camera) @ np.array(
+            [point_root_m[0], point_root_m[1], point_root_m[2], 1.0])
+
+        # Webots Camera/RangeFinder/Lidar: +X forward, +Y left, +Z up (ROS-style body axes, not OpenGL -Z-forward).
+        depth_m = point_camera[0]
+        if depth_m <= 0:
+            return {"behind": True, "u": None, "v": None, "depth_m": 0.0}
+
+        u = image.width / 2 - image.focalx * (point_camera[1] / depth_m)
+        v = image.height / 2 - image.focaly * (point_camera[2] / depth_m)
+        return {"behind": False, "u": u, "v": v, "depth_m": depth_m}
+
+    def label_for_projection(self, projection, image):
+        """Etiqueta del disparo según dónde cae el concepto: dentro del encuadre con margen ->
+        positivo, detrás o fuera -> negativo, a caballo del borde -> None, porque una foto con el
+        concepto cortado no es ni un positivo claro ni un negativo limpio."""
+        if projection["behind"]:
+            return "sin_bache"
+
+        # margin calculated based on the expected size of the concept and the focal length of the camera
+        r_px = (self.expected_size_m / 2.0) * image.focalx / max(projection["depth_m"], 1e-3)
+        margin = r_px * self.label_margin_factor
+
+        u, v = projection["u"], projection["v"]
+        if margin <= u <= image.width - margin and margin <= v <= image.height - margin:
+            return "con_bache"
+        if u < -margin or u > image.width + margin or v < -margin or v > image.height + margin:
+            return "sin_bache"
+        return None
+
+    def take_labelled_photo(self, concept_node):
+        """Captura el frame actual, lo etiqueta proyectando world_position y lo guarda en la
+        carpeta de su etiqueta. El robot está parado y asentado cuando se llama."""
+        rgb, _, image = self.get_current_rgbd()
+        if rgb is None:
+            console.print("Disparo descartado: sin imagen de la cámara.", style="bold red")
             return
 
-        session_dir = concept_node.attrs["photo_session_dir"].value
-        if not session_dir or session_dir == self.trained_session or not os.path.isdir(session_dir):
+        projection = self.project_world_position(concept_node, image)
+        if projection is None:
+            console.print("Disparo descartado: no se pudo proyectar world_position.", style="bold red")
             return
 
-        # Copia las fotos dentro del propio agente: se regenera entero en cada ejecución, así que
-        # cada entrenamiento parte sólo de las imágenes de su misión.
-        shutil.rmtree(self.local_photos_dir, ignore_errors=True)
-        shutil.copytree(session_dir, self.local_photos_dir)
-        console.print(f"Fotos de la misión copiadas a {self.local_photos_dir}", style="cyan")
+        label = self.label_for_projection(projection, image)
+        if label is None:
+            console.print("Disparo descartado: el concepto cae en el borde del encuadre.", style="yellow")
+            return
 
-        # Marca la tanda como intentada haya ido bien o mal: un intento por tanda. Si falla, el
-        # agente se queda sin clasificador pero sigue publicando la RT, y la siguiente misión
-        # traerá una tanda nueva con su propia oportunidad.
-        trained = self.train_classifier(self.local_photos_dir)
-        self.trained_session = session_dir
-        if not trained:
+        folder = os.path.join(self.photo_session_dir, label)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"{label}_{self.photo_counter}.jpg")
+
+        # RGB ???
+        if not cv2.imwrite(path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)):
+            console.print(f"Disparo descartado: cv2.imwrite falló en {path}.", style="bold red")
+            return
+        self.photo_counter += 1
+
+        u_txt = "" if projection["u"] is None else f"{projection['u']:.1f}"
+        v_txt = "" if projection["v"] is None else f"{projection['v']:.1f}"
+        console.print(f"{label} en ({u_txt}, {v_txt}) a {projection['depth_m']:.2f} m -> {path}",
+                      style="green" if label.startswith("con_") else "blue")
+        with open(self.photo_log_path, "a") as log:
+            log.write(f"{label},{u_txt},{v_txt},{projection['depth_m']:.3f},{path}\n")
+
+    # Concept classifier
+    def run_training(self):
+        """Entrena con las fotos que este agente acaba de tomar y pasa a clasificar. Un intento
+        por tanda: si falla, se queda sin clasificador pero sigue publicando la RT."""
+        self.session_trained = True
+        if self.train_classifier(self.photo_session_dir):
+            self.stage = Stage.INFERRING
+        else:
             console.print("Entrenamiento fallido para esta tanda; no se reintenta.", style="bold red")
+            self.stage = Stage.IDLE
 
     def load_backbone(self):
         """Carga DINOv3 desde el repo y los pesos locales. Importa aquí dentro para que faltar
@@ -252,8 +508,8 @@ class SpecificWorker(GenericWorker):
         import torch
         from torchvision import transforms
 
-        # Alto y ancho tienen que ser múltiplo del patch size. A 1280x720 no recorta nada; sólo
-        # actúa si algún día cambia la resolución de la cámara.
+        # w/h need to be multiples of the patch size
+        # DINOv3 will crop the image to the largest multiple of patch_size
         patch = self.backbone.patch_size
         h = (rgb_array.shape[0] // patch) * patch
         w = (rgb_array.shape[1] // patch) * patch
@@ -267,7 +523,6 @@ class SpecificWorker(GenericWorker):
 
     def train_classifier(self, photos_dir):
         try:
-            import numpy as np
             from PIL import Image
             from sklearn.linear_model import LogisticRegression
             from sklearn.model_selection import LeaveOneOut, cross_val_predict
@@ -293,7 +548,7 @@ class SpecificWorker(GenericWorker):
             features, labels = np.array(features), np.array(labels)
             console.print(f"Embeddings: {features.shape} ({int(sum(labels))} con_bache, {int(len(labels) - sum(labels))} sin_bache)", style="cyan")
 
-            # Con tan pocas imágenes, leave-one-out es la única validación que dice algo.
+            # leave-one-out validation (not many photos)
             clf = LogisticRegression(max_iter=2000)
             predicted = cross_val_predict(clf, features, labels, cv=LeaveOneOut())
             console.print(f"Leave-one-out accuracy: {accuracy_score(labels, predicted) * 100:.1f}%", style="bold green")
@@ -317,13 +572,10 @@ class SpecificWorker(GenericWorker):
     def classify_current_view(self):
         """Clasifica el frame actual de la cámara y deja el resultado en consola y en CSV."""
         try:
-            import numpy as np
-
-            img = self.camerargbdsimple_proxy.getImage("camera")
-            if img.width <= 0 or img.height <= 0 or len(img.image) == 0:
+            rgb, _, _ = self.get_current_rgbd()
+            if rgb is None:
                 return
 
-            rgb = np.frombuffer(bytes(img.image), dtype=np.uint8).reshape(img.height, img.width, 3)
             probabilities = self.classifier.predict_proba(self.embed_image(rgb).reshape(1, -1))[0]
             label = "con_bache" if probabilities[1] >= 0.5 else "sin_bache"
 

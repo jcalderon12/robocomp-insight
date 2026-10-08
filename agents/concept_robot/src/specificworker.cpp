@@ -122,19 +122,8 @@ void SpecificWorker::initialize()
 	// Parámetros de la misión de fotos: en el config van en grados, aquí se pasan a radianes.
 	const float deg2rad = std::numbers::pi_v<float> / 180.f;
 	photo_angular_step  = configLoader.get<double>("Photo_angular_step") * deg2rad;
-	photo_front_window  = configLoader.get<double>("Photo_front_window") * deg2rad;
-	photo_back_window   = configLoader.get<double>("Photo_back_window") * deg2rad;
 	photo_settle_seconds = configLoader.get<double>("Photo_settle_seconds");
 	photo_spin_speed    = configLoader.get<double>("Photo_spin_speed_factor") * WEBOTS_MAX_ANGULAR_SPEED;
-
-	// Una carpeta y un log por ejecución, para no mezclar tandas.
-	auto session_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::system_clock::now().time_since_epoch()).count();
-	photo_session_dir = (std::filesystem::path(photo_save_dir) / std::to_string(session_ms)).string();
-	std::filesystem::create_directories(photo_session_dir);
-	photo_log_path = (std::filesystem::path(photo_session_dir) / "shots.csv").string();
-	std::ofstream(photo_log_path) << "label,angle_to_bump_deg,dist_to_bump_m,path\n";
-	std::cout << "Fotos de esta sesión en: " << photo_session_dir << std::endl;
 
 	std::cout << "Numeric locale active: " << setlocale(LC_NUMERIC, nullptr) << std::endl;
 }
@@ -622,26 +611,6 @@ void SpecificWorker::drive_forward(float speed)
 	G->update_node(robot_node);
 }
 
-void SpecificWorker::finish_photo_mission()
-{
-	auto target_edges = G->get_edges_by_type("TARGET");
-	for (const auto& target_edge : target_edges)
-	{
-		// Publica la ruta de las fotos en el nodo del concepto, antes de cerrar la misión: es
-		// como el agente que lo representa sabe con qué imágenes entrenar y que ya están todas.
-		auto concept_node_opt = G->get_node(target_edge.to());
-		if (concept_node_opt.has_value())
-		{
-			DSR::Node concept_node = concept_node_opt.value();
-			G->runtime_checked_add_or_modify_attrib_local(concept_node, "photo_session_dir",
-				std::filesystem::absolute(photo_session_dir).string());
-			G->update_node(concept_node);
-		}
-
-	}
-	clear_target_affordance();
-}
-
 // Pone aff_interacting=false en la afordance alcanzada por TARGET -> has_intention, que es como
 // se le señala a mission_controller que la misión ha terminado.
 void SpecificWorker::clear_target_affordance()
@@ -704,65 +673,13 @@ void SpecificWorker::check_follow_reached()
 	}
 }
 
-void SpecificWorker::take_photo(const std::string& label, float angle_to_bump, float distance_to_bump)
-{
-	try
-	{
-		auto img = camerargbdsimple_proxy->getImage("camera");
-		if (img.image.empty() || img.width <= 0 || img.height <= 0)
-		{
-			std::cerr << "photo_spin: imagen vacía de CameraRGBDSimple, disparo descartado." << std::endl;
-			return;
-		}
-
-		std::filesystem::path dir = std::filesystem::path(photo_session_dir) / label;
-		std::filesystem::create_directories(dir);
-		std::filesystem::path filepath = dir / (label + "_" + std::to_string(photo_counter++) + ".jpg");
-
-		// La imagen llega en RGB y OpenCV guarda asumiendo BGR: hay que invertir los canales.
-		cv::Mat rgb(img.height, img.width, CV_8UC3, const_cast<unsigned char*>(img.image.data()));
-		cv::Mat bgr;
-		cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
-		if (!cv::imwrite(filepath.string(), bgr))
-		{
-			std::cerr << "photo_spin: cv::imwrite falló en " << filepath.string() << std::endl;
-			return;
-		}
-
-		float angle_deg = angle_to_bump * 180.f / std::numbers::pi_v<float>;
-		std::cout << "photo_spin: " << filepath.string()
-			<< " (ángulo al bache " << angle_deg << " deg, distancia " << distance_to_bump << " m)" << std::endl;
-
-		std::ofstream log(photo_log_path, std::ios::app);
-		if (log.is_open())
-			log << label << "," << angle_deg << "," << distance_to_bump << "," << filepath.string() << "\n";
-	}
-	catch (const std::exception& e)
-	{
-		std::cerr << "photo_spin: fallo al tomar la foto: " << e.what() << std::endl;
-	}
-}
-
 void SpecificWorker::photo_spin()
 {
 	auto robot_node_opt = G->get_node("robot");
 	auto root_node_opt  = G->get_node("root");
-	auto target_edges = G->get_edges_by_type("TARGET");
-	if (!robot_node_opt.has_value() || !root_node_opt.has_value() || target_edges.empty())
+	if (!robot_node_opt.has_value() || !root_node_opt.has_value())
 		return;
 	DSR::Node robot_node = robot_node_opt.value();
-
-	// Posición del bache en el marco del robot (RT publicada por concept_bump). Sólo se usa
-	// para etiquetar, y siempre con el robot parado, así que su refresco lento no molesta.
-	auto bump_rt_opt = rt->get_edge_RT(robot_node, target_edges[0].to());
-	if (!bump_rt_opt.has_value())
-		return;
-	auto t_rb_opt = G->get_attrib_by_name<rt_translation_att>(bump_rt_opt.value());
-	if (!t_rb_opt.has_value())
-		return;
-	std::vector<float> t_rb = t_rb_opt.value();
-	float angle_to_bump = std::atan2(t_rb[1], t_rb[0]);
-	float dist_to_bump  = std::sqrt(t_rb[0] * t_rb[0] + t_rb[1] * t_rb[1]);
 
 	// Rumbo del robot desde la RT root->robot, que auto_localization() refresca cada ciclo: es la
 	// señal rápida con la que se mide el giro acumulado.
@@ -813,17 +730,11 @@ void SpecificWorker::photo_spin()
 
 		case SpinStage::SETTLING:
 		{
-			// Esperar a que se pare del todo y a que llegue una lectura fresca del bache.
+			// Quieto photo_settle_seconds en cada paso: esa parada es la señal con la que el
+			// agente del concepto sabe que puede capturar y etiquetar.
 			stop_robot();
 			if (std::chrono::duration<float>(std::chrono::steady_clock::now() - spin_settle_start).count() < photo_settle_seconds)
 				break;
-
-			float a = std::abs(angle_to_bump);
-			if (a <= photo_front_window)
-				take_photo("con_bache", angle_to_bump, dist_to_bump);
-			else if (a >= PI - photo_back_window)
-				take_photo("sin_bache", angle_to_bump, dist_to_bump);
-			// Los laterales no se guardan: el bache no se ve ni se deja de ver con claridad.
 
 			spin_since_shot = 0.f;
 			spin_stage = SpinStage::TURNING;
@@ -832,8 +743,10 @@ void SpecificWorker::photo_spin()
 
 		case SpinStage::DONE:
 		{
+			// Soltar la afordance cierra la misión, y es lo que el agente del concepto lee como
+			// "ya están todas las fotos" para entrenar con ellas.
 			stop_robot();
-			finish_photo_mission();
+			clear_target_affordance();
 			break;
 		}
 	}

@@ -2,11 +2,11 @@
 Proxies.TopicManager = "IceStorm/TopicManager:default -p 9999"
 
 # Proxies for required interfaces
-Proxies.CameraRGBDSimple = "camerargbdsimple:tcp -h localhost -p 10096"
-Proxies.IMU = "imu:tcp -h localhost -p 10007"
-Proxies.Lidar3D = "lidar3d:tcp -h localhost -p 11988"
-Proxies.OmniRobot = "omnirobot:tcp -h localhost -p 10004"
-Proxies.Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 10006"
+Proxies.CameraRGBDSimple = "camerargbdsimple:tcp -h localhost -p 0"
+Proxies.IMU = "imu:tcp -h localhost -p 0"
+Proxies.Lidar3D = "lidar3d:tcp -h localhost -p 0"
+Proxies.OmniRobot = "omnirobot:tcp -h localhost -p 0"
+Proxies.Webots2Robocomp = "webots2robocomp:tcp -h localhost -p 0"
 
 # Endpoints for subscriptions interfaces
 Endpoints.FullPoseEstimationPubTopic = "tcp -p 0"
@@ -14,17 +14,17 @@ Endpoints.FullPoseEstimationPubPrefix = ""
 
 
 # --- Common Agent Data ---
-Agent.id = 3
+Agent.id = 0 # Change id
 Agent.name = "concept_robot"
 
 # --- Single Instance Configuration ---
 # Use this if you only have one graph.
 Agent.configFile = ""
 Agent.domain = 0
-Agent.tree = false
-Agent.graph = false
-Agent.2d = false
-Agent.3d = false
+Agent.tree = true
+Agent.graph = true
+Agent.2d = true
+Agent.3d = true
 
 # --- Multiple Instance Template ---
 # If you define sub-instances, the single instance config above will be ignored.
@@ -35,8 +35,7 @@ Agent.3d = false
 # Agent.instance_name.2d = true
 # Agent.instance_name.3d = true
 
-
-Period.Compute = 16
+Period.Compute = 100
 Period.Emergency = 500
 
 Component.Debug.Verbose = true
@@ -45,16 +44,3 @@ Ice.Warn.Connections = "0"
 Ice.Trace.Network = "0"
 Ice.Trace.Protocol = "0"
 Ice.MessageSizeMax = "20004800"
-
-Simulated = True
-print_extra_info = false
-Desired_distance = 1800.0
-
-# Fin de follow_person: segundos seguidos a la distancia deseada
-Follow_hold_seconds = 3.0
-
-# Misión de fotos (concept_robot::photo_spin()): el giro y las paradas. La captura y el
-# etiquetado los hace el agente del concepto, que dispara en cada parada.
-Photo_angular_step = 5.0
-Photo_settle_seconds = 0.7
-Photo_spin_speed_factor = 0.1

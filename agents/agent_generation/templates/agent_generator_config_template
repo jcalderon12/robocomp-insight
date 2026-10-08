@@ -32,8 +32,16 @@ Ice.MessageSizeMax = "20004800"
 
 Simulated = true
 
+# Misión de fotos: este agente dispara en cada parada del giro y etiqueta proyectando
+# world_position. El margen de descarte en el borde se deduce de Expected_size_m, este factor
+# sólo lo escala.
+Camera_name = "camera"
+Photo_save_dir = "photos"
+Expected_size_m = 0.25
+Label_margin_factor = 1.0
+
 # Clasificador del concepto: backbone DINOv3 y cada cuántos ciclos se clasifica la vista
-# actual una vez entrenado. La ruta de las fotos llega por el atributo photo_session_dir.
+# actual una vez entrenado. Entrena con las fotos que él mismo ha tomado en esta ejecución.
 Dinov3_repo = "/home/robolab/software/dinov3"
 Dinov3_weights = "/home/robolab/robocomp/components/robocomp-insight/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
 Inference_period_cycles = 10

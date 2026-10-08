@@ -32,7 +32,6 @@ import cv2
 # from ultralytics import SAM
 import torch
 import sys
-import threading
 import time
 
 sys.path.append('/opt/robocomp/lib')
@@ -40,22 +39,12 @@ console = Console(highlight=False)
 
 from pydsr import *
 
-# ================ ZED CAMERA CALIBRATION (Shadow.proto) ================
-# Mount offset and rotation of the "zed" RGB camera relative to the robot's
-# local frame, taken from webots-shadow/protos/Shadow.proto (the Camera child
-# node under the robot Group, name "zed"). Webots gives these in meters;
-# converted here to millimeters to match the mm convention used elsewhere
-# in this DSR (sim_scene.json, causes.json, problem_position).
+# ZED CAMERA CALIBRATION (Shadow.proto)
 ZED_CAMERA_NAME = "zed"
 ZED_MOUNT_OFFSET_MM = [0.0, -75.0, 945.0]
 ZED_MOUNT_ROTATION_AXIS = [0.0, 0.0, 1.0]
 ZED_MOUNT_ROTATION_ANGLE_RAD = 1.57  # ~90 deg about Z, robot-local frame
 
-# concept_robot writes the live root->robot RT translation in METERS (it
-# divides the raw Webots pose by 1000 before storing it), while every other
-# position in this project (sim_scene.json, causes.json, problem_position) is
-# in MILLIMETERS. Pre-existing unit mismatch, not introduced here: converted
-# back to mm on read so this module stays consistent with the rest of the DSR.
 ROOT_ROBOT_RT_TRANSLATION_IS_METERS = True
 
 
@@ -94,32 +83,6 @@ def _homogeneous_transform(rotation_3x3, translation_3):
     return t
 
 
-# Animated spinner class to show progress while processing the image with SAM
-class AnimatedSpinner:
-    def __init__(self, message="Processing image with SAM..."):
-        self.spinner = ['|', '/', '-', '\\']
-        self.stopped = threading.Event()
-        self.message = message
-        self.idx = 0
-        self.thread = threading.Thread(target=self._animate)
-
-    def start(self):
-        self.stopped.clear()
-        self.thread.start()
-
-    def _animate(self):
-        while not self.stopped.is_set():
-            sys.stdout.write(f"\r{self.message} {self.spinner[self.idx % len(self.spinner)]}")
-            sys.stderr.flush()
-            time.sleep(0.1)
-            self.idx += 1
-        sys.stdout.write(f"\r{self.message} Done!{' ' * 10}\n")
-        sys.stdout.flush()
-
-    def stop(self):
-        self.stopped.set()
-        self.thread.join()
-
 class SpecificWorker(GenericWorker):
     def __init__(self, proxy_map, configData, startup_check=False):
         super(SpecificWorker, self).__init__(proxy_map, configData)
@@ -135,9 +98,6 @@ class SpecificWorker(GenericWorker):
         self.current_save_dir = "segmented_objects"
         self.ui.save_new_folder_button.clicked.connect(self.on_save_new_folder_button_clicked)
 
-        # Full-frame classifier dataset (no SAM, no crop): the robot's raw view, labeled by
-        # the person capturing depending on whether the bump happens to be in frame or not.
-        # The two count labels are just photo counters for this session, reset on new folder.
         self.bump_present_count = 0
         self.bump_absent_count = 0
         self.ui.bump_present_button.clicked.connect(self.on_bump_present_clicked)
@@ -201,10 +161,7 @@ class SpecificWorker(GenericWorker):
 
             # process the image with SAM
             # if self.sam_masks is None:
-            #     spinner = AnimatedSpinner()
-            #     spinner.start()
             #     results = self.sam(image_rgb, device=self.device, verbose=False)
-            #     spinner.stop()
             #     if results[0].masks is not None:
             #         self.sam_masks = results[0].masks.data.cpu().numpy()
             
@@ -227,8 +184,6 @@ class SpecificWorker(GenericWorker):
             self.ui.image_label.setPixmap(QPixmap.fromImage(qimage))
 
         except RuntimeError as e:
-            # if 'spinner' in locals():
-            #     spinner.stop()
             if "CUDA out of memory" in str(e):
                 print("CUDA out of memory error. Consider using a smaller model or reducing the image size.")
                 torch.cuda.empty_cache()
@@ -238,8 +193,6 @@ class SpecificWorker(GenericWorker):
                 print(f"RUNTIME ERROR ON COMPUTE: {e}")
 
         except Exception as e:
-            # if 'spinner' in locals():
-            #     spinner.stop()
             print(f"ERROR ON COMPUTE: {e}")
 
         return True
@@ -319,10 +272,6 @@ class SpecificWorker(GenericWorker):
 
             image_np = np.frombuffer(image_struct.image, dtype=np.uint8)
             image_np = image_np.reshape((image_struct.height, image_struct.width, 3))
-            # camerargbdsimple_proxy already gives RGB-ordered bytes (see compute(), where
-            # the same cvtColor(BGR2RGB) was removed for the same reason) - converting again
-            # here re-swapped it into BGR while still calling it "image_rgb", which is why
-            # segmented_image_label ended up showing BGR.
             image_rgb = image_np
 
             depth_np = np.frombuffer(depth_struct.depth, dtype=np.float32)
@@ -339,10 +288,10 @@ class SpecificWorker(GenericWorker):
 
 
     def process_sam_on_point(self, x, y):
-        # Load SAM
+        # Load SAM (lazy loading)
         if not hasattr(self, 'sam') or self.sam is None:
             self.log("Loading SAM model...")
-            from ultralytics import SAM # import here for lazy loading
+            from ultralytics import SAM 
             self.sam = SAM("sam2.1_l.pt")
 
         # Get current RGBD
@@ -410,10 +359,6 @@ class SpecificWorker(GenericWorker):
         point_camera = camera_to_root @ point_root_h
         print(f"[DEBUG] point in root frame (mm): {point_root_mm}, point in camera frame (mm): {point_camera[:3].tolist()}")
 
-        # Webots device convention (Camera/RangeFinder/Lidar): looks down local +X,
-        # with +Y left and +Z up (ROS-style body axes, not OpenGL -Z-forward).
-        # Confirmed against real debug data: using +Z as depth gave ~1000mm for a
-        # point actually ~3900mm away; +X matches the true distance.
         depth = point_camera[0]
         if depth <= 0:
             print(f"Cannot project: point is behind the camera (depth={depth:.1f}mm).")
@@ -493,8 +438,7 @@ class SpecificWorker(GenericWorker):
         image_path = os.path.join(save_dir, f"{basename}_rgb.jpg")
         depth_path = os.path.join(save_dir, f"{basename}_depth.npy")
 
-        # cv2.imwrite expects BGR-ordered bytes; image_rgb is genuinely RGB now (see
-        # get_current_rgbd), so it needs the swap it wasn't getting before.
+        # cv2.imwrite expects BGR-ordered bytes; image_rgb is RGB now
         cv2.imwrite(image_path, cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
         np.save(depth_path, depth_m)
 

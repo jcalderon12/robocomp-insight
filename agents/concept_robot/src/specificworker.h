@@ -36,7 +36,6 @@
 #include <cmath>
 #include <numbers>
 #include <string>
-#include <opencv2/opencv.hpp>
 
 // Robot maximum speeds
 static constexpr float WEBOTS_MAX_LINEAR_SPEED  = 1.5f; //meters per second
@@ -168,16 +167,6 @@ public slots:
 	void drive_forward(float speed);
 
 	/**
-	 * \brief Grabs one CameraRGBDSimple frame and saves it as .jpg under Photo_save_dir/<session>/<label>/.
-	 */
-	void take_photo(const std::string& label, float angle_to_bump, float distance_to_bump);
-
-	/**
-	 * \brief Publishes photo_session_dir on the concept node and closes the mission.
-	 */
-	void finish_photo_mission();
-
-	/**
 	 * \brief Clears aff_interacting on the affordance reached via TARGET->has_intention, which is
 	 * what mission_controller watches to complete the mission. Shared by both missions.
 	 */
@@ -256,16 +245,10 @@ private:
 	float spin_last_heading = 0.f;      // rumbo del ciclo anterior, para acumular el giro
 	bool spin_heading_valid = false;
 	std::chrono::steady_clock::time_point spin_settle_start;
-	int photo_counter = 0;
 
 	float photo_angular_step;     // radianes entre disparos
-	float photo_front_window;     // radianes; |ángulo al bache| <= esto -> con_bache
-	float photo_back_window;      // radianes; |ángulo al bache| >= PI - esto -> sin_bache
-	float photo_settle_seconds;   // espera tras parar, antes de leer el ángulo y disparar
+	float photo_settle_seconds;   // parada en cada paso: es cuando dispara el agente del concepto
 	float photo_spin_speed;       // rad/s del giro
-	std::string photo_save_dir  = configLoader.get<std::string>("Photo_save_dir");
-	std::string photo_session_dir;  // photo_save_dir/<session_ms>
-	std::string photo_log_path;     // una fila por disparo
 
 signals:
 	//void customSignal();
