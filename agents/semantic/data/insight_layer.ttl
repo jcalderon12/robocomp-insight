@@ -263,7 +263,42 @@ insight:hypothesisId a owl:DatatypeProperty ;
 insight:Mechanism a owl:Class ;
     rdfs:subClassOf dul:Description ;
     rdfs:label "mechanism"@en ;
-    rdfs:comment "A way in which the carried bottle can fall: what it requires in the episode, what trace it leaves in the recording, and how it is simulated or why it cannot be."@en .
+    rdfs:comment "A candidate explanation of an observed discrepancy: its applicable profiles, requirements, predicted trace, and simulation realization or reason it cannot be simulated."@en .
+
+insight:ExplanationProfile a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "explanation context profile"@en ;
+    rdfs:comment "Selects candidate mechanisms from the kind of recorded change and known entity roles, without assuming its physical cause."@en .
+
+insight:profileId a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string .
+insight:matchesOperation a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string .
+insight:matchesPredicate a owl:ObjectProperty ;
+    rdfs:domain insight:ExplanationProfile ;
+    rdfs:comment "RDF relation whose recorded modification may activate this profile."@en .
+insight:requiresAffectedRole a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string ;
+    rdfs:comment "Recorded role of the changed relation's subject; role bindings come from the episode."@en .
+insight:legacyEpisodeSection a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string ;
+    rdfs:comment "Required section of a legacy episode that records an observation without an explicit delta."@en .
+insight:observationNote a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string .
+insight:appliesToProfile a owl:ObjectProperty ;
+    rdfs:domain insight:Mechanism ; rdfs:range insight:ExplanationProfile .
+insight:appliesToAnyChange a owl:DatatypeProperty ;
+    rdfs:domain insight:Mechanism ; rdfs:range xsd:boolean ;
+    rdfs:comment "Explicit declaration of general applicability; missing annotations do not imply applicability to arbitrary cases."@en .
+
+insight:Profile_CarriedObjectRelationLoss a insight:ExplanationProfile ;
+    insight:profileId "carried_object_relation_loss" ;
+    rdfs:label "perceived discontinuity of a carried-object relation"@en ;
+    insight:matchesOperation "removed" ;
+    insight:matchesPredicate dul:hasLocation ;
+    insight:requiresAffectedRole "supported" ;
+    insight:legacyEpisodeSection "support" ;
+    insight:observationNote "The discontinued carrying relation describes the robot's representation. It does not by itself establish the affected entity's current location or a physical fall." .
 
 insight:SimulationIntervention a owl:Class ;
     rdfs:subClassOf dul:Description ;
@@ -480,7 +515,7 @@ insight:pre_moving_in_interval a insight:Precondition ;
 
 insight:pre_bottle_supported a insight:Precondition ;
     insight:ruleId "bottle_supported" ; insight:ruleEffect "incoherent" ; insight:ruleStatus "fixed" ;
-    rdfs:comment "The support of the bottle covers the start of the anchored interval."@en .
+    rdfs:comment "The recorded support estimate covers the start of the anchored interval."@en .
 
 insight:rule_obstacle_jolt a insight:ContrastRule ;
     insight:ruleId "obstacle_jolt" ; insight:ruleEffect "inform" ; insight:ruleStatus "to_calibrate" ;
@@ -526,9 +561,10 @@ insight:rule_bottle_reacquired a insight:ContrastRule ;
 # The ten mechanisms (contract 2, section 3.3).
 
 insight:Mechanism_ObstacleTraversed a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "undetected obstacle driven over"@en ;
     insight:mechanismId "obstacle_traversed" ;
-    insight:promptDescription "The robot drives over a low object on the floor (a bump or a cable) that it did not detect; the jolt tips the bottle." ;
+    insight:promptDescription "{robot} could drive over an undetected low object on the floor (a bump or a cable); the disturbance could displace {affected_entity} from its recorded support." ;
     insight:titleTemplate "Undetected {shape} on {segment}" ;
     insight:family "external" ;
     insight:inOldCatalog true ;
@@ -543,9 +579,10 @@ insight:Mechanism_ObstacleTraversed a insight:Mechanism ;
     rdfs:seeAlso soma:Collision .
 
 insight:Mechanism_BottlePush a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "push on the bottle"@en ;
     insight:mechanismId "bottle_push" ;
-    insight:promptDescription "Something (the followed person, an object, a gust) pushes the bottle off the tray; the robot itself feels no jolt." ;
+    insight:promptDescription "An external interaction could displace {affected_entity} from {supporter}; this need not disturb the carrier." ;
     insight:titleTemplate "Push on the bottle during {interval}" ;
     insight:family "external" ;
     insight:inOldCatalog true ;
@@ -557,9 +594,10 @@ insight:Mechanism_BottlePush a insight:Mechanism ;
     rdfs:seeAlso soma:ForceInteraction .
 
 insight:Mechanism_RobotPush a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "push on the robot"@en ;
     insight:mechanismId "robot_push" ;
-    insight:promptDescription "Something pushes the robot; the jolt or the deviation tips the bottle." ;
+    insight:promptDescription "An external interaction could push {robot}; the disturbance or deviation could displace {affected_entity}." ;
     insight:titleTemplate "Push on the robot during {interval}" ;
     insight:family "external" ;
     insight:inOldCatalog true ;
@@ -572,9 +610,10 @@ insight:Mechanism_RobotPush a insight:Mechanism ;
     rdfs:seeAlso soma:ForceInteraction .
 
 insight:Mechanism_SlipperyFloor a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "slippery floor"@en ;
     insight:mechanismId "slippery_floor" ;
-    insight:promptDescription "The whole floor is slippery; the wheels slip and the bottle is displaced." ;
+    insight:promptDescription "A slippery floor could make the carrier slip and displace {affected_entity}." ;
     insight:titleTemplate "Slippery floor in the whole room" ;
     insight:family "external" ;
     insight:inOldCatalog true ;
@@ -585,9 +624,10 @@ insight:Mechanism_SlipperyFloor a insight:Mechanism ;
     rdfs:seeAlso soma:FrictionAttribute .
 
 insight:Mechanism_WheelFailure a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "drive wheel failure"@en ;
     insight:mechanismId "wheel_failure" ;
-    insight:promptDescription "One of the two drive wheels stops and stays braked; the robot turns without being ordered to." ;
+    insight:promptDescription "A drive wheel of {robot} could stop and remain braked, causing an uncommanded turn that affects {affected_entity}." ;
     insight:titleTemplate "{side} drive wheel blocked during {interval}" ;
     insight:family "internal" ;
     insight:inOldCatalog true ;
@@ -602,9 +642,10 @@ insight:Mechanism_WheelFailure a insight:Mechanism ;
     rdfs:seeAlso soma:HardwareDiagnosis .
 
 insight:Mechanism_CommandedSpeedChange a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "commanded brake or acceleration"@en ;
     insight:mechanismId "commanded_speed_change" ;
-    insight:promptDescription "The robot itself was ordered to brake or accelerate sharply; the order is in the recorded setpoint." ;
+    insight:promptDescription "A recorded command could change the carrier speed sharply; its possible effect on {affected_entity} must be checked against the episode." ;
     insight:titleTemplate "Commanded speed change during {interval}" ;
     insight:family "internal" ;
     insight:inOldCatalog false ;
@@ -615,9 +656,10 @@ insight:Mechanism_CommandedSpeedChange a insight:Mechanism ;
     insight:costInSimulations 0 .
 
 insight:Mechanism_UncommandedMotion a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "uncommanded motion"@en ;
     insight:mechanismId "uncommanded_motion" ;
-    insight:promptDescription "The base did not do what it was ordered: a brake or a jerk that is not in the setpoint (driver or power fault)." ;
+    insight:promptDescription "The carrier could brake or jerk without a corresponding recorded command, for example because of a driver or power fault." ;
     insight:titleTemplate "Uncommanded {kind} during {interval}" ;
     insight:family "internal" ;
     insight:inOldCatalog false ;
@@ -631,36 +673,39 @@ insight:Mechanism_UncommandedMotion a insight:Mechanism ;
     rdfs:seeAlso soma:HardwareDiagnosis .
 
 insight:Mechanism_BottleRemovedByPerson a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "bottle removed by a person"@en ;
     insight:mechanismId "bottle_removed_by_person" ;
-    insight:promptDescription "A person takes the bottle off the tray; there is no jolt and the person is within reach." ;
+    insight:promptDescription "A person within reach could remove {affected_entity} from {supporter}; proximity alone does not establish that the removal occurred." ;
     insight:titleTemplate "A person removed the bottle during {interval}" ;
     insight:family "external" ;
     insight:inOldCatalog false ;
     insight:requiresAnchor insight:IntervalAnchor ;
     insight:hasContrastRule insight:rule_person_within_reach ;
     insight:entailsObservation insight:person_distance_min ;
-    insight:notSimulableBecause "Not physical: it is checked against the recording, not simulated." ;
+    insight:notSimulableBecause "No removal intervention is implemented: this physical hypothesis is checked against the recording but cannot be reproduced by the available simulator." ;
     insight:costInSimulations 0 .
 
 insight:Mechanism_PerceptionFailure a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "perception failure"@en ;
     insight:mechanismId "perception_failure" ;
-    insight:promptDescription "The bottle did not fall: perception lost it; there is no jolt and the bottle is detected again." ;
+    insight:promptDescription "Detection, association or tracking of {affected_entity} could fail while its physical support remains unchanged. Neither absent nor renewed detection alone establishes what physically happened." ;
     insight:titleTemplate "False loss of the bottle during {interval}" ;
     insight:family "internal" ;
     insight:inOldCatalog false ;
     insight:requiresAnchor insight:IntervalAnchor ;
     insight:hasContrastRule insight:rule_bottle_reacquired ;
     insight:entailsObservation insight:bottle_reacquired ;
-    insight:notSimulableBecause "Not physical: the bottle did not fall; it is checked against the recording." ;
+    insight:notSimulableBecause "The available simulator has no detection or tracking model; this hypothesis can only be compared with recorded observations." ;
     insight:costInSimulations 0 ;
     rdfs:seeAlso soma:SoftwareDiagnosis .
 
 insight:Mechanism_SuspensionFailure a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "suspension failure"@en ;
     insight:mechanismId "suspension_failure" ;
-    insight:promptDescription "The suspension fails or vibrates and shakes the bottle off." ;
+    insight:promptDescription "A suspension fault or vibration of the carrier could disturb the support of {affected_entity}." ;
     insight:titleTemplate "Suspension failure" ;
     insight:family "internal" ;
     insight:inOldCatalog false ;

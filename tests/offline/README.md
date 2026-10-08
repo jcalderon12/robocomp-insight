@@ -5,6 +5,7 @@ launching the agent stack. Run them from the repo root.
 
 | Test | What it checks | Needs |
 |---|---|---|
+| `test_explanation_context.py` | Case-derived prompts without assuming a fall; ontology profiles select the active vocabulary before validating implementations; full RDF IRIs match local episode identifiers without confusing namespaces; another target-tracking discrepancy has its own mechanisms and validation; inactive unsupported rules do not contaminate the case, borrowed mechanisms are rejected, and missing context stays unknown. Scripted LLM only. | rdflib, numpy; saved 2026-10-07 episode |
 | `test_validator.py` | `LiveCausalValidator` decision table (unexplained vs. explained retractions): a bottle that leaves the robot without a cause is unexplained with one reason wherever it went; and the mirror never places a lost bottle (no `hasLocation` room even if DSR hangs it from the room). | rdflib |
 | `test_blueprint_grounding.py` | Blueprint v2 validation and grounding against `etc/intervention_catalog.json` (testable / untestable marking, bounds). | rdflib |
 | `test_hypothesis_compiler.py` | Semantic batch → `hypothesis_compiler` → payloads accepted by the causes simulator's discriminated union. | pybullet |
@@ -31,6 +32,7 @@ python3 tests/offline/test_episode_builder.py
 python3 tests/offline/test_episode_contrast.py
 python3 tests/offline/test_hypothesis_pipeline.py
 python3 tests/offline/test_hypothesis_generator.py
+python3 tests/offline/test_explanation_context.py
 python3 tests/offline/test_semantic_agent_v2.py
 python3 tests/offline/test_semantic_memory_queries.py
 python3 tests/offline/test_scaled_dome.py

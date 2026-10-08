@@ -35,6 +35,8 @@ from typing import Any, Callable, Optional
 
 from rdflib import RDFS, Graph, Namespace
 
+from src.explanation_context import mechanism_nodes
+
 INSIGHT = Namespace("http://insight.local/ontology#")
 DEFAULT_TBOX = Path(__file__).resolve().parents[1] / "data" / "insight_tbox.ttl"
 
@@ -125,7 +127,8 @@ def _check(graph: Graph, node, kind: str) -> Check:
 
 
 @lru_cache(maxsize=4)
-def load_mechanisms(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, Mechanism]:
+def load_mechanisms(tbox_path: str | Path = DEFAULT_TBOX,
+                    profiles: Optional[tuple[str, ...]] = None) -> dict[str, Mechanism]:
     """The mechanisms of the TBox and their checks, by mechanism id.
 
     Raises if the TBox has a check this module does not implement, or if a rule reads other
@@ -133,7 +136,7 @@ def load_mechanisms(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, Mechanism
     """
     graph = Graph().parse(str(tbox_path), format="turtle")
     mechanisms: dict[str, Mechanism] = {}
-    for node in graph.subjects(predicate=INSIGHT.mechanismId):
+    for node in mechanism_nodes(graph, profiles):
         # A mechanism may be simulated in more than one way (the obstacle: a dome of unknown size for a
         # bump, a fixed asset for a cable); the grounding picks one per hypothesis.
         interventions = sorted(graph.objects(node, INSIGHT.realizedBy), key=str)
@@ -150,7 +153,8 @@ def load_mechanisms(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, Mechanism
                                key=lambda c: c.rule_id)),
             realized_by=tuple(_local(i) for i in interventions),
             realization_experimental=bool(interventions) and all(e is not None and e.toPython() for e in experimental),
-            not_simulable_because=str(reason) if reason is not None else None,
+            not_simulable_because=(str(reason) if reason is not None else
+                                   "No simulation realization is declared for this mechanism." if not interventions else None),
             cost_in_simulations=int(graph.value(node, INSIGHT.costInSimulations) or 0),
             family=str(graph.value(node, INSIGHT.family) or ""),
         )
@@ -161,8 +165,10 @@ def load_mechanisms(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, Mechanism
             if check.kind == "contrast_rule" and check.properties != implementation.reads:
                 raise ValueError(f"check '{check.rule_id}': the TBox says it reads {check.properties}, "
                                  f"the implementation reads {implementation.reads}")
+        if mechanism.mechanism_id in mechanisms:
+            raise ValueError(f"duplicate active mechanism id '{mechanism.mechanism_id}' in the TBox")
         mechanisms[mechanism.mechanism_id] = mechanism
-    if not mechanisms:
+    if not mechanisms and profiles is None:
         raise ValueError(f"{tbox_path}: no mechanism in the TBox")
     return mechanisms
 
@@ -176,13 +182,13 @@ class EpisodeView:
 
     def __init__(self, episode: dict[str, Any]):
         self.episode = episode
-        self.intervals = {i["id"]: (i["start_s"], i["end_s"]) for i in episode["intervals"]}
-        self.segments = {s["id"]: s for s in episode["segments"]}
-        self.phases = [p for p in episode["phases"] if not p.get("is_system_reaction")]
+        self.intervals = {i["id"]: (i["start_s"], i["end_s"]) for i in episode.get("intervals", [])}
+        self.segments = {s["id"]: s for s in episode.get("segments", [])}
+        self.phases = [p for p in episode.get("phases", []) if not p.get("is_system_reaction")]
         self.support = episode.get("support") or {}
-        self.t_obs = episode["time"]["t_obs_s"]
+        self.t_obs = (episode.get("time") or {}).get("t_obs_s", (episode.get("change") or {}).get("time_s"))
         self.evidence: dict[str, dict[str, Any]] = {}
-        for entry in episode["evidence"]:
+        for entry in episode.get("evidence", []):
             if entry.get("is_system_reaction"):
                 continue
             if entry["property"] in self.evidence:

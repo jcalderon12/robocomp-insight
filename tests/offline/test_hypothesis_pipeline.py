@@ -177,7 +177,7 @@ def check_wrong_anchors_are_incoherent():
     for wrong, why in ((idea("obstacle_traversed", "Segment_prev_9", shape="cable"), "does not exist in the episode"),
                        (idea("obstacle_traversed", shape="cable"), "needs a segment anchor"),
                        (idea("slippery_floor", interval="Interval_fall"), "admits no interval anchor"),
-                       (idea("bottle_push", interval="Interval_reaction", direction="any"), "after the fall")):
+                       (idea("bottle_push", interval="Interval_reaction", direction="any"), "after the observation")):
         result = single(episode, wrong)
         assert result["status"] == "incoherent" and why in result["untestable_reason"], (why, result)
         assert result["checks"]["coherence"]["passed"] is False and not result["testable"]

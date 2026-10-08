@@ -1,16 +1,18 @@
-"""The LLM in front of the deterministic part of the new generation (contract 3, section 4.2; task A4, subpaso 3.2).
+"""Case-derived prompts in front of the deterministic hypothesis pipeline.
 
 The prompt gives the LLM, once each:
 
   * the episode (contract 1) in readable form: what happened, the phases, the path segments and
     the time intervals a hypothesis may be anchored to, and the evidence, each property explained
-    with its comment in the TBox. The robot's reaction after the fall is not offered as evidence
+    with its comment in the TBox. The robot's reaction after the observation is not offered as evidence
     nor as an anchor;
-  * the mechanisms (contract 2), from the TBox: id, description, anchors, qualitative parameters
+  * the mechanisms selected by the TBox's explanation profiles: id, description, anchors, qualitative parameters
     (kinds only: the magnitudes are the memory's), precondition, the properties on which they leave
     a trace, whether they can be simulated and what they cost;
   * the robot's self-model (description.md).
 
+The observed delta, entity roles and selected profiles are saved in context_summary. No physical
+event is assumed from a structural retraction; unknown profiles never inherit a scenario's catalog.
 The LLM answers in symbols (layer 3a) and hypothesis_pipeline turns the answer into the published
 batch (layer 3b). An answer that is not a JSON object, or breaks the schema, is sent back with its
 problems and asked again, up to `max_attempts`: at temperature 0, asking again without them would
@@ -32,10 +34,11 @@ from typing import Any, Callable, Optional
 import requests
 from rdflib import RDF, RDFS, Graph, Namespace
 
-from src.episode_contrast import DEFAULT_TBOX, FALL_INTERVAL, EpisodeView
+from src.episode_contrast import DEFAULT_TBOX
+from src.explanation_context import build_explanation_context, render_context_template
 from src.hypothesis_pipeline import (
-    DEFAULT_BUDGET, DEFAULT_CATALOG, NEW_MECHANISM, SCALED_DOME, WHEEL_SIDES, HypothesisSchemaError, bump_assets,
-    error_batch, interval_label, load_vocabulary, publish_batch, segment_label,
+    DEFAULT_BUDGET, DEFAULT_CATALOG, NEW_MECHANISM, HypothesisSchemaError,
+    error_batch, load_vocabulary, publish_batch, simulation_cost_description,
 )
 from src.intervention_catalog import InterventionCatalog
 from src.hypothesis_service import _extract_json_object, _normalize_message_content, _ollama_native_metrics
@@ -73,6 +76,8 @@ def ollama_chat(model: str, base_url: str = "http://localhost:11434", timeout_s:
 # The prompt
 # --------------------------------------------------------------------------- #
 def _n(value: Any) -> str:
+    if value is None:
+        return "unknown"
     if isinstance(value, bool):
         return "yes" if value else "no"
     if isinstance(value, float):
@@ -86,20 +91,6 @@ def observable_properties(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, tup
     graph = Graph().parse(str(tbox_path), format="turtle")
     return {str(p).rsplit("#", 1)[-1]: (str(graph.value(p, RDFS.label) or ""), str(graph.value(p, RDFS.comment) or ""))
             for p in graph.subjects(RDF.type, SOSA.ObservableProperty)}
-
-
-def _anchor_intervals(view: EpisodeView) -> list[str]:
-    """The intervals a hypothesis may be anchored to: those that start before the fall."""
-    return [i for i, (start, _) in view.intervals.items() if start < view.t_obs]
-
-
-def _interval_meaning(view: EpisodeView, interval_id: str) -> str:
-    if interval_id == "Interval_baseline":
-        return f"free motion before {FALL_INTERVAL}: the reference the peaks are compared with"
-    for phase in view.phases:
-        if phase["interval"] == interval_id:
-            return f"the whole of {phase['id']} ({phase['kind']})"
-    return interval_label(view, interval_id)
 
 
 def _evidence_line(entry: dict[str, Any], properties: dict[str, tuple[str, str]]) -> str:
@@ -122,83 +113,111 @@ def _evidence_line(entry: dict[str, Any], properties: dict[str, tuple[str, str]]
     return f"- {text}." + (f" ({label}: {comment})" if comment else "")
 
 
-def describe_episode(episode: dict[str, Any], tbox_path: str | Path = DEFAULT_TBOX) -> str:
-    """The episode of contract 1 in readable form, with the ids the LLM anchors to."""
-    view = EpisodeView(episode)
+def describe_episode(episode: dict[str, Any], tbox_path: str | Path = DEFAULT_TBOX,
+                     *, context: Optional[dict[str, Any]] = None) -> str:
+    """Render recorded facts and symbolic anchors without assuming a particular physical event."""
+    context = context if context is not None else build_explanation_context(
+        episode, Graph().parse(str(tbox_path), format="turtle"))
     properties = observable_properties(tbox_path)
-    support, accident = episode["support"], episode["accident"]
-    pose = accident["robot_pose"]
-    onset = next((e.get("value") for e in episode["evidence"] if e["property"] == "reaction_onset"), None)
-    lines = [
-        f"## The episode {episode['episode_id']}",
-        "",
-        "Room frame: x and y in metres, headings in degrees (0 = +x, counter-clockwise). Times in seconds "
-        "from the start of the recording.",
-        "",
-        "### What happened",
-        f"- The robot was following a person with a bottle on its tray. {support['id']}: the "
-        f"{'tray' if support['supporter'] == episode['entities'].get('tray') else 'robot'} held the "
-        f"bottle from {_n(support['start_s'])} s to {_n(support['end_s'])} s.",
-        f"- {accident['id']}: the bottle was lost at t_obs = {_n(view.t_obs)} s, with the robot at "
-        f"({_n(pose['xy'][0])}, {_n(pose['xy'][1])}), heading {_n(pose['heading_deg'])} deg, on {accident['place']}. "
-        "Its cause is unknown.",
-        "- After t_obs the robot reacted to the loss" + (f" (its speed setpoint went to 0 at {_n(onset)} s)" if onset else "")
-        + ". That reaction is a consequence, not a cause: it is left out below.",
-        "",
-        "### Phases of the motion before the fall",
-    ]
-    for phase in view.phases:
-        start, end = view.intervals[phase["interval"]]
-        details = [f"mean speed {_n(phase['mean_speed_mps'])} m/s"]
+    clock, frame = episode.get("time") or {}, episode.get("frame") or {}
+    observed_at = context["observed_at_s"]
+    intervals = {i["id"]: i for i in episode.get("intervals", [])}
+    reaction_intervals = {p.get("interval") for p in episode.get("phases", []) if p.get("is_system_reaction")}
+    phases = [p for p in episode.get("phases", []) if not p.get("is_system_reaction")]
+    support = episode.get("support") or {}
+    event = episode.get("observation") or episode.get("accident") or {}
+    lines = [f"## The episode {episode.get('episode_id', context['observation_id'])}", "",
+             f"Reference frame: {frame.get('name', 'not recorded')}. Position units: "
+             f"{frame.get('units', 'not recorded')}. Heading convention: {frame.get('heading', 'not recorded')}.",
+             f"Times in seconds; origin: {clock.get('origin', 'not recorded')}.",
+             "Identifiers are recorded labels; their names do not establish physical events.", "",
+             "### Observed discrepancy",
+             f"- {context['observation_id']}: {context['summary']}; observation time = {_n(observed_at)} s."]
+    for change in context["changes"]:
+        lines.append(f"- Recorded change ({change['operation']}): subject={change.get('subject', 'unknown')}; "
+                     f"relation={change.get('predicate', 'unknown')}; object={change.get('object', 'unknown')}.")
+    if context["mission"] is not None:
+        mission = context["mission"]
+        lines.append("- Recorded mission context: " + (mission if isinstance(mission, str) else
+                     json.dumps(mission, ensure_ascii=False)) + ".")
+    if episode.get("entities"):
+        lines.append("- Recorded entity roles: " + "; ".join(
+            f"{role}={entity}" for role, entity in episode["entities"].items()) + ".")
+    lines.append("- Applicable ontology profiles: " + (", ".join(context["profile_labels"]) or "none declared") + ".")
+    lines.extend(f"- {note}" for note in context["profile_notes"])
+    lines.extend(f"- {note}" for note in context["selection_notes"])
+    lines.extend(f"- Unknown: {note}" for note in context["unknowns"])
+    pose = event.get("robot_pose") or {}
+    if pose:
+        lines.append(f"- Recorded observer pose at the observation: position={pose.get('xy', 'unknown')}, "
+                     f"heading={_n(pose.get('heading_deg'))} deg. This does not locate the affected entity.")
+    if support:
+        lines.append(f"- Recorded support estimate {support.get('id', 'unnamed')}: "
+                     f"{support.get('supporter', 'unknown')} supporting {support.get('supported', 'unknown')}, "
+                     f"represented over [{_n(support.get('start_s'))}, {_n(support.get('end_s'))}] s. "
+                     "The end of this estimate is not an independently measured end of physical support.")
+    lines += ["- The cause of the discrepancy is not established. Marked system reactions are excluded "
+              "as candidate causes and anchors.", "", "### Recorded phases before the observation"]
+    for phase in phases:
+        span = intervals.get(phase.get("interval"), {})
+        if observed_at is not None and span.get("start_s") is not None and span["start_s"] >= observed_at:
+            continue
+        details = []
+        if phase.get("mean_speed_mps") is not None:
+            details.append(f"mean speed {_n(phase['mean_speed_mps'])} m/s")
         if phase.get("setpoint_mps"):
             details.append(f"commanded {_n(phase['setpoint_mps'][0])}-{_n(phase['setpoint_mps'][1])} m/s")
         if phase.get("heading_deg_range"):
             details.append(f"heading from {_n(phase['heading_deg_range'][0])} to {_n(phase['heading_deg_range'][1])} deg")
-        lines.append(f"- {phase['id']} ({phase['kind']}), {phase['interval']} = [{_n(start)}, {_n(end)}] s: "
-                     + ", ".join(details) + ".")
-    lines += ["", "### Path segments, counted back from the fall (the anchors for a place: `segment`)"]
-    for segment in sorted(view.segments.values(), key=lambda s: s.get("order_back_from_fall", 0)):
-        start, end = view.intervals[segment["interval"]]
-        lines.append(f"- {segment['id']}: {segment_label(view, segment['id'])}, from ({_n(segment['from_xy'][0])}, "
-                     f"{_n(segment['from_xy'][1])}) to ({_n(segment['to_xy'][0])}, {_n(segment['to_xy'][1])}), heading "
-                     f"{_n(segment['heading_deg'])} deg, mean speed {_n(segment['mean_speed_mps'])} m/s, driven during "
-                     f"{segment['interval']} = [{_n(start)}, {_n(end)}] s.")
-    lines += ["", "### Time intervals (the anchors for a time: `interval`)"]
-    for interval_id in _anchor_intervals(view):
-        start, end = view.intervals[interval_id]
-        lines.append(f"- {interval_id} = [{_n(start)}, {_n(end)}] s: {_interval_meaning(view, interval_id)}.")
-    lines += ["", "### Evidence (what the recording shows; \"in free motion\" is the same quantity over Interval_baseline)"]
-    for entry in episode["evidence"]:
+        lines.append(f"- {phase['id']} ({phase.get('kind', 'unspecified')}), {phase.get('interval', 'unknown')} = "
+                     f"[{_n(span.get('start_s'))}, {_n(span.get('end_s'))}] s: " + ", ".join(details) + ".")
+    lines += ["", "### Recorded path segments (anchors for a place: `segment`)"]
+    for segment in sorted(episode.get("segments", []), key=lambda item: item.get("order_back_from_fall", 0)):
+        if segment.get("interval") in reaction_intervals:
+            continue
+        span = intervals.get(segment.get("interval"), {})
+        if observed_at is not None and span.get("start_s") is not None and span["start_s"] >= observed_at:
+            continue
+        lines.append(f"- {segment['id']}: recorded path from {segment.get('from_xy', 'unknown')} to "
+                     f"{segment.get('to_xy', 'unknown')}, heading {_n(segment.get('heading_deg'))} deg, "
+                     f"mean speed {_n(segment.get('mean_speed_mps'))} m/s, during "
+                     f"{segment.get('interval', 'unknown')} = [{_n(span.get('start_s'))}, {_n(span.get('end_s'))}] s.")
+    lines += ["", "### Time intervals (anchors for a time: `interval`)"]
+    for interval_id, span in intervals.items():
+        if interval_id in reaction_intervals or span.get("is_system_reaction"):
+            continue
+        if observed_at is not None and span.get("start_s") is not None and span["start_s"] >= observed_at:
+            continue
+        lines.append(f"- {interval_id} = [{_n(span.get('start_s'))}, {_n(span.get('end_s'))}] s.")
+    lines += ["", "### Evidence (recorded measurements; baseline values refer to their recorded reference)"]
+    for entry in episode.get("evidence", []):
         if entry.get("is_system_reaction") or entry["property"] == "reaction_onset":
             continue
         lines.append(_evidence_line(entry, properties))
+    if any(entry.get("at_s", observed_at or 0) > (observed_at or 0)
+           for entry in episode.get("evidence", []) if not entry.get("is_system_reaction")
+           and entry.get("at_s") is not None):
+        lines.append("- Later observations describe state after the discrepancy; they are not earlier causes.")
+    if clock.get("episode_length_s") is not None:
+        lines.append(f"- Recording available through {_n(clock['episode_length_s'])} s. Lack of a later "
+                     "observation refers only to this recorded interval.")
     return "\n".join(lines)
 
 
-def _cost(mechanism_id: str, terms, catalog: InterventionCatalog) -> str:
-    """What a hypothesis of the mechanism takes from the budget, in words."""
-    unit = terms.mechanism.cost_in_simulations
-    if not terms.interventions or unit == 0:
-        return "none (not simulated)"
-    if mechanism_id == "obstacle_traversed":
-        if SCALED_DOME in catalog.interventions:
-            cost = catalog.interventions[SCALED_DOME].get("budget_cost", unit)
-            return f"a bump, {cost} simulations (its size is drawn over the whole range); a cable, {unit}"
-        return f"a bump, {len(bump_assets(catalog)) * unit} simulations (one per bump size); a cable, {unit}"
-    if mechanism_id == "wheel_failure":
-        return f"{unit} per side; side unknown, {len(WHEEL_SIDES['unknown']) * unit}"
-    return f"{unit} simulation" + ("s" if unit > 1 else "")
-
-
 def describe_mechanisms(tbox_path: str | Path = DEFAULT_TBOX, catalog: Optional[InterventionCatalog] = None,
-                        with_costs: bool = True) -> str:
-    """The closed list of mechanisms of the TBox, as the LLM reads it. The costs only matter with a
-    budget."""
+                        with_costs: bool = True, context: Optional[dict[str, Any]] = None) -> str:
+    """The active vocabulary, with role-bound descriptions and optional grounding costs."""
     catalog = catalog or InterventionCatalog.from_file(DEFAULT_CATALOG)
+    profiles = tuple(context["profile_ids"]) if context is not None else None
+    vocabulary = load_vocabulary(tbox_path, profiles)
     lines = ["## The mechanisms", "",
-             "The closed list of ways the bottle can fall. Use their ids. Their parameters are kinds only: how big, "
-             "how strong or how slippery is not chosen, because the memory simulates the whole range it can.", ""]
-    for mechanism_id, terms in load_vocabulary(tbox_path).items():
+             "These are candidate mechanisms declared applicable to the observed change by the ontology. "
+             "Their descriptions are hypotheses, not observations. Use their ids. Parameters are qualitative "
+             "kinds only; the memory supplies numerical magnitudes and simulation ranges.", ""]
+    if not vocabulary:
+        lines += ["No applicable mechanisms are declared for this change. Do not borrow mechanisms from "
+                  "a different case. An unlisted proposal is kept as `new` and is not simulated.", ""]
+    for mechanism_id, terms in vocabulary.items():
         mechanism = terms.mechanism
         parameters = "; ".join(f"{name}: {' | '.join(values)}" for name, values in terms.parameters.items()) or "none"
         if terms.interventions:
@@ -209,13 +228,18 @@ def describe_mechanisms(tbox_path: str | Path = DEFAULT_TBOX, catalog: Optional[
             simulable = "not yet: its simulation is experimental."
         else:
             simulable = "the nominal run, which replays the recorded setpoints, already reproduces it."
-        lines += [f"- {mechanism_id}: {terms.prompt_description}",
+        description = render_context_template(terms.prompt_description, context or {})
+        precondition = " ".join(render_context_template(c.comment, context or {})
+                                for c in mechanism.preconditions) or "none."
+        lines += [f"- {mechanism_id}: {description}",
                   f"  Anchors: {', '.join(mechanism.anchors) or 'none'}. Parameters: {parameters}.",
-                  f"  Precondition: {' '.join(c.comment for c in mechanism.preconditions) or 'none.'}",
+                  f"  Precondition: {precondition}",
                   f"  Leaves a trace on: {', '.join(terms.trace) or 'nothing the recording measures'}.",
-                  f"  Simulable: {simulable}" + (f" Cost: {_cost(mechanism_id, terms, catalog)}." if with_costs else "")]
+                  f"  Simulable: {simulable}" + (f" Cost: {simulation_cost_description(mechanism_id, terms, catalog)}."
+                                                 if with_costs else "")]
     lines.append(f"- {NEW_MECHANISM}: a mechanism that is not in this list. Describe it in new_mechanism_description; "
-                 "its anchors are optional. It is kept to extend the list, not simulated.")
+                 "its anchors are optional. It is recorded as unlisted and is not simulated; "
+                 "it does not modify the ontology.")
     return "\n".join(lines)
 
 
@@ -237,7 +261,10 @@ ANSWER_FORMAT = {"hypotheses": [{
 
 
 def build_prompt(episode: dict[str, Any], self_model: str, budget: Optional[int] = DEFAULT_BUDGET,
-                 tbox_path: str | Path = DEFAULT_TBOX) -> str:
+                 tbox_path: str | Path = DEFAULT_TBOX, *, trigger: Optional[dict[str, Any]] = None,
+                 context: Optional[dict[str, Any]] = None) -> str:
+    context = context if context is not None else build_explanation_context(
+        episode, Graph().parse(str(tbox_path), format="turtle"), trigger)
     if budget is None:
         simulated = ("Each one is checked against the recording, and every one that survives and can be simulated "
                      "is simulated;")
@@ -248,18 +275,22 @@ def build_prompt(episode: dict[str, Any], self_model: str, budget: Optional[int]
     task = [
         "## Your task",
         "",
-        "The bottle fell from the tray and the robot perceived no cause. Propose the mechanisms that could "
-        "explain the fall, as hypotheses written in symbols:",
+        f"Explain the observed discrepancy {context['observation_id']} described above. "
+        "Propose candidate mechanisms as hypotheses written in symbols:",
         "- each hypothesis names one mechanism id from the list (or `new`), the anchors that mechanism takes "
         "(segment and interval ids from the episode), and its qualitative parameters. Every parameter of the "
         "mechanism is required, with one of its listed values;",
         "- never write a number: no coordinates, times, fractions, forces nor probabilities. The memory turns "
         "the symbols into numbers;",
         "- read the evidence: a hypothesis should explain what the recording shows;",
+        "- distinguish observations, the robot's previous estimates and hypothetical physical events. "
+        "Do not turn a change in the robot's representation into an observed physical event;",
+        "- missing observations are unknown. Absence of redetection in a finite recording is not proof "
+        "of a physical displacement, and redetection alone does not establish continuous support;",
         f"- order the hypotheses from the most to the least plausible; propose at most {MAX_HYPOTHESES}. {simulated}",
         "- propose a mechanism that explains the evidence even if it cannot be simulated;",
-        "- the bottle leaving the tray is the effect, not a cause, and the robot's reaction after t_obs is not a "
-        "cause either.",
+        "- the observed discrepancy is what needs explanation, not a cause. System reactions after the "
+        "observation must not be used as earlier causes.",
         "",
         "Answer with exactly one JSON object and nothing else (no markdown, no prose), in this format:",
         json.dumps(ANSWER_FORMAT, indent=2),
@@ -267,9 +298,10 @@ def build_prompt(episode: dict[str, Any], self_model: str, budget: Optional[int]
     return "\n\n".join([
         "You explain anomalies of a mobile robot. You propose hypotheses; the robot's memory checks them "
         "against the recording and simulates the ones that survive.",
-        describe_episode(episode, tbox_path),
-        describe_mechanisms(tbox_path, with_costs=budget is not None),
-        "## The robot (its self-model)\n\n" + self_model,
+        describe_episode(episode, tbox_path, context=context),
+        describe_mechanisms(tbox_path, with_costs=budget is not None, context=context),
+        "## The robot (its self-model)\n\nThis supplied description specifies capabilities and prior model "
+        "information; it does not establish what occurred in this episode.\n\n" + self_model,
         "\n".join(task),
     ])
 
@@ -316,11 +348,15 @@ def generate_batch(episode: dict[str, Any], llm: LLM, *, model: str, output_dir:
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     case_id = case_id or f"generation_v2_{episode['episode_id']}_{stamp}"
-    prompt = build_prompt(episode, read_self_model(self_model_path), budget, tbox_path)
+    context = build_explanation_context(episode, Graph().parse(str(tbox_path), format="turtle"), trigger)
+    profiles = tuple(context["profile_ids"])
+    prompt = build_prompt(episode, read_self_model(self_model_path), budget, tbox_path, context=context)
     prompt_path = output_dir / f"{case_id}_prompt.md"
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
     metadata = {"case_id": case_id, "model": model, "prompt_path": _shown(prompt_path), "episode_path": episode_path,
-                "trigger": trigger, "tbox_path": tbox_path}
+                "trigger": trigger, "tbox_path": tbox_path,
+                "context_summary": {"explanation_context": context,
+                                    "mechanism_ids": list(load_vocabulary(tbox_path, profiles))}}
 
     messages = [{"role": "user", "content": prompt}]
     attempts: list[dict[str, Any]] = []
@@ -342,7 +378,8 @@ def generate_batch(episode: dict[str, Any], llm: LLM, *, model: str, output_dir:
         messages.append({"role": "assistant", "content": answer})
         try:
             proposal = _extract_json_object(answer)
-            batch = publish_batch(episode, proposal, arm=ARM, budget=budget, attempts=number, **metadata)
+            batch = publish_batch(episode, proposal, arm=ARM, budget=budget, attempts=number,
+                                  profiles=profiles, **metadata)
         except HypothesisSchemaError as error:
             problems = error.problems
         except ValueError as error:          # _extract_json_object: no JSON object in the answer

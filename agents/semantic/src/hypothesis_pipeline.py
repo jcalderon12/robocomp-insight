@@ -138,27 +138,31 @@ class MechanismTerms:
 
 
 @lru_cache(maxsize=4)
-def load_vocabulary(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, MechanismTerms]:
+def load_vocabulary(tbox_path: str | Path = DEFAULT_TBOX,
+                    profiles: Optional[tuple[str, ...]] = None) -> dict[str, MechanismTerms]:
     """The mechanisms of the TBox, by id, with their parameters, title and catalog intervention.
 
-    Raises if the TBox has other mechanisms than contract 2 lists, or if the values it admits for a
-    parameter are not the ones this module translates into numbers.
+    Active mechanisms are selected before validating their checks. Known executable mechanisms
+    must keep the parameter values the grounding supports; additional non-simulable mechanisms
+    can declare their qualitative parameters in the TBox.
     """
-    mechanisms = load_mechanisms(tbox_path)
-    if set(mechanisms) != set(MECHANISM_ORDER):
-        raise ValueError(f"the TBox mechanisms {sorted(mechanisms)} are not those of contract 2 {sorted(MECHANISM_ORDER)}")
+    mechanisms = load_mechanisms(tbox_path, profiles)
     graph = Graph().parse(str(tbox_path), format="turtle")
     vocabulary: dict[str, MechanismTerms] = {}
-    for mechanism_id in MECHANISM_ORDER:
+    order = {mechanism_id: index for index, mechanism_id in enumerate(MECHANISM_ORDER)}
+    for mechanism_id in sorted(mechanisms, key=lambda name: (order.get(name, len(order)), name)):
         mechanism = mechanisms[mechanism_id]
         node = URIRef(mechanism.iri)
         declared = {str(graph.value(p, INSIGHT.parameterName)): {str(v) for v in graph.objects(p, INSIGHT.allowedValue)}
                     for p in graph.objects(node, INSIGHT.admitsParameter)}
-        translated = PARAMETER_VALUES.get(mechanism_id, {})
+        translated = (PARAMETER_VALUES.get(mechanism_id, {}) if mechanism_id in MECHANISM_ORDER else
+                      {name: tuple(sorted(values)) for name, values in sorted(declared.items())})
         if declared != {name: set(values) for name, values in translated.items()}:
             raise ValueError(f"{mechanism_id}: the TBox admits {declared}, the grounding translates {translated}")
         catalog_ids = sorted(str(c) for i in graph.objects(node, INSIGHT.realizedBy)
                              for c in graph.objects(i, INSIGHT.catalogId))
+        if mechanism_id not in MECHANISM_ORDER and mechanism.realized_by:
+            raise ValueError(f"{mechanism_id}: no grounding implementation for its catalog realization")
         vocabulary[mechanism_id] = MechanismTerms(
             mechanism=mechanism, parameters=dict(translated),
             title_template=str(graph.value(node, INSIGHT.titleTemplate) or mechanism.label),
@@ -278,8 +282,10 @@ def _anchor_problems(hypothesis: dict[str, Any], terms: Optional[MechanismTerms]
             problems.append(f"{mechanism_id} admits no {kind} anchor, got {anchor}")
         elif anchor not in known:
             problems.append(f"{kind} {anchor} does not exist in the episode")
+        elif kind == "interval" and view.t_obs is None:
+            problems.append(f"{anchor}: the observation time is unknown, so causal timing cannot be checked")
         elif kind == "interval" and known[anchor][0] >= view.t_obs:
-            problems.append(f"{anchor} starts at {known[anchor][0]:g} s, after the fall (t_obs {view.t_obs:g} s)")
+            problems.append(f"{anchor} starts at {known[anchor][0]:g} s, at or after the observation (t_obs {view.t_obs:g} s)")
     return problems
 
 
@@ -513,6 +519,21 @@ def bump_assets(catalog: InterventionCatalog) -> list[str]:
     return [asset for asset in catalog.assets if asset.startswith(BUMP_ASSET_PREFIX)]
 
 
+def simulation_cost_description(mechanism_id: str, terms: MechanismTerms, catalog: InterventionCatalog) -> str:
+    """Describe the grounding's variant costs; the prompt renderer need not know physical primitives."""
+    unit = terms.mechanism.cost_in_simulations
+    if not terms.interventions or unit == 0:
+        return "none (not simulated)"
+    if mechanism_id == "obstacle_traversed":
+        if SCALED_DOME in catalog.interventions:
+            cost = catalog.interventions[SCALED_DOME].get("budget_cost", unit)
+            return f"a bump, {cost} simulations (its size is drawn over the whole range); a cable, {unit}"
+        return f"a bump, {len(bump_assets(catalog)) * unit} simulations (one per bump size); a cable, {unit}"
+    if mechanism_id == "wheel_failure":
+        return f"{unit} per side; side unknown, {len(WHEEL_SIDES['unknown']) * unit}"
+    return f"{unit} simulation" + ("s" if unit > 1 else "")
+
+
 def variants(hypothesis: dict[str, Any], catalog: InterventionCatalog) -> list[tuple[str, dict[str, str], str]]:
     """(id suffix, parameters, why it is split) of each compiled cause of a hypothesis: one per
     side for a wheel of unknown side; for a bump, one per bump asset when the catalog has no dome of
@@ -617,7 +638,10 @@ def process_hypothesis(hypothesis: dict[str, Any], rank: int, view: EpisodeView,
         # Every coherent hypothesis with a catalog realization is grounded, also when it is discarded
         # or over budget: the blueprint says what was not simulated. Only to_simulate is testable.
         if status != INCOHERENT and terms.interventions:
-            blueprint, trace, why_not = ground(mechanism_id, params, anchors, view, horizon_s, catalog)
+            if horizon_s <= 0:
+                blueprint, trace, why_not = None, {}, "No positive simulation horizon is recorded for this episode."
+            else:
+                blueprint, trace, why_not = ground(mechanism_id, params, anchors, view, horizon_s, catalog)
             entry["grounding_trace"].update(trace)
             if blueprint is not None:
                 entry["simulation_blueprint"] = blueprint
@@ -706,6 +730,7 @@ def error_batch(episode: dict[str, Any], errors: list[str], *, arm: str, budget:
 
 def publish_batch(episode: dict[str, Any], proposal: Any, *, arm: str, budget: Optional[int] = DEFAULT_BUDGET,
                   tbox_path: str | Path = DEFAULT_TBOX, catalog: Optional[InterventionCatalog] = None,
+                  profiles: Optional[tuple[str, ...]] = None,
                   **metadata: Any) -> dict[str, Any]:
     """The batch of layer 3b for a layer-3a proposal over the episode.
 
@@ -717,7 +742,7 @@ def publish_batch(episode: dict[str, Any], proposal: Any, *, arm: str, budget: O
         raise ValueError(f"arm must be one of {ARMS}, got '{arm}'")
     if budget is not None and budget < 0:
         raise ValueError("the budget k must be >= 0 (None: no budget)")
-    vocabulary = load_vocabulary(tbox_path)
+    vocabulary = load_vocabulary(tbox_path, profiles)
     catalog = catalog or InterventionCatalog.from_file(DEFAULT_CATALOG)
     # The fixed bump assets stand in for the dome of unknown size when the catalog lacks it.
     missing = {i for t in vocabulary.values() for i in t.interventions} - set(catalog.interventions) - {SCALED_DOME}
@@ -726,7 +751,8 @@ def publish_batch(episode: dict[str, Any], proposal: Any, *, arm: str, budget: O
     hypotheses = check_schema(proposal, vocabulary)
 
     view = EpisodeView(episode)
-    horizon_s = float(episode["time"]["simulation_horizon_s"])
+    horizon = (episode.get("time") or {}).get("simulation_horizon_s")
+    horizon_s = float(horizon) if horizon is not None else 0.0
     entries = [entry for rank, hypothesis in enumerate(hypotheses, start=1)
                for entry in process_hypothesis(hypothesis, rank, view, horizon_s, vocabulary, catalog)]
     used = apply_budget(entries, budget)
@@ -744,7 +770,8 @@ def publish_batch(episode: dict[str, Any], proposal: Any, *, arm: str, budget: O
 # --------------------------------------------------------------------------- #
 # The anchored enumeration (task B4), as layer 3a
 # --------------------------------------------------------------------------- #
-def anchored_enumeration(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, Any]:
+def anchored_enumeration(tbox_path: str | Path = DEFAULT_TBOX,
+                         profiles: Optional[tuple[str, ...]] = None) -> dict[str, Any]:
     """Every mechanism on the anchors of the fall (Segment_final, Interval_fall), with every value
     of its qualitative parameters, in the order of contract 2.
 
@@ -753,10 +780,9 @@ def anchored_enumeration(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, Any]
     is dropped, since `left` and `right` are the same two compiled causes. The magnitudes are not
     enumerated here: the grounding covers them.
     """
-    vocabulary = load_vocabulary(tbox_path)
+    vocabulary = load_vocabulary(tbox_path, profiles)
     hypotheses = []
-    for mechanism_id in MECHANISM_ORDER:
-        terms = vocabulary[mechanism_id]
+    for mechanism_id, terms in vocabulary.items():
         anchors = default_anchors(terms.mechanism)
         choices = {name: [v for v in values if not (name == "direction" and v != "any") and v != "unknown"]
                    for name, values in terms.parameters.items()}
