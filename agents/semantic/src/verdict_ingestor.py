@@ -19,7 +19,8 @@ from typing import Optional
 
 from rdflib import OWL, RDF, RDFS, Graph, Literal, URIRef
 
-from src.episode_rdf import DUL, INSIGHT as INSIGHT_TBOX, episode_namespace
+from src.case_rdf import hypothesis_iri, run_iri
+from src.episode_rdf import DUL, INSIGHT as INSIGHT_TBOX, SOMA, episode_namespace
 
 from src.ontology_mapping import (
     ANOMALY_CASE_CLASS,
@@ -129,17 +130,20 @@ def ingest_verdict(verdict_path: str | Path) -> VerdictIngestion:
     )
 
 
-def mechanism_graph(batch: dict, accepted_hypothesis_id: str) -> Optional[Graph]:
+def mechanism_graph(batch: dict, accepted_hypothesis_id: str, episode: Optional[dict] = None) -> Optional[Graph]:
     """The verified mechanism of an accepted hypothesis of a v2 batch, for the episode's named graph.
 
         ep:Cause_<id>  a insight:VerifiedCause ; rdfs:label <title from the mechanism> ;
                        insight:hypothesisId <id> ; dul:isDescribedBy <mechanism> ;
-                       dul:hasLocation ep:<segment> ; dul:hasTimeInterval ep:<interval> .
+                       dul:hasLocation ep:<segment> ; dul:hasTimeInterval ep:<interval> ;
+                       dul:hasSetting ep:Hypothesis_<id> ; insight:verifiedBy ep:Run_<id> .
         ep:Episode     dul:isSettingFor ep:Cause_<id> .
         insight:Case_<case_id>  insight:explainedBy  ep:Cause_<id> .
 
-    The title is the one written from the mechanism and its anchors, not the LLM's. None if the
-    batch is not a v2 one or does not hold the hypothesis.
+    With the episode, the cause also causes its accident (soma:causes): the bottle fell because of
+    it. The hypothesis and the run are those of case_rdf (contracts 1.8). The title is the one
+    written from the mechanism and its anchors, not the LLM's. None if the batch is not a v2 one or
+    does not hold the hypothesis.
     """
     if str(batch.get("schema_version")) != "2.0" or not batch.get("episode"):
         return None
@@ -162,6 +166,10 @@ def mechanism_graph(batch: dict, accepted_hypothesis_id: str) -> Optional[Graph]
         graph.add((cause, DUL.hasLocation, ep[anchors["segment"]]))
     if anchors.get("interval"):
         graph.add((cause, DUL.hasTimeInterval, ep[anchors["interval"]]))
+    graph.add((cause, DUL.hasSetting, hypothesis_iri(batch, accepted_hypothesis_id)))
+    graph.add((cause, INSIGHT_TBOX.verifiedBy, run_iri(batch, accepted_hypothesis_id)))
+    if episode is not None:
+        graph.add((cause, SOMA.causes, ep[episode["accident"]["id"]]))
     graph.add((ep.Episode, DUL.isSettingFor, cause))
     graph.add((INSIGHT[f"{CASE_PREFIX}{batch['case_id']}"], EXPLAINED_BY, cause))
     return graph

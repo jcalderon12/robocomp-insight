@@ -44,6 +44,9 @@ graphDB.Enabled = true
 graphDB.Endpoint = "http://localhost:7200"
 graphDB.Repository = "insight_prod"
 graphDB.NamedGraph = "urn:insight:semantic:live"
+# The INSIGHT TBox (agents/semantic/data/insight_tbox.ttl), loaded by the agent at start-up in a
+# graph of its own; each case's episode and decisions go to http://insight.local/episodes/<id>.
+graphDB.OntologyGraph = "http://insight.local/ontology"
 
 # --- Hypothesis generation ---
 hypothesisGenerator.Enabled = true

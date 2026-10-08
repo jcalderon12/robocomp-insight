@@ -1,0 +1,22 @@
+# CQ2. Which hypotheses did the LLM propose, and what did the memory decide about each one?
+# Reads: the decision trail (contracts 1.8) and the mechanisms of the TBox.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?id ?rank ?mechanism (GROUP_CONCAT(DISTINCT COALESCE(?anchor, ""); separator=", ") AS ?anchors)
+       (GROUP_CONCAT(DISTINCT COALESCE(?kind, ""); separator=", ") AS ?kinds) ?status WHERE {
+  ?h a insight:Hypothesis ; insight:hypothesisId ?id ; insight:rank ?rank ;
+     dul:isClassifiedBy ?s .
+  ?s insight:statusId ?status .
+  OPTIONAL { ?h dul:satisfies ?m . ?m insight:mechanismId ?mechanism }
+  OPTIONAL { ?h insight:anchoredTo ?a . ?a rdfs:label ?anchor }
+  OPTIONAL { ?h dul:isClassifiedBy ?k . ?k insight:kindValue ?value ; insight:ofParameter ?p .
+             ?p insight:parameterName ?name . BIND(CONCAT(?name, "=", ?value) AS ?kind) }
+}
+GROUP BY ?id ?rank ?mechanism ?status
+ORDER BY ?rank ?id

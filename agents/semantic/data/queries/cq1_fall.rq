@@ -1,0 +1,21 @@
+# CQ1. When and where did the bottle fall, and what was the robot doing then?
+# Reads: the episode (contract 1).
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT DISTINCT ?t_obs ?segment ?robot_x ?robot_y ?phase ?motion ?phase_start ?phase_end ?reaction WHERE {
+  ?episode a insight:Episode ; dul:isSettingFor ?fall , ?phase_iri .
+  ?fall a soma:Accident ; dul:hasParticipant inst:PhysicalObject_Bottle ; insight:timeS ?t_obs ;
+        dul:hasLocation ?segment_iri .
+  ?segment_iri rdfs:label ?segment ; dul:hasRegion ?region .
+  ?region insight:toX ?robot_x ; insight:toY ?robot_y .
+  ?phase_iri insight:motionKind ?motion ; rdfs:label ?phase ; dul:hasTimeInterval ?interval .
+  ?interval insight:startS ?phase_start ; insight:endS ?phase_end .
+  FILTER(?phase_start <= ?t_obs && ?t_obs <= ?phase_end)
+  OPTIONAL { ?reaction_iri soma:isReactionTo ?fall ; rdfs:label ?reaction }
+}

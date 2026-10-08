@@ -1,0 +1,26 @@
+# CQ3. Why was a hypothesis not simulated: which check decided, on which observation, with what value?
+# Reads: the decision trail and the episode's observations.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?id ?status ?check ?verdict ?property ?value ?comparison ?reason WHERE {
+  ?h a insight:Hypothesis ; insight:hypothesisId ?id ; dul:isClassifiedBy ?s .
+  ?s insight:statusId ?status .
+  FILTER(?status != "to_simulate")
+  OPTIONAL {
+    ?h insight:checkedBy ?c .
+    ?c insight:checkVerdict ?verdict .
+    FILTER(?verdict IN ("discards", "explains", "fails"))
+    OPTIONAL { ?c insight:appliesCheck ?rule . ?rule insight:ruleId ?check }
+    OPTIONAL { ?c rdfs:comment ?comparison }
+    OPTIONAL { ?c insight:readsObservation ?o . ?o sosa:observedProperty ?p ; sosa:hasSimpleResult ?value .
+               BIND(STRAFTER(STR(?p), "#") AS ?property) }
+  }
+  OPTIONAL { ?h insight:statusReason ?reason }
+}
+ORDER BY ?id ?property

@@ -1,0 +1,23 @@
+# CQ5. What caused the fall, where or when, and how was it verified against the nominal run?
+# Reads: the verified cause, its simulation run and the nominal one.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT DISTINCT ?cause ?mechanism ?anchor ?fall ?repetitions ?effect_rate ?mistimed ?median_error_s
+                ?nominal_repetitions ?nominal_effect_rate WHERE {
+  ?c a insight:VerifiedCause ; rdfs:label ?cause ; soma:causes ?f ; dul:isDescribedBy ?m ;
+     insight:verifiedBy ?run .
+  ?m a insight:Mechanism ; insight:mechanismId ?mechanism .
+  ?f a soma:Accident ; rdfs:label ?fall .
+  OPTIONAL { ?c dul:hasLocation ?where . ?where rdfs:label ?anchor }
+  OPTIONAL { ?c dul:hasTimeInterval ?when . ?when rdfs:label ?anchor }
+  ?run insight:repetitions ?repetitions ; insight:effectRate ?effect_rate .
+  OPTIONAL { ?run insight:mistimedEffects ?mistimed }
+  OPTIONAL { ?run insight:medianTimingErrorS ?median_error_s }
+  ?nominal insight:isNominal true ; insight:repetitions ?nominal_repetitions ; insight:effectRate ?nominal_effect_rate .
+}

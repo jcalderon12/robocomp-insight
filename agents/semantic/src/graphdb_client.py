@@ -32,6 +32,8 @@ class GraphDBConfig:
     timeout_seconds: float
     user: str = ""
     password: str = ""
+    # The INSIGHT TBox, in a named graph of its own: the reset of each case never touches it.
+    ontology_graph: str = "http://insight.local/ontology"
 
 
     @classmethod
@@ -44,7 +46,8 @@ class GraphDBConfig:
             named_graph=str(graphdb_cfg.get("NamedGraph", "urn:insight:semantic:live")).strip(),
             timeout_seconds=_as_float(graphdb_cfg.get("TimeoutSeconds"), 5.0),
             user=str(graphdb_cfg.get("User", "")).strip(),
-            password=str(graphdb_cfg.get("Password", "")).strip()
+            password=str(graphdb_cfg.get("Password", "")).strip(),
+            ontology_graph=str(graphdb_cfg.get("OntologyGraph", "http://insight.local/ontology")).strip(),
         )
     
 

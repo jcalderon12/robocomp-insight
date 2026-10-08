@@ -41,6 +41,8 @@ import json
 
 from src.ontology_mapping import DSRSemanticWrapper, UNEXPLAINED_INTENTION_NAME, FOLLOW_AFFORDANCE_NAME
 from src.episode_memory_reader import episode_from_memory, recording_to_explain
+from src.case_rdf import decision_graph, is_v2, simulation_graph
+from src.episode_contrast import DEFAULT_TBOX
 from src.episode_rdf import EPISODES, episode_graph, graph_iri
 from src.graphdb_client import GraphDBClient, GraphDBConfig
 from src.hypothesis_config import HypothesisGeneratorConfig
@@ -48,7 +50,7 @@ from src.hypothesis_context import build_hypothesis_generation_context, compact_
 from src.hypothesis_generator import generate_batch, ollama_chat
 from src.hypothesis_service import SemanticHypothesisService
 from src.live_causal_validator import LiveCausalValidator
-from src.verdict_ingestor import ingest_verdict, mechanism_graph
+from src.verdict_ingestor import ingest_verdict, load_verdict, mechanism_graph
 
 # DSR contract with the inner simulator (attributes of the intention node)
 HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
@@ -122,11 +124,14 @@ class SpecificWorker(GenericWorker):
             else None
         )
         self.current_batch = None
+        self.current_episode = None
         self._waiting_for_recording = False
         self._foreign_verdict_paths: set[str] = set()
+        self._ontology_loaded = False
 
         self.mapper.initialize_from_dsr(self.g)
         self._bootstrap_remote_state()
+        self._load_ontology()
         ##
 
         try:
@@ -277,23 +282,33 @@ class SpecificWorker(GenericWorker):
                 )
             return
 
-        if ingestion.triples:
-            mechanism = (mechanism_graph(self.current_batch, ingestion.accepted_hypothesis_id)
-                         if self.current_batch is not None else None)
-            if self.graphdb_client is not None:
-                if time.monotonic() < self._graphdb_retry_at:
-                    return
-                try:
+        # Generation v2: what the simulation made of each simulated hypothesis, and the verified
+        # cause, go to the episode's graph next to the decisions (contracts 1.8).
+        runs = mechanism = None
+        if is_v2(self.current_batch):
+            verdict = load_verdict(verdict_path)
+            runs = simulation_graph(self.current_batch, verdict, verdict_path) if verdict is not None else None
+            if ingestion.triples:
+                mechanism = mechanism_graph(self.current_batch, ingestion.accepted_hypothesis_id, self.current_episode)
+        if self.graphdb_client is not None and (ingestion.triples or runs is not None):
+            if time.monotonic() < self._graphdb_retry_at:
+                return
+            try:
+                if ingestion.triples:
                     self.graphdb_client.apply_delta(added=set(ingestion.triples), removed=set())
-                    if mechanism is not None:
-                        self.graphdb_client.add_to_graph(
-                            mechanism.serialize(format="turtle"),
-                            str(graph_iri(self.current_batch["episode"]["id"])),
-                        )
-                except Exception as exc:
-                    self._graphdb_retry_at = time.monotonic() + GRAPHDB_RETRY_SECONDS
-                    console.print(f"Could not consolidate causal triples in GraphDB: {exc}", style="red")
-                    return
+                for graph in (runs, mechanism):
+                    if graph is not None:
+                        self.graphdb_client.add_to_graph(graph.serialize(format="turtle"),
+                                                         str(graph_iri(self.current_batch["episode"]["id"])))
+            except Exception as exc:
+                self._graphdb_retry_at = time.monotonic() + GRAPHDB_RETRY_SECONDS
+                console.print(f"Could not consolidate the verdict in GraphDB: {exc}", style="red")
+                return
+        if runs is not None:
+            console.print(f"Simulation runs of case '{ingestion.case_id}' in the episode graph "
+                          f"({len(runs)} triples).", style="cyan")
+
+        if ingestion.triples:
             console.print(
                 f"Case '{ingestion.case_id}' explained by intervention "
                 f"'{ingestion.accepted_intervention}' ({len(ingestion.triples)} triples).",
@@ -331,6 +346,7 @@ class SpecificWorker(GenericWorker):
         self.trigger_added = frozenset()
         self.trigger_removed = frozenset()
         self.current_batch = None
+        self.current_episode = None
         self._waiting_for_recording = False
         self._foreign_verdict_paths = set()
         console.print("Unexplained cycle resolved and re-armed.", style="green")
@@ -434,6 +450,22 @@ class SpecificWorker(GenericWorker):
                 f"Could not bootstrap semantic snapshot from GraphDB: {e}",
                 style="yellow",
             )
+
+    def _load_ontology(self) -> None:
+        """Put the INSIGHT TBox in its own named graph of GraphDB, the one the pipeline reads from
+        disk, so that what the agent stores can be queried with its classes (and GraphDB infers
+        with them). Replaced as a whole, so the store always holds the TBox in use. If GraphDB is
+        not reachable, the next case tries again."""
+        if self.graphdb_client is None or self._ontology_loaded:
+            return
+        try:
+            self.graphdb_client.replace_graph(Path(DEFAULT_TBOX).read_text(encoding="utf-8"),
+                                              self.graphdb_config.ontology_graph)
+        except Exception as exc:
+            console.print(f"Could not load the INSIGHT TBox into GraphDB: {exc}", style="yellow")
+            return
+        self._ontology_loaded = True
+        console.print(f"INSIGHT TBox loaded into {self.graphdb_config.ontology_graph}.", style="cyan")
 
     def _arm_sync_timer(self) -> None:
         """Arm the coalescing timer. Runs on the main thread (QueuedConnection)."""
@@ -648,8 +680,10 @@ class SpecificWorker(GenericWorker):
             console.print(f"[Generation v2] No batch for '{recording}': {exc}", style="red")
             return
         self.current_batch = result.batch
+        self.current_episode = episode
         self.last_hypotheses_path = result.batch_path
         self.hypotheses_path_published = False
+        self._store_decisions(result.batch, episode, result.batch_path)
         to_simulate = sum(h["status"] == "to_simulate" for h in result.batch["hypotheses"])
         console.print(
             f"[Generation v2] Batch '{case_id}' ({result.batch['status']}) at {result.batch_path}: "
@@ -666,6 +700,7 @@ class SpecificWorker(GenericWorker):
         GraphDB from piling up one case per run."""
         if self.graphdb_client is None:
             return
+        self._load_ontology()
         with self._sync_lock:
             state = self.mapper.get_state()
             mirror = set(state.triples)
@@ -689,6 +724,16 @@ class SpecificWorker(GenericWorker):
                                               str(graph_iri(episode["episode_id"])))
         except Exception as exc:
             console.print(f"[Generation v2] Could not store the episode in GraphDB: {exc}", style="yellow")
+
+    def _store_decisions(self, batch: dict, episode: dict, batch_path) -> None:
+        """Keep what the memory decided about each hypothesis next to the episode (contracts 1.8)."""
+        if self.graphdb_client is None:
+            return
+        try:
+            self.graphdb_client.add_to_graph(decision_graph(batch, episode, str(batch_path)).serialize(format="turtle"),
+                                             str(graph_iri(episode["episode_id"])))
+        except Exception as exc:
+            console.print(f"[Generation v2] Could not store the decisions in GraphDB: {exc}", style="yellow")
 
     def _trigger_summary(self) -> dict:
         def listed(triples):

@@ -179,6 +179,10 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
         g.add((accident_iri, DUL.hasParticipant, ENTITY_IRIS[participant]))
     g.add((accident_iri, INSIGHT.ends, support_iri))
     g.add((accident_iri, RDFS.comment, Literal(f"Cause {accident['cause']}; observed as {accident['observed_as']}.")))
+    # What the system did after the fall is a reaction to it, never its cause.
+    for phase in episode["phases"]:
+        if phase.get("is_system_reaction"):
+            g.add((ep[phase["id"]], SOMA.isReactionTo, accident_iri))
 
     # Evidence: one observation per entry of the fixed list.
     for entry in episode["evidence"]:

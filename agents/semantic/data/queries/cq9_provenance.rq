@@ -1,0 +1,17 @@
+# CQ9. Where does the case come from: which recording, which LLM, which batch and which verdict?
+# Reads: the episode, the request to the LLM and the case.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT DISTINCT ?case ?recording ?model ?attempts ?batch ?verdict WHERE {
+  ?episode a insight:Episode ; insight:recordedIn ?recording ; dul:isSettingFor ?c .
+  ?c a inst:AnomalyCase ; rdfs:label ?case ; dul:isSettingFor ?g .
+  ?g a insight:HypothesisGeneration ; insight:llmModel ?model ; insight:llmAttempts ?attempts .
+  OPTIONAL { ?g insight:batchPath ?batch }
+  OPTIONAL { ?c insight:verdictPath ?verdict }
+}

@@ -395,7 +395,11 @@ def check_rdf_1229():
     reaction = {str(r[0]).split("#")[1] for r in merged.query(PREFIXES + """
         SELECT ?x WHERE { ?x insight:isSystemReaction true }""")}
     assert reaction == {"Phase_reaction", "Ev_reaction_braking"}, reaction
-    events = {str(r[0]).split("#")[1] for r in merged.query(PREFIXES + """
+    # The stop is a reaction to the fall, never its cause.
+    reacts_to = [tuple(str(x).split("#")[1] for x in row) for row in merged.query(PREFIXES + """
+        SELECT ?x ?fall WHERE { ?x soma:isReactionTo ?fall }""")]
+    assert reacts_to == [("Phase_reaction", "Accident_1")], reacts_to
+    events ={str(r[0]).split("#")[1] for r in merged.query(PREFIXES + """
         SELECT ?x WHERE { ?x a/rdfs:subClassOf* dul:Event . FILTER(STRSTARTS(STR(?x), "http://insight.local/episodes/")) }""")}
     assert {"Accident_1", "Support_bottle", "Phase_1", "Phase_reaction"} <= events, events
     # The tray is a component of the robot, and it is the one that supports the bottle.

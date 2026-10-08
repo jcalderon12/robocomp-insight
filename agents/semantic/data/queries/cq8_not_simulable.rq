@@ -1,0 +1,19 @@
+# CQ8. Which mechanisms can the inner simulator not reproduce, and why?
+# Reads: the TBox (realizations and their reasons).
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?mechanism ?why WHERE {
+  ?m a insight:Mechanism ; insight:mechanismId ?mechanism .
+  { ?m insight:notSimulableBecause ?why }
+  UNION
+  { ?m insight:realizedBy ?i . ?i insight:isExperimental true ; rdfs:comment ?comment .
+    BIND(STR(?comment) AS ?why)
+    FILTER NOT EXISTS { ?m insight:realizedBy ?j . ?j insight:isExperimental false } }
+}
+ORDER BY ?mechanism

@@ -118,6 +118,24 @@ def import_sosa(target: Graph, sosa: Graph, alignment: Graph) -> None:
         target.add(triple)
 
 
+def add_kinds(graph: Graph) -> None:
+    """One insight:Kind per allowed value of each qualitative parameter (contracts 1.8): the
+    concepts a hypothesis is classified by, so that the kinds the LLM chose are individuals of the
+    TBox and not strings. Named after the parameter and the value (Kind_shape_bump)."""
+    for parameter in set(graph.subjects(RDF.type, INSIGHT.QualitativeParameter)):
+        name = graph.value(parameter, INSIGHT.parameterName)
+        for value in graph.objects(parameter, INSIGHT.allowedValue):
+            kind = kind_iri(str(name), str(value))
+            graph.add((kind, RDF.type, INSIGHT.Kind))
+            graph.add((kind, RDFS.label, Literal(f"{name}: {value}", lang="en")))
+            graph.add((kind, INSIGHT.ofParameter, parameter))
+            graph.add((kind, INSIGHT.kindValue, Literal(str(value))))
+
+
+def kind_iri(parameter_name: str, value: str) -> URIRef:
+    return INSIGHT[f"Kind_{parameter_name}_{value}"]
+
+
 def drop_ontology_headers(graph: Graph) -> None:
     for ontology in list(graph.subjects(RDF.type, OWL.Ontology)):
         graph.remove((ontology, None, None))
@@ -172,6 +190,7 @@ def build() -> Graph:
     import_sosa(tbox, sosa, alignment)
 
     tbox.parse(layer_path, format="turtle")
+    add_kinds(tbox)
 
     tbox.add((ONTOLOGY_IRI, RDF.type, OWL.Ontology))
     tbox.add((ONTOLOGY_IRI, OWL.versionInfo, Literal(VERSION)))

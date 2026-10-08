@@ -1,0 +1,292 @@
+{
+ "schema_version": "1.2",
+ "case_id": "semantic_unexplained_20261007T080222Z",
+ "anomaly_window": {
+  "start_s": 10.492732302,
+  "end_s": 13.492732302,
+  "source": "imu_peak_near_observed_effect"
+ },
+ "observed_effect_time": 13.690983422,
+ "decision_rule": {
+  "margin": 0.15,
+  "score_tolerance": 0.05,
+  "effect_z_fraction": 0.5,
+  "initial_bottle_z": 780.9627370766042,
+  "max_landing_distance_mm": 3000.0,
+  "fall_span_s": [
+   10.690983422,
+   14.190983422
+  ],
+  "floor_tolerance_mm": 50.0,
+  "robot_z_range_mm": [
+   -100.0,
+   1000.0
+  ],
+  "ranking": "imu_score, then median |fall time - observed|, then id"
+ },
+ "nominal_best_score": 3.43352416419863,
+ "nominal_effect_warning": false,
+ "abstention_reason": null,
+ "hypotheses": [
+  {
+   "hypothesis_id": "__nominal__",
+   "title": "Nominal run (null hypothesis)",
+   "cause": {
+    "name": "none"
+   },
+   "repetitions": 10,
+   "invalid_repetitions": 0,
+   "invalid_reasons": [],
+   "implausible_effects": 0,
+   "mistimed_effects": 0,
+   "best_score": 3.43352416419863,
+   "best_effect_score": null,
+   "effect_rate": 0.0,
+   "median_timing_error_s": null,
+   "best_timing_error_s": null,
+   "best_repetition_index": 0,
+   "best_generated_instances": {},
+   "best_bottle_final_position": [
+    1093.2140500011162,
+    -455.5705736638346,
+    885.8828158577812
+   ],
+   "passes_rule": false,
+   "accepted": false
+  },
+  {
+   "hypothesis_id": "H01",
+   "title": "Push on the robot during the last 2 s before the fall",
+   "cause": {
+    "force_target": "robot",
+    "force_window_start": 0.7,
+    "force_window_end": 0.82,
+    "force_x_origin": -31.15,
+    "force_x_range": 233.546,
+    "force_y_origin": 274.6545,
+    "force_y_range": 450.69100000000003,
+    "force_z_origin": 0.0,
+    "force_z_range": 0.0,
+    "name": "external_force"
+   },
+   "repetitions": 10,
+   "invalid_repetitions": 0,
+   "invalid_reasons": [],
+   "implausible_effects": 0,
+   "mistimed_effects": 3,
+   "best_score": 3.2541449657165784,
+   "best_effect_score": null,
+   "effect_rate": 0.0,
+   "median_timing_error_s": null,
+   "best_timing_error_s": null,
+   "best_repetition_index": 2,
+   "best_generated_instances": {
+    "random_range_coordinates": [
+     [
+      -124.24720794690344,
+      439.0954771223689,
+      0.0
+     ]
+    ]
+   },
+   "best_bottle_final_position": [
+    -394.78011755046526,
+    570.3678745055878,
+    25.558754631347604
+   ],
+   "passes_rule": false,
+   "accepted": false
+  },
+  {
+   "hypothesis_id": "H02",
+   "title": "Undetected bump on the last 1 m of the path before the fall",
+   "cause": {
+    "mesh_file": "/home/javi/robocomp/components/robocomp-insight/etc/URDFs/bump/Bump_100x10cm.stl",
+    "mesh_dimensions_m": [
+     1.0,
+     1.0,
+     0.0994
+    ],
+    "area_x": [
+     -1.31,
+     0.376
+    ],
+    "area_y": [
+     -0.754,
+     0.041
+    ],
+    "diameter_range": [
+     0.1,
+     1.0
+    ],
+    "height_range": [
+     0.01,
+     0.1
+    ],
+    "bounds_x": [
+     -6.0,
+     3.0
+    ],
+    "bounds_y": [
+     -3.0,
+     3.0
+    ],
+    "num_of_repetitions": 36,
+    "seed": 0,
+    "name": "bump_scaled"
+   },
+   "repetitions": 36,
+   "invalid_repetitions": 0,
+   "invalid_reasons": [],
+   "implausible_effects": 0,
+   "mistimed_effects": 5,
+   "best_score": 3.2890804077904288,
+   "best_effect_score": 3.434981258954821,
+   "effect_rate": 0.19444444444444445,
+   "median_timing_error_s": 0.7121820190541772,
+   "best_timing_error_s": 0.060682951552452735,
+   "best_repetition_index": 26,
+   "best_generated_instances": {
+    "sample": {
+     "diameter_m": 0.531,
+     "height_m": 0.0268,
+     "x_m": -1.1517,
+     "y_m": -0.2595
+    }
+   },
+   "best_bottle_final_position": [
+    859.2485157824322,
+    -9.047485938139872,
+    24.486857839150133
+   ],
+   "passes_rule": true,
+   "accepted": true
+  },
+  {
+   "hypothesis_id": "H03_left",
+   "title": "Left drive wheel blocked during the last 2 s before the fall",
+   "cause": {
+    "wheel_wheel": "L",
+    "wheel_min": 0.7,
+    "wheel_max": 0.82,
+    "name": "wheel"
+   },
+   "repetitions": 10,
+   "invalid_repetitions": 0,
+   "invalid_reasons": [],
+   "implausible_effects": 0,
+   "mistimed_effects": 0,
+   "best_score": 3.4342338479565018,
+   "best_effect_score": null,
+   "effect_rate": 0.0,
+   "median_timing_error_s": null,
+   "best_timing_error_s": null,
+   "best_repetition_index": 2,
+   "best_generated_instances": {
+    "random_uniform_range": [
+     0.8005142749499045
+    ]
+   },
+   "best_bottle_final_position": [
+    652.0416505879591,
+    -308.0237775634143,
+    886.4557009042103
+   ],
+   "passes_rule": false,
+   "accepted": false
+  },
+  {
+   "hypothesis_id": "H03_right",
+   "title": "Right drive wheel blocked during the last 2 s before the fall",
+   "cause": {
+    "wheel_wheel": "R",
+    "wheel_min": 0.7,
+    "wheel_max": 0.82,
+    "name": "wheel"
+   },
+   "repetitions": 10,
+   "invalid_repetitions": 0,
+   "invalid_reasons": [],
+   "implausible_effects": 0,
+   "mistimed_effects": 0,
+   "best_score": 3.1336439022355718,
+   "best_effect_score": null,
+   "effect_rate": 0.0,
+   "median_timing_error_s": null,
+   "best_timing_error_s": null,
+   "best_repetition_index": 6,
+   "best_generated_instances": {
+    "random_uniform_range": [
+     0.7428013076666805
+    ]
+   },
+   "best_bottle_final_position": [
+    568.1096235393911,
+    -796.5832981827346,
+    885.9516095812762
+   ],
+   "passes_rule": false,
+   "accepted": false
+  },
+  {
+   "hypothesis_id": "H04",
+   "title": "Push on the bottle during the last 2 s before the fall",
+   "cause": {
+    "force_target": "bottle",
+    "force_window_start": 0.7,
+    "force_window_end": 0.82,
+    "force_x_origin": 0.0,
+    "force_x_range": 60.0,
+    "force_y_origin": 0.0,
+    "force_y_range": 60.0,
+    "force_z_origin": 0.0,
+    "force_z_range": 0.0,
+    "name": "external_force"
+   },
+   "repetitions": 10,
+   "invalid_repetitions": 9,
+   "invalid_reasons": [
+    "bottle ended below the floor"
+   ],
+   "implausible_effects": 0,
+   "mistimed_effects": 0,
+   "best_score": 3.4336090201524043,
+   "best_effect_score": null,
+   "effect_rate": 0.0,
+   "median_timing_error_s": null,
+   "best_timing_error_s": null,
+   "best_repetition_index": 0,
+   "best_generated_instances": {
+    "random_range_coordinates": [
+     [
+      -0.4889057517291775,
+      -0.2547712603179768,
+      0.0
+     ]
+    ]
+   },
+   "best_bottle_final_position": [
+    1077.72563146158,
+    -460.5447412134429,
+    887.3949359050137
+   ],
+   "passes_rule": false,
+   "accepted": false
+  }
+ ],
+ "skipped": [
+  {
+   "hypothesis_id": "H05",
+   "reason": "Discarded before simulating by person_within_reach: person_distance_min 3.269 > 1.5."
+  },
+  {
+   "hypothesis_id": "H06",
+   "reason": "Not simulable: Its realization (Intervention_override_setpoint) is experimental, only in experiments/: it enters the catalog if task B1 shows on 16/10 that it tips the bottle (contract decision 10)."
+  },
+  {
+   "hypothesis_id": "H07",
+   "reason": "Discarded before simulating by bottle_reacquired: bottle_reacquired: no."
+  }
+ ],
+ "accepted_hypothesis_id": "H02"
+}

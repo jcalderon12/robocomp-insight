@@ -1,0 +1,20 @@
+# CQ7. What did the inner simulation make of each simulated hypothesis?
+# Reads: the simulation runs, the nominal one included.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?hypothesis ?mechanism ?cause_name ?repetitions ?effect_rate ?mistimed ?passes_rule ?accepted WHERE {
+  ?r a insight:SimulationRun ; insight:isNominal ?nominal ; insight:causeName ?cause_name ;
+     insight:repetitions ?repetitions ; insight:effectRate ?effect_rate .
+  OPTIONAL { ?r insight:testsHypothesis ?h . ?h insight:hypothesisId ?hypothesis .
+             OPTIONAL { ?h dul:satisfies ?m . ?m insight:mechanismId ?mechanism } }
+  OPTIONAL { ?r insight:mistimedEffects ?mistimed }
+  OPTIONAL { ?r insight:passesRule ?passes_rule }
+  OPTIONAL { ?r insight:acceptedBySimulation ?accepted }
+}
+ORDER BY ?hypothesis

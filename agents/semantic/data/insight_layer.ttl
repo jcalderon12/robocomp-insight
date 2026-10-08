@@ -252,13 +252,12 @@ inst:Sensor_BottleTracker a sosa:Sensor ;
 insight:VerifiedCause a owl:Class ;
     rdfs:subClassOf dul:Event ;
     rdfs:label "verified cause"@en ;
-    rdfs:comment "The cause the inner simulation accepted for an anomaly case: a hypothesis of the published batch, described by its mechanism (dul:isDescribedBy) and located at its anchors in the episode (dul:hasLocation, dul:hasTimeInterval). The anomaly case is explained by it (inst:explainedBy)."@en .
+    rdfs:comment "The cause the inner simulation accepted for an anomaly case: the event of the accepted hypothesis (dul:hasSetting), described by its mechanism (dul:isDescribedBy), located at its anchors in the episode (dul:hasLocation, dul:hasTimeInterval), verified by a simulation run (insight:verifiedBy), and the cause of the accident (soma:causes). The anomaly case is explained by it (inst:explainedBy)."@en .
 
 insight:hypothesisId a owl:DatatypeProperty ;
-    rdfs:domain insight:VerifiedCause ;
     rdfs:range xsd:string ;
     rdfs:label "hypothesis id"@en ;
-    rdfs:comment "Id of the accepted hypothesis in the published batch (contract 3)."@en .
+    rdfs:comment "Id of a hypothesis in the published batch (contract 3), on the hypothesis and on the verified cause it became."@en .
 
 
 insight:Mechanism a owl:Class ;
@@ -668,3 +667,203 @@ insight:Mechanism_SuspensionFailure a insight:Mechanism ;
     insight:notSimulableBecause "The PyBullet URDF has no suspension." ;
     insight:costInSimulations 0 ;
     rdfs:seeAlso soma:HardwareDiagnosis .
+
+
+# --------------------------------------------------------------------------------------------- #
+# Contract 3 in the memory: the decision trail of a case and its verification (contracts 1.8)
+#
+# What the LLM proposed, what the memory decided about each hypothesis and with which check and
+# observation, and what the inner simulation made of what was simulated. It goes to the episode's
+# named graph, next to the episode, so that the semantic memory itself answers why each hypothesis
+# was kept or dropped.
+# --------------------------------------------------------------------------------------------- #
+
+insight:Hypothesis a owl:Class ;
+    rdfs:subClassOf dul:Situation ;
+    rdfs:label "hypothesis"@en ;
+    rdfs:comment "A candidate explanation of the accident of an episode, proposed by the LLM: the situation in which a mechanism of the TBox happened (dul:satisfies) at individuals of the episode (insight:anchoredTo), of the kinds the LLM chose (dul:isClassifiedBy an insight:Kind). The memory classifies it with its status (dul:isClassifiedBy an insight:HypothesisStatus) after the checks it applied (insight:checkedBy). One with no mechanism of the TBox carries insight:newMechanismDescription instead."@en .
+
+insight:HypothesisGeneration a owl:Class ;
+    rdfs:subClassOf dul:Action ;
+    rdfs:label "hypothesis generation"@en ;
+    rdfs:comment "The request to the LLM that proposed the hypotheses of a case: the model, the attempts it took and the batch it ended in."@en ;
+    rdfs:seeAlso soma:AbductiveReasoning .
+
+insight:Kind a owl:Class ;
+    rdfs:subClassOf dul:Concept ;
+    rdfs:label "kind"@en ;
+    rdfs:comment "One allowed value of a qualitative parameter (e.g. the shape 'bump' of an obstacle): what the LLM may choose in words. build_insight_tbox.py generates one per insight:allowedValue."@en .
+
+insight:HypothesisStatus a owl:Class ;
+    rdfs:subClassOf dul:Concept ;
+    rdfs:label "hypothesis status"@en ;
+    rdfs:comment "What the memory decided about a hypothesis before simulating (contract 3, section 4.3)."@en .
+
+insight:CheckOutcome a owl:Class ;
+    rdfs:subClassOf dul:Situation ;
+    rdfs:label "check outcome"@en ;
+    rdfs:comment "One episode check (a precondition or a contrast rule) applied to one hypothesis: the check (insight:appliesCheck), the observations of the episode it read (insight:readsObservation), its verdict (insight:checkVerdict) and the comparison with its numbers (rdfs:comment)."@en .
+
+insight:SimulationRun a owl:Class ;
+    rdfs:subClassOf dul:Action ;
+    rdfs:label "simulation run"@en ;
+    rdfs:comment "The repetitions the inner simulator ran of the compiled cause of one hypothesis, or of the nominal replay, and what its verdict made of them."@en ;
+    rdfs:seeAlso soma:Simulating , soma:Simulation_Reasoner .
+
+insight:SampledValue a owl:Class ;
+    rdfs:subClassOf dul:Region ;
+    rdfs:label "sampled value"@en ;
+    rdfs:comment "A value the simulator drew in the best repetition of a run (e.g. the diameter of the dome): a magnitude the LLM does not choose, which the memory leaves open over the catalog's range and the simulation samples. dul:hasDataValue holds the number and insight:quantityName what it measures."@en .
+
+
+insight:proposedIn a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:associatedWith ;
+    rdfs:domain insight:Hypothesis ;
+    rdfs:range insight:HypothesisGeneration ;
+    rdfs:label "proposed in"@en .
+
+insight:anchoredTo a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:isSettingFor ;
+    rdfs:domain insight:Hypothesis ;
+    rdfs:label "anchored to"@en ;
+    rdfs:comment "An individual of the episode the hypothesis names: a path segment or a time interval. The grounding turns it into the numbers the simulator needs."@en .
+
+insight:ofParameter a owl:ObjectProperty ;
+    rdfs:domain insight:Kind ;
+    rdfs:range insight:QualitativeParameter ;
+    rdfs:label "of parameter"@en .
+
+insight:checkedBy a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:hasSetting ;
+    rdfs:domain insight:Hypothesis ;
+    rdfs:range insight:CheckOutcome ;
+    rdfs:label "checked by"@en .
+
+insight:appliesCheck a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:satisfies ;
+    rdfs:domain insight:CheckOutcome ;
+    rdfs:range insight:EpisodeCheck ;
+    rdfs:label "applies check"@en ;
+    rdfs:comment "The check whose description frames this outcome; its verdict says what it concluded."@en .
+
+insight:readsObservation a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:isSettingFor ;
+    rdfs:domain insight:CheckOutcome ;
+    rdfs:range sosa:Observation ;
+    rdfs:label "reads observation"@en .
+
+insight:testsHypothesis a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:associatedWith ;
+    rdfs:domain insight:SimulationRun ;
+    rdfs:range insight:Hypothesis ;
+    rdfs:label "tests hypothesis"@en .
+
+insight:verifiedBy a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:associatedWith ;
+    rdfs:domain insight:VerifiedCause ;
+    rdfs:range insight:SimulationRun ;
+    rdfs:label "verified by"@en .
+
+
+insight:llmModel a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisGeneration ; rdfs:range xsd:string ; rdfs:label "LLM model"@en .
+
+insight:llmAttempts a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisGeneration ; rdfs:range xsd:nonNegativeInteger ; rdfs:label "LLM attempts"@en ;
+    rdfs:comment "Requests to the LLM until a list passed the schema, or all of them if none did."@en .
+
+insight:batchStatus a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisGeneration ; rdfs:range xsd:string ; rdfs:label "batch status"@en ;
+    rdfs:comment "success, or error when no attempt passed the schema: the batch then has no hypotheses."@en .
+
+insight:batchPath a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisGeneration ; rdfs:range xsd:anyURI ; rdfs:label "batch path"@en ;
+    rdfs:comment "The published batch (contract 3b) the hypotheses come from."@en .
+
+insight:rank a owl:DatatypeProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range xsd:positiveInteger ; rdfs:label "rank"@en ;
+    rdfs:comment "Position in the LLM's list, its order of plausibility."@en .
+
+insight:llmRationale a owl:DatatypeProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range xsd:string ; rdfs:label "LLM rationale"@en ;
+    rdfs:comment "Why the LLM proposed it, in its words. Kept as provenance: no check reads it."@en .
+
+insight:statusReason a owl:DatatypeProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range xsd:string ; rdfs:label "status reason"@en ;
+    rdfs:comment "Why the hypothesis is not simulated, in words (the batch's untestable_reason): the check that discarded it, or why it has no realization here."@en .
+
+insight:newMechanismDescription a owl:DatatypeProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range xsd:string ; rdfs:label "new mechanism description"@en ;
+    rdfs:comment "The LLM's description of a mechanism the TBox does not have ('new')."@en .
+
+insight:kindValue a owl:DatatypeProperty ;
+    rdfs:domain insight:Kind ; rdfs:range xsd:string ; rdfs:label "kind value"@en .
+
+insight:statusId a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisStatus ; rdfs:range xsd:string ; rdfs:label "status id"@en ;
+    rdfs:comment "The status as written in the published batch."@en .
+
+insight:checkVerdict a owl:DatatypeProperty ;
+    rdfs:domain insight:CheckOutcome ; rdfs:range xsd:string ; rdfs:label "check verdict"@en ;
+    rdfs:comment "holds or fails (a precondition); discards or survives (a rule that discards); explains (a rule that explains or discards); trace_seen or no_trace (a rule that informs); undetermined; not_applicable."@en .
+
+insight:isNominal a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:boolean ; rdfs:label "is nominal"@en ;
+    rdfs:comment "True for the replay of the recorded setpoints without any cause: the null hypothesis, always simulated."@en .
+
+insight:causeName a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:string ; rdfs:label "cause name"@en ;
+    rdfs:comment "The compiled cause the simulator ran (e.g. bump_scaled, external_force; none for the nominal)."@en .
+
+insight:repetitions a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:nonNegativeInteger ; rdfs:label "repetitions"@en .
+
+insight:effectRate a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:decimal ; rdfs:label "effect rate"@en ;
+    rdfs:comment "Fraction of the repetitions in which the bottle falls when the recording saw it fall (within the verdict's span around t_obs)."@en .
+
+insight:mistimedEffects a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:nonNegativeInteger ; rdfs:label "mistimed effects"@en ;
+    rdfs:comment "Repetitions in which the bottle falls, but outside that span: they do not count."@en .
+
+insight:medianTimingErrorS a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:decimal ; rdfs:label "median timing error (s)"@en ;
+    rdfs:comment "Median |simulated fall - t_obs| over the repetitions that reproduce the effect."@en .
+
+insight:passesRule a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:boolean ; rdfs:label "passes rule"@en ;
+    rdfs:comment "Whether the run passes the verdict's decision rule (it reproduces the effect better than the nominal)."@en .
+
+insight:acceptedBySimulation a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:boolean ; rdfs:label "accepted by simulation"@en ;
+    rdfs:comment "True for the one run whose hypothesis the verdict accepted."@en .
+
+insight:quantityName a owl:DatatypeProperty ;
+    rdfs:domain insight:SampledValue ; rdfs:range xsd:string ; rdfs:label "quantity name"@en ;
+    rdfs:comment "What a sampled value measures, as the simulator names it (e.g. diameter_m, height_m, x_m, force_x_n)."@en .
+
+insight:abstentionReason a owl:DatatypeProperty ;
+    rdfs:domain inst:AnomalyCase ; rdfs:range xsd:string ; rdfs:label "abstention reason"@en ;
+    rdfs:comment "Why the verdict accepted no hypothesis (e.g. the nominal run already reproduces the effect)."@en .
+
+insight:verdictPath a owl:DatatypeProperty ;
+    rdfs:domain inst:AnomalyCase ; rdfs:range xsd:anyURI ; rdfs:label "verdict path"@en ;
+    rdfs:comment "The inner simulator's verdict on the case."@en .
+
+
+# The memory's decisions (contract 3, section 4.3).
+
+insight:Status_to_simulate a insight:HypothesisStatus ; insight:statusId "to_simulate" ;
+    rdfs:comment "Passes coherence and contrast, has a realization and fits the budget: it is simulated."@en .
+insight:Status_over_budget a insight:HypothesisStatus ; insight:statusId "over_budget" ;
+    rdfs:comment "As to_simulate, but the budget ran out (only with a budget k)."@en .
+insight:Status_discarded a insight:HypothesisStatus ; insight:statusId "discarded" ;
+    rdfs:comment "A contrast rule finds the recording contradicts it."@en .
+insight:Status_explained_by_memory a insight:HypothesisStatus ; insight:statusId "explained_by_memory" ;
+    rdfs:comment "The recording already explains it (a commanded brake); the nominal run, always simulated, must reproduce the effect."@en .
+insight:Status_checked_not_simulable a insight:HypothesisStatus ; insight:statusId "checked_not_simulable" ;
+    rdfs:comment "Survives the contrast, but is not physical: what could be checked was checked against the recording."@en .
+insight:Status_not_simulable a insight:HypothesisStatus ; insight:statusId "not_simulable" ;
+    rdfs:comment "No realization here (no suspension in the URDF, an experimental intervention, a cable parallel to the path) or a 'new' mechanism."@en .
+insight:Status_incoherent a insight:HypothesisStatus ; insight:statusId "incoherent" ;
+    rdfs:comment "An anchor that does not exist in the episode, or a precondition that fails."@en .
