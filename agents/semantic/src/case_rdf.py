@@ -1,9 +1,9 @@
 """The case in RDF: what the memory decided about each hypothesis, and what the simulation made of it
-(contracts 1.8).
+(contracts 1.11).
 
 Both graphs go to the episode's named graph, next to the episode (episode_rdf.py), so that the
 semantic memory answers by itself which hypotheses the LLM proposed, why each was kept or dropped,
-and how the accepted one was verified:
+and which explanation the simulator supported:
 
   * decision_graph(batch, episode), when the batch is published: the anomaly case, the request to
     the LLM, and each hypothesis with its mechanism, anchors, kinds, status and the checks applied
@@ -11,7 +11,7 @@ and how the accepted one was verified:
   * simulation_graph(batch, verdict), when the verdict on that batch arrives: one simulation run
     per simulated cause and one for the nominal replay, with what the verdict made of them.
 
-The verified cause itself is verdict_ingestor.mechanism_graph. The vocabulary is the INSIGHT TBox;
+The supported explanation is verdict_ingestor.mechanism_graph. The vocabulary is the INSIGHT TBox;
 nothing here changes the batch, the verdict or what the live graph receives.
 """
 
@@ -25,7 +25,7 @@ from typing import Any, Optional
 from rdflib import OWL, RDF, RDFS, XSD, Graph, Literal, URIRef
 
 from src.episode_contrast import DEFAULT_TBOX
-from src.episode_rdf import DUL, INSIGHT, INST, episode_namespace
+from src.episode_rdf import DUL, INSIGHT, INST, episode_namespace, observation_iri
 
 NOMINAL_ID = "__nominal__"
 CASE_PREFIX = "Case_"
@@ -81,7 +81,7 @@ def _individual(graph: Graph, iri: URIRef, rdf_type: URIRef, label: str) -> URIR
 
 def _observations_by_property(episode: dict) -> dict[str, str]:
     """property -> id of its observation in the episode; the system reaction is left out (no check reads it)."""
-    return {entry["property"]: entry["id"] for entry in episode["evidence"] if not entry.get("is_system_reaction")}
+    return {entry["property"]: entry["id"] for entry in episode.get("evidence", []) if not entry.get("is_system_reaction")}
 
 
 def is_v2(batch: Optional[dict]) -> bool:
@@ -97,10 +97,10 @@ def decision_graph(batch: dict, episode: dict, batch_path: Optional[str] = None,
     ep = episode_namespace(batch["episode"]["id"])
     graph = _new_graph(batch)
     observations = _observations_by_property(episode)
-    anchors_in_episode = {entry["id"] for entry in episode["segments"] + episode["intervals"]}
+    anchors_in_episode = {entry["id"] for entry in episode.get("segments", []) + episode.get("intervals", [])}
 
     case = _individual(graph, case_iri(batch["case_id"]), INST.AnomalyCase, batch["case_id"])
-    graph.add((case, INST.concernsEvent, ep[episode["accident"]["id"]]))
+    graph.add((case, INST.concernsEvent, observation_iri(episode)))
     graph.add((ep.Episode, DUL.isSettingFor, case))
 
     generation = _individual(graph, ep.Generation, INSIGHT.HypothesisGeneration, "hypothesis generation")

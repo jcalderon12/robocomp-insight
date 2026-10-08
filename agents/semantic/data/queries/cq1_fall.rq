@@ -1,5 +1,5 @@
-# CQ1. When and where did the bottle fall, and what was the robot doing then?
-# Reads: the episode (contract 1).
+# CQ1. Which representation change was observed, when, and at which robot pose? What support was estimated?
+# Reads: the observed anomaly and support estimate. The legacy filename is retained.
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
@@ -8,14 +8,27 @@ PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX insight: <http://insight.local/ontology#>
 PREFIX inst: <http://insight.local/instances#>
 
-SELECT DISTINCT ?t_obs ?segment ?robot_x ?robot_y ?phase ?motion ?phase_start ?phase_end ?reaction WHERE {
-  ?episode a insight:Episode ; dul:isSettingFor ?fall , ?phase_iri .
-  ?fall a soma:Accident ; dul:hasParticipant inst:PhysicalObject_Bottle ; insight:timeS ?t_obs ;
-        dul:hasLocation ?segment_iri .
-  ?segment_iri rdfs:label ?segment ; dul:hasRegion ?region .
-  ?region insight:toX ?robot_x ; insight:toY ?robot_y .
-  ?phase_iri insight:motionKind ?motion ; rdfs:label ?phase ; dul:hasTimeInterval ?interval .
-  ?interval insight:startS ?phase_start ; insight:endS ?phase_end .
-  FILTER(?phase_start <= ?t_obs && ?t_obs <= ?phase_end)
-  OPTIONAL { ?reaction_iri soma:isReactionTo ?fall ; rdfs:label ?reaction }
+SELECT DISTINCT ?observation ?t_obs ?affected_entity ?segment ?robot_x ?robot_y ?phase ?motion
+                ?phase_start ?phase_end ?reaction ?estimate ?supporter ?supported ?estimate_start ?estimate_end WHERE {
+  ?episode a insight:Episode ; dul:isSettingFor ?observed .
+  ?observed a insight:ObservedAnomaly ; rdfs:label ?observation .
+  OPTIONAL { ?observed insight:timeS ?t_obs }
+  OPTIONAL { ?observed insight:affectedEntity ?affected_entity }
+  OPTIONAL { ?observed insight:observedAtSegment ?segment_iri . ?segment_iri rdfs:label ?segment }
+  OPTIONAL { ?observed insight:observerX ?robot_x ; insight:observerY ?robot_y }
+  OPTIONAL {
+    ?episode dul:isSettingFor ?phase_iri .
+    ?phase_iri insight:motionKind ?motion ; rdfs:label ?phase ; dul:hasTimeInterval ?interval .
+    ?interval insight:startS ?phase_start ; insight:endS ?phase_end .
+    FILTER(BOUND(?t_obs) && ?phase_start <= ?t_obs && ?t_obs <= ?phase_end)
+  }
+  OPTIONAL { ?reaction_iri soma:isReactionTo ?observed ; rdfs:label ?reaction }
+  OPTIONAL {
+    ?observed insight:invalidatesEstimate ?estimate_iri .
+    ?estimate_iri a insight:SupportEstimate ; rdfs:label ?estimate .
+    OPTIONAL { ?estimate_iri insight:estimatedSupporter ?supporter }
+    OPTIONAL { ?estimate_iri insight:estimatedSupportedObject ?supported }
+    OPTIONAL { ?estimate_iri insight:estimateValidDuring ?estimate_interval .
+               ?estimate_interval insight:startS ?estimate_start ; insight:endS ?estimate_end }
+  }
 }

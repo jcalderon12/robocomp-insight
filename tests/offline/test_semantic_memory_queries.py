@@ -9,7 +9,7 @@ docs_output/resultados/20_memoria_en_graphdb/CRITERIO.md:
   * every hypothesis is there with the batch's status; the discarded ones with the check and the
     observation that decided them (H05: person_within_reach on person_distance_min = 3.269; H07:
     bottle_reacquired), and H06 with why it is not simulable;
-  * H02 (obstacle_traversed on Segment_final) caused Accident_1, with 7 of 36 repetitions at the
+  * H02 (obstacle_traversed on Segment_final) supports an explanation of the observed anomaly, with 7 of 36 repetitions at the
     right time, and the nominal run reproduced it in 0 of 10;
   * the episode's graph only uses TBox terms, and HermiT finds the TBox plus the whole case
     consistent (if owlready2 is installed).
@@ -75,6 +75,8 @@ def check_answers(episode, batch, verdict, dataset):
     assert len(fall) == 1, fall
     assert (fall[0]["t_obs"], fall[0]["segment"], fall[0]["phase"], fall[0]["motion"], fall[0]["reaction"]) == (
         episode["accident"]["time_s"], "Segment_final", "Phase_2", "advance_straight", "Phase_reaction"), fall
+    assert fall[0]["observation"] == "Accident_1" and fall[0]["estimate"] == "Support_bottle", fall
+    assert (fall[0]["estimate_start"], fall[0]["estimate_end"]) == (0.0, 13.691), fall
 
     proposals = {row["id"]: row for row in got["cq2_proposals"]}
     assert {i: row["status"] for i, row in proposals.items()} == {
@@ -100,7 +102,8 @@ def check_answers(episode, batch, verdict, dataset):
     cause = got["cq5_cause"]
     assert len(cause) == 1, cause
     cause = cause[0]
-    assert (cause["mechanism"], cause["anchor"], cause["fall"]) == ("obstacle_traversed", "Segment_final", "Accident_1")
+    assert (cause["mechanism"], cause["anchor"], cause["observation"]) == ("obstacle_traversed", "Segment_final", "Accident_1")
+    assert cause["hypothesis"] == "H02" and cause["unresolved_alternatives"] == "H06", cause
     assert cause["repetitions"] == 36 and round(cause["effect_rate"] * 36) == 7 and cause["mistimed"] == 5, cause
     assert (cause["nominal_repetitions"], cause["nominal_effect_rate"]) == (10, 0.0), cause
 
@@ -155,7 +158,7 @@ def check_consistency_if_possible(episode, batch, verdict, dataset):
             owlready2.sync_reasoner_hermit(world, infer_property_values=False, debug=0)
         unsatisfiable = list(world.inconsistent_classes())
     assert not unsatisfiable, unsatisfiable
-    print("  HermiT: the TBox plus the whole case (episode, decisions, runs, cause) is consistent")
+    print("  HermiT: the TBox plus the whole case (episode, decisions, runs, explanation) is consistent")
 
 
 def check_current_perception_failure_stays_unresolved(episode, historical_batch, verdict, dataset):

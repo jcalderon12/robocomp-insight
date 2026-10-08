@@ -1,4 +1,4 @@
-"""The competency questions of the semantic memory (contracts 1.8), and the case as GraphDB keeps it.
+"""The competency questions of the semantic memory (contracts 1.11), and its current RDF case model.
 
 Each question is a SPARQL file in agents/semantic/data/queries/ whose first comment line states it.
 They are written to give the same rows with and without inference (classes are matched on what the

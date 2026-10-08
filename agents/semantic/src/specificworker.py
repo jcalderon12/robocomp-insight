@@ -282,8 +282,8 @@ class SpecificWorker(GenericWorker):
                 )
             return
 
-        # Generation v2: what the simulation made of each simulated hypothesis, and the verified
-        # cause, go to the episode's graph next to the decisions (contracts 1.8).
+        # The simulation results and supported explanation go next to the decisions. Selecting
+        # an explanation does not assert a physical cause (contracts 1.11).
         runs = mechanism = None
         if is_v2(self.current_batch):
             verdict = load_verdict(verdict_path)
@@ -318,7 +318,7 @@ class SpecificWorker(GenericWorker):
                 accepted = next(h for h in self.current_batch["hypotheses"]
                                 if h["hypothesis_id"] == ingestion.accepted_hypothesis_id)
                 console.print(
-                    f"Verified mechanism '{accepted['mechanism']}': {accepted['title']} "
+                    f"Simulation-supported explanation '{accepted['mechanism']}': {accepted['title']} "
                     f"({len(mechanism)} triples in the episode graph).",
                     style="green",
                 )

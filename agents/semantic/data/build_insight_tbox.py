@@ -33,7 +33,7 @@ INST = Namespace("http://insight.local/instances#")
 OCRA = Namespace("http://www.iri.upc.edu/groups/perception/OCRA/ont/ocra.owl#")
 
 ONTOLOGY_IRI = URIRef("http://insight.local/ontology")
-VERSION = "0.1"
+VERSION = "0.2"
 
 # Design section 3.1, plus soma:State, which contract 1 needs for the support of the bottle
 # (soma:SupportState is a concept that classifies states, not a state), and soma:DesignedComponent,

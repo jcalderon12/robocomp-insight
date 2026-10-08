@@ -4,10 +4,10 @@
     insight:Case_<case_id>  insight:concernsEvent  insight:Event_BottleLocationChange
     insight:Case_<case_id>  insight:explainedBy    insight:Event_<Intervention>
 
-With the generation v2 (contract 3), the verified mechanism is consolidated too, in the named
-graph of the episode (mechanism_graph): the accepted hypothesis, found in the semantic agent's own
-batch, becomes a verified cause described by its mechanism and located at its anchors. The triples
-above stay as they were: other consumers read them.
+With generation v2, the episode graph records a simulation-supported explanation linking the
+selected hypothesis, the simulation run and the observed representation change. It does not
+instantiate a physical causal event or assert soma:causes. Legacy live-graph identifiers and
+links stay available; their types now distinguish representation changes from explanations.
 """
 
 from __future__ import annotations
@@ -20,14 +20,13 @@ from typing import Optional
 from rdflib import OWL, RDF, RDFS, Graph, Literal, URIRef
 
 from src.case_rdf import hypothesis_iri, run_iri
-from src.episode_rdf import DUL, INSIGHT as INSIGHT_TBOX, SOMA, episode_namespace
+from src.episode_rdf import DUL, INSIGHT as INSIGHT_TBOX, episode_namespace, observation_iri
 
 from src.ontology_mapping import (
     ANOMALY_CASE_CLASS,
     CASE_PREFIX,
     CONCERNS_EVENT,
     EVENT_BOTTLE_LOCATION_CHANGE,
-    EVENT_CLASS,
     EXPLAINED_BY,
     INSIGHT,
     INTERVENTION_EVENT_PREFIX,
@@ -59,8 +58,8 @@ def build_case_triples(cause_name: str, case_id: str) -> set[Triple]:
         (case_iri, str(RDF.type), str(ANOMALY_CASE_CLASS)),
         (case_iri, str(CONCERNS_EVENT), effect_iri),
         (case_iri, str(EXPLAINED_BY), event_iri),
-        (event_iri, str(RDF.type), str(EVENT_CLASS)),
-        (effect_iri, str(RDF.type), str(EVENT_CLASS)),
+        (event_iri, str(RDF.type), str(INSIGHT_TBOX.SimulationSupportedExplanation)),
+        (effect_iri, str(RDF.type), str(INSIGHT_TBOX.ObservedAnomaly)),
     }
 
 
@@ -131,45 +130,38 @@ def ingest_verdict(verdict_path: str | Path) -> VerdictIngestion:
 
 
 def mechanism_graph(batch: dict, accepted_hypothesis_id: str, episode: Optional[dict] = None) -> Optional[Graph]:
-    """The verified mechanism of an accepted hypothesis of a v2 batch, for the episode's named graph.
+    """A simulation-supported explanation of a v2 case, never an asserted physical cause.
 
-        ep:Cause_<id>  a insight:VerifiedCause ; rdfs:label <title from the mechanism> ;
-                       insight:hypothesisId <id> ; dul:isDescribedBy <mechanism> ;
-                       dul:hasLocation ep:<segment> ; dul:hasTimeInterval ep:<interval> ;
-                       dul:hasSetting ep:Hypothesis_<id> ; insight:verifiedBy ep:Run_<id> .
-        ep:Episode     dul:isSettingFor ep:Cause_<id> .
-        insight:Case_<case_id>  insight:explainedBy  ep:Cause_<id> .
-
-    With the episode, the cause also causes its accident (soma:causes): the bottle fell because of
-    it. The hypothesis and the run are those of case_rdf (contracts 1.8). The title is the one
-    written from the mechanism and its anchors, not the LLM's. None if the batch is not a v2 one or
-    does not hold the hypothesis.
+    The description selects the hypothesis (whose anchors remain hypothetical), links its run
+    and explains the recorded anomaly. Non-simulable alternatives remain explicitly unresolved.
+    None for an unknown or non-simulated hypothesis, or a batch without a v2 episode.
     """
     if str(batch.get("schema_version")) != "2.0" or not batch.get("episode"):
         return None
     hypothesis = next((h for h in batch.get("hypotheses", []) if h.get("hypothesis_id") == accepted_hypothesis_id), None)
-    if hypothesis is None or not hypothesis.get("mechanism_iri"):
+    if hypothesis is None or not hypothesis.get("mechanism_iri") or hypothesis.get("status") != "to_simulate":
         return None
     ep = episode_namespace(batch["episode"]["id"])
-    cause = ep[f"Cause_{accepted_hypothesis_id}"]
+    explanation = ep[f"Explanation_{accepted_hypothesis_id}"]
     graph = Graph()
     graph.bind("ep", ep)
     graph.bind("dul", DUL)
     graph.bind("insight", INSIGHT_TBOX)
-    graph.add((cause, RDF.type, OWL.NamedIndividual))
-    graph.add((cause, RDF.type, INSIGHT_TBOX.VerifiedCause))
-    graph.add((cause, RDFS.label, Literal(hypothesis["title"])))
-    graph.add((cause, INSIGHT_TBOX.hypothesisId, Literal(accepted_hypothesis_id)))
-    graph.add((cause, DUL.isDescribedBy, URIRef(hypothesis["mechanism_iri"])))
-    anchors = hypothesis.get("anchors") or {}
-    if anchors.get("segment"):
-        graph.add((cause, DUL.hasLocation, ep[anchors["segment"]]))
-    if anchors.get("interval"):
-        graph.add((cause, DUL.hasTimeInterval, ep[anchors["interval"]]))
-    graph.add((cause, DUL.hasSetting, hypothesis_iri(batch, accepted_hypothesis_id)))
-    graph.add((cause, INSIGHT_TBOX.verifiedBy, run_iri(batch, accepted_hypothesis_id)))
+    graph.add((explanation, RDF.type, OWL.NamedIndividual))
+    graph.add((explanation, RDF.type, INSIGHT_TBOX.SimulationSupportedExplanation))
+    graph.add((explanation, RDFS.label, Literal(hypothesis["title"])))
+    graph.add((explanation, INSIGHT_TBOX.hypothesisId, Literal(accepted_hypothesis_id)))
+    graph.add((explanation, DUL.isDescribedBy, URIRef(hypothesis["mechanism_iri"])))
+    graph.add((explanation, INSIGHT_TBOX.selectedHypothesis, hypothesis_iri(batch, accepted_hypothesis_id)))
+    graph.add((explanation, INSIGHT_TBOX.supportedBySimulation, run_iri(batch, accepted_hypothesis_id)))
     if episode is not None:
-        graph.add((cause, SOMA.causes, ep[episode["accident"]["id"]]))
-    graph.add((ep.Episode, DUL.isSettingFor, cause))
-    graph.add((INSIGHT[f"{CASE_PREFIX}{batch['case_id']}"], EXPLAINED_BY, cause))
+        graph.add((explanation, INSIGHT_TBOX.explainsObservation, observation_iri(episode)))
+    for alternative in batch.get("hypotheses", []):
+        if (alternative["hypothesis_id"] != accepted_hypothesis_id
+                and alternative.get("status") in {"checked_not_simulable", "not_simulable"}
+                and (alternative.get("checks", {}).get("coherence") or {}).get("passed", True)):
+            graph.add((explanation, INSIGHT_TBOX.hasUnresolvedAlternative,
+                       hypothesis_iri(batch, alternative["hypothesis_id"])))
+    graph.add((ep.Episode, DUL.isSettingFor, explanation))
+    graph.add((INSIGHT[f"{CASE_PREFIX}{batch['case_id']}"], EXPLAINED_BY, explanation))
     return graph

@@ -25,7 +25,7 @@
 inst:AnomalyCase a owl:Class ;
     rdfs:subClassOf dul:Situation ;
     rdfs:label "anomaly case"@en ;
-    rdfs:comment "A perceived change the robot could not explain when it happened. The consolidation links it to the event that explains it."@en .
+    rdfs:comment "A perceived change the robot could not explain when it happened. Consolidation records an explanation selected by simulation, without establishing a physical cause."@en .
 
 inst:Intention a owl:Class ;
     rdfs:subClassOf dul:Description ;
@@ -39,12 +39,12 @@ inst:hasIntention a owl:ObjectProperty ;
 inst:explainedBy a owl:ObjectProperty ;
     rdfs:subPropertyOf dul:associatedWith ;
     rdfs:label "explained by"@en ;
-    rdfs:comment "Links an anomaly case to the event accepted as its cause."@en .
+    rdfs:comment "Links an anomaly case to its simulation-supported explanation. Legacy intervention identifiers are retained, but do not assert that an intervention occurred in the world."@en .
 
 inst:concernsEvent a owl:ObjectProperty ;
     rdfs:subPropertyOf dul:isSettingFor ;
     rdfs:label "concerns event"@en ;
-    rdfs:comment "Links an anomaly case to the observed effect (e.g. the bottle leaving the robot)."@en .
+    rdfs:comment "Links an anomaly case to the observed change in its representation; this alone does not establish a physical event."@en .
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -54,7 +54,41 @@ inst:concernsEvent a owl:ObjectProperty ;
 insight:Episode a owl:Class ;
     rdfs:subClassOf dul:Situation ;
     rdfs:label "episode"@en ;
-    rdfs:comment "The abstracted episode of an unexplained change: phases, path segments, intervals, the support state, the accident and the evidence. Built from the working memory (DSR) or from a recording."@en .
+    rdfs:comment "The abstracted episode of an unexplained change: phases, path segments, intervals, a support estimate, the observed anomaly and recorded evidence. Built from the working memory (DSR) or from a recording."@en .
+
+insight:ObservedAnomaly a owl:Class ;
+    rdfs:subClassOf dul:Event ;
+    rdfs:label "observed representation change"@en ;
+    rdfs:comment "A recorded change in the robot's representation that requires explanation. An event in the working memory, not evidence by itself of an accident, displacement or physical cause. Legacy ids such as Accident_1 do not change this meaning."@en .
+
+insight:SupportEstimate a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "support estimate"@en ;
+    rdfs:comment "The system's interpretation of a represented carrying relation and its self-model as support of an object. Its validity interval concerns the estimate, not the physical duration of support."@en .
+
+insight:affectedEntity a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range dul:Entity .
+insight:observedBy a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range dul:Agent .
+insight:observedAtSegment a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range insight:PathSegment ;
+    rdfs:comment "Path segment occupied by the observer when it recorded the anomaly; not the object's location."@en .
+insight:observerX a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:decimal .
+insight:observerY a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:decimal .
+insight:observerHeadingDeg a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:decimal .
+insight:estimatedSupporter a owl:ObjectProperty ;
+    rdfs:domain insight:SupportEstimate ; rdfs:range dul:PhysicalObject .
+insight:estimatedSupportedObject a owl:ObjectProperty ;
+    rdfs:domain insight:SupportEstimate ; rdfs:range dul:PhysicalObject .
+insight:estimateValidDuring a owl:ObjectProperty ;
+    rdfs:domain insight:SupportEstimate ; rdfs:range dul:TimeInterval ;
+    rdfs:comment "Interval during which the support estimate was maintained; not a physical support interval."@en .
+insight:invalidatesEstimate a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range insight:SupportEstimate ;
+    rdfs:comment "The recorded change invalidates this estimate, without asserting that physical support ended."@en .
 
 insight:PathSegment a owl:Class ;
     rdfs:subClassOf dul:PhysicalPlace ;
@@ -93,7 +127,7 @@ insight:endS a owl:DatatypeProperty ;
 insight:timeS a owl:DatatypeProperty ;
     rdfs:range xsd:decimal ;
     rdfs:label "time (s)"@en ;
-    rdfs:comment "Instant of an event, in seconds from the episode time origin (for the accident, t_obs)."@en .
+    rdfs:comment "Instant of an event, in seconds from the episode time origin (for the observed anomaly, t_obs)."@en .
 
 insight:motionKind a owl:DatatypeProperty ;
     rdfs:range xsd:string ;
@@ -132,7 +166,7 @@ insight:ends a owl:ObjectProperty ;
     rdfs:domain dul:Event ;
     rdfs:range soma:State ;
     rdfs:label "ends"@en ;
-    rdfs:comment "The event ends this state: the accident ends the support of the bottle."@en .
+    rdfs:comment "A physical event ends a physical state. Not used for loss of a represented carrying relation or invalidation of a support estimate."@en .
 
 insight:isSystemReaction a owl:DatatypeProperty ;
     rdfs:range xsd:boolean ;
@@ -252,12 +286,28 @@ inst:Sensor_BottleTracker a sosa:Sensor ;
 insight:VerifiedCause a owl:Class ;
     rdfs:subClassOf dul:Event ;
     rdfs:label "verified cause"@en ;
-    rdfs:comment "The cause the inner simulation accepted for an anomaly case: the event of the accepted hypothesis (dul:hasSetting), described by its mechanism (dul:isDescribedBy), located at its anchors in the episode (dul:hasLocation, dul:hasTimeInterval), verified by a simulation run (insight:verifiedBy), and the cause of the accident (soma:causes). The anomaly case is explained by it (inst:explainedBy)."@en .
+    owl:deprecated true ;
+    rdfs:comment "Legacy physical-cause representation, retained to read old exports. New cases use SimulationSupportedExplanation and do not assert a physical causal event from simulation alone."@en .
+
+insight:SimulationSupportedExplanation a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "simulation-supported explanation"@en ;
+    rdfs:comment "An explanation selected by the simulator for an observed anomaly, with its hypothesis and supporting run. Describes a candidate mechanism; does not assert that this mechanism occurred physically or that unresolved alternatives were refuted."@en .
+
+insight:explainsObservation a owl:ObjectProperty ;
+    rdfs:domain insight:SimulationSupportedExplanation ; rdfs:range insight:ObservedAnomaly .
+insight:selectedHypothesis a owl:ObjectProperty ;
+    rdfs:domain insight:SimulationSupportedExplanation ; rdfs:range insight:Hypothesis .
+insight:supportedBySimulation a owl:ObjectProperty ;
+    rdfs:domain insight:SimulationSupportedExplanation ; rdfs:range insight:SimulationRun .
+insight:hasUnresolvedAlternative a owl:ObjectProperty ;
+    rdfs:domain insight:SimulationSupportedExplanation ; rdfs:range insight:Hypothesis ;
+    rdfs:comment "A different hypothesis not refuted by available checks but without a simulation realization here. It is neither accepted nor refuted by selecting this explanation."@en .
 
 insight:hypothesisId a owl:DatatypeProperty ;
     rdfs:range xsd:string ;
     rdfs:label "hypothesis id"@en ;
-    rdfs:comment "Id of a hypothesis in the published batch (contract 3), on the hypothesis and on the verified cause it became."@en .
+    rdfs:comment "Id of a hypothesis in the published batch (contract 3), also kept on its simulation-supported explanation if selected."@en .
 
 
 insight:Mechanism a owl:Class ;
@@ -726,7 +776,7 @@ insight:Mechanism_SuspensionFailure a insight:Mechanism ;
 insight:Hypothesis a owl:Class ;
     rdfs:subClassOf dul:Situation ;
     rdfs:label "hypothesis"@en ;
-    rdfs:comment "A candidate explanation of the accident of an episode, proposed by the LLM: the situation in which a mechanism of the TBox happened (dul:satisfies) at individuals of the episode (insight:anchoredTo), of the kinds the LLM chose (dul:isClassifiedBy an insight:Kind). The memory classifies it with its status (dul:isClassifiedBy an insight:HypothesisStatus) after the checks it applied (insight:checkedBy). One with no mechanism of the TBox carries insight:newMechanismDescription instead."@en .
+    rdfs:comment "A candidate explanation of an observed anomaly, proposed by the LLM: a hypothetical situation framed by a mechanism of the TBox (dul:satisfies), with episode anchors (insight:anchoredTo) and qualitative kinds. Does not assert that the mechanism occurred. The memory records its checks and status; an unlisted mechanism carries insight:newMechanismDescription."@en .
 
 insight:HypothesisGeneration a owl:Class ;
     rdfs:subClassOf dul:Action ;
@@ -807,7 +857,8 @@ insight:verifiedBy a owl:ObjectProperty ;
     rdfs:subPropertyOf dul:associatedWith ;
     rdfs:domain insight:VerifiedCause ;
     rdfs:range insight:SimulationRun ;
-    rdfs:label "verified by"@en .
+    rdfs:label "verified by"@en ; owl:deprecated true ;
+    rdfs:comment "Legacy link for VerifiedCause. New explanations use supportedBySimulation to avoid inferring an actual causal event."@en .
 
 
 insight:llmModel a owl:DatatypeProperty ;

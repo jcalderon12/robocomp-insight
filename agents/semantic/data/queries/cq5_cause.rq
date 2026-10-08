@@ -1,5 +1,5 @@
-# CQ5. What caused the fall, where or when, and how was it verified against the nominal run?
-# Reads: the verified cause, its simulation run and the nominal one.
+# CQ5. Which explanation did simulation support, for which observation, and with which unresolved alternatives?
+# Reads: the explanation, selected hypothesis and simulation runs. Anchors are hypothetical; legacy filename retained.
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
@@ -8,16 +8,24 @@ PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX insight: <http://insight.local/ontology#>
 PREFIX inst: <http://insight.local/instances#>
 
-SELECT DISTINCT ?cause ?mechanism ?anchor ?fall ?repetitions ?effect_rate ?mistimed ?median_error_s
-                ?nominal_repetitions ?nominal_effect_rate WHERE {
-  ?c a insight:VerifiedCause ; rdfs:label ?cause ; soma:causes ?f ; dul:isDescribedBy ?m ;
-     insight:verifiedBy ?run .
+SELECT DISTINCT ?explanation ?hypothesis ?mechanism ?anchor ?observation ?repetitions ?effect_rate ?mistimed ?median_error_s
+                ?nominal_repetitions ?nominal_effect_rate ?unresolved_alternatives WHERE {
+  ?case a inst:AnomalyCase ; inst:explainedBy ?c ; dul:isSettingFor ?nominal .
+  ?c a insight:SimulationSupportedExplanation ; rdfs:label ?explanation ;
+     insight:explainsObservation ?observed ; dul:isDescribedBy ?m ;
+     insight:selectedHypothesis ?h ; insight:supportedBySimulation ?run .
+  ?h insight:hypothesisId ?hypothesis .
   ?m a insight:Mechanism ; insight:mechanismId ?mechanism .
-  ?f a soma:Accident ; rdfs:label ?fall .
-  OPTIONAL { ?c dul:hasLocation ?where . ?where rdfs:label ?anchor }
-  OPTIONAL { ?c dul:hasTimeInterval ?when . ?when rdfs:label ?anchor }
+  ?observed a insight:ObservedAnomaly ; rdfs:label ?observation .
+  OPTIONAL { ?h insight:anchoredTo ?where . ?where a insight:PathSegment ; rdfs:label ?anchor }
+  OPTIONAL { ?h insight:anchoredTo ?when . ?when a dul:TimeInterval ; rdfs:label ?anchor }
   ?run insight:repetitions ?repetitions ; insight:effectRate ?effect_rate .
   OPTIONAL { ?run insight:mistimedEffects ?mistimed }
   OPTIONAL { ?run insight:medianTimingErrorS ?median_error_s }
   ?nominal insight:isNominal true ; insight:repetitions ?nominal_repetitions ; insight:effectRate ?nominal_effect_rate .
+  OPTIONAL {
+    SELECT ?c (GROUP_CONCAT(DISTINCT ?alternative_id; separator=", ") AS ?unresolved_alternatives) WHERE {
+      ?c insight:hasUnresolvedAlternative ?alternative . ?alternative insight:hypothesisId ?alternative_id .
+    } GROUP BY ?c
+  }
 }

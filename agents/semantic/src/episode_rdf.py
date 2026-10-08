@@ -9,8 +9,9 @@ inst:Sensor_IMU, ...). The vocabulary is the INSIGHT TBox (agents/semantic/data/
 The graph only adds: the triples production mirrors from the working memory stay as they are.
 
 What the TBox has no term for stays only in the JSON: the setpoint and heading ranges of a phase,
-the signed value of a peak and the two ratios behind speed_ratio. The robot pose at the fall is the
-end point of Segment_final.
+the signed value of a peak and the two ratios behind speed_ratio. The observation's coordinates
+belong to the robot, not the object. Legacy accident/support JSON fields describe a representation
+change and an estimate: they never assert a physical fall or the end of physical support.
 """
 
 from __future__ import annotations
@@ -55,7 +56,6 @@ SENSORS_BY_PROPERTY = {
 
 #: Kinds of motion that are locomotion; a stopped phase is not classified by any.
 LOCOMOTION = {"advance_straight": INST.Locomotion_advance_straight, "turn": INST.Locomotion_turn}
-SUPPORT_STATE = INST.SupportState_bottle_on_tray
 
 
 def graph_iri(episode_id: str) -> URIRef:
@@ -64,6 +64,25 @@ def graph_iri(episode_id: str) -> URIRef:
 
 def episode_namespace(episode_id: str) -> Namespace:
     return Namespace(EPISODES + episode_id + "#")
+
+
+def entity_iri(episode: dict[str, Any], identifier: str) -> URIRef:
+    """Resolve a recorded entity identifier without assuming the current payload's name."""
+    if ":" in identifier:
+        return URIRef(identifier)
+    return URIRef(episode.get("entity_namespace", str(INST)) + identifier)
+
+
+def observation_record(episode: dict[str, Any]) -> dict[str, Any]:
+    """Explicit observed change, or the legacy field whose name does not establish an accident."""
+    record = episode.get("change") or episode.get("observation") or episode.get("accident")
+    if not record or not record.get("id"):
+        raise ValueError("the RDF episode needs an identified observed change")
+    return record
+
+
+def observation_iri(episode: dict[str, Any]) -> URIRef:
+    return episode_namespace(episode["episode_id"])[observation_record(episode)["id"]]
 
 
 def _decimal(value: float) -> Literal:
@@ -96,11 +115,11 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
         g.add((iri, INSIGHT.endS, _decimal(end)))
         return iri
 
-    robot = ENTITY_IRIS[episode["entities"]["robot"]]
-    bottle = ENTITY_IRIS[episode["entities"]["bottle"]]
+    entities = episode.get("entities") or {}
+    robot = entity_iri(episode, entities["robot"]) if entities.get("robot") else None
     # The tray is a part of the robot (not a DSR node, so production's mirror does not write it).
-    if "tray" in episode["entities"]:
-        tray = ENTITY_IRIS[episode["entities"]["tray"]]
+    if "tray" in entities and robot is not None:
+        tray = entity_iri(episode, entities["tray"])
         g.add((tray, RDF.type, OWL.NamedIndividual))
         g.add((tray, RDF.type, SOMA.DesignedComponent))
         g.add((tray, RDFS.label, Literal("tray")))
@@ -110,15 +129,17 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
     g.add((episode_iri, RDF.type, OWL.NamedIndividual))
     g.add((episode_iri, RDF.type, INSIGHT.Episode))
     g.add((episode_iri, RDFS.label, Literal(episode["episode_id"])))
-    g.add((episode_iri, INSIGHT.recordedIn, Literal(episode["source"]["path"], datatype=XSD.anyURI)))
-    g.add((episode_iri, INSIGHT.timeOriginNs, Literal(int(episode["time"]["origin_ns"]), datatype=XSD.integer)))
+    if (episode.get("source") or {}).get("path"):
+        g.add((episode_iri, INSIGHT.recordedIn, Literal(episode["source"]["path"], datatype=XSD.anyURI)))
+    if (episode.get("time") or {}).get("origin_ns") is not None:
+        g.add((episode_iri, INSIGHT.timeOriginNs, Literal(int(episode["time"]["origin_ns"]), datatype=XSD.integer)))
 
     intervals = {}
-    for entry in episode["intervals"]:
+    for entry in episode.get("intervals", []):
         intervals[entry["id"]] = interval(entry["id"], entry["start_s"], entry["end_s"])
 
     # Phases: what the robot was doing; the reaction is the system's, never a cause.
-    for phase in episode["phases"]:
+    for phase in episode.get("phases", []):
         if phase.get("is_system_reaction"):
             iri = individual(phase["id"], INSIGHT.SystemReaction)
             g.add((iri, INSIGHT.isSystemReaction, Literal(True)))
@@ -131,14 +152,15 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
             if phase["kind"] in LOCOMOTION:
                 g.add((iri, DUL.isClassifiedBy, LOCOMOTION[phase["kind"]]))
         g.add((iri, DUL.hasTimeInterval, intervals[phase["interval"]]))
-        g.add((iri, DUL.hasParticipant, robot))
+        if robot is not None:
+            g.add((iri, DUL.hasParticipant, robot))
     for kind, concept in LOCOMOTION.items():
         g.add((concept, RDF.type, OWL.NamedIndividual))
         g.add((concept, RDF.type, SOMA.Locomotion))
         g.add((concept, RDFS.label, Literal(kind)))
 
     # Path segments and their regions.
-    for segment in episode["segments"]:
+    for segment in episode.get("segments", []):
         iri = individual(segment["id"], INSIGHT.PathSegment)
         region = individual(f"Region_{segment['id']}", DUL.SpaceRegion)
         g.add((iri, DUL.hasRegion, region))
@@ -153,42 +175,60 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
                             (INSIGHT.headingDeg, segment["heading_deg"])):
             g.add((region, prop, _decimal(value)))
 
-    # The bottle held on the tray: a state classified as support, with its two roles.
-    support = episode["support"]
-    support_iri = individual(support["id"], SOMA.State)
-    g.add((SUPPORT_STATE, RDF.type, OWL.NamedIndividual))
-    g.add((SUPPORT_STATE, RDF.type, SOMA.SupportState))
-    g.add((SUPPORT_STATE, RDFS.label, Literal("bottle on the tray")))
-    g.add((support_iri, DUL.isClassifiedBy, SUPPORT_STATE))
-    supporter = individual("Role_supporter", SOMA.Supporter)
-    supported = individual("Role_supported", SOMA.SupportedObject)
-    g.add((supporter, DUL.classifies, ENTITY_IRIS[support["supporter"]]))
-    g.add((supported, DUL.classifies, ENTITY_IRIS[support["supported"]]))
-    g.add((support_iri, DUL.hasParticipant, ENTITY_IRIS[support["supporter"]]))
-    g.add((support_iri, DUL.hasParticipant, ENTITY_IRIS[support["supported"]]))
-    if support.get("start_s") is not None:
-        g.add((support_iri, DUL.hasTimeInterval, interval("Interval_support", support["start_s"], support["end_s"])))
+    # The estimated support is a description. Using hasParticipant or hasTimeInterval here
+    # would infer dul:Event through their domains, undoing the distinction from a physical state.
+    support = episode.get("support") or {}
+    support_iri = None
+    if support:
+        support_iri = individual(support["id"], INSIGHT.SupportEstimate)
+        support_kind = individual("EstimatedSupportKind", SOMA.SupportState)
+        g.add((support_iri, DUL.usesConcept, support_kind))
+        for key, prop in (("supporter", INSIGHT.estimatedSupporter), ("supported", INSIGHT.estimatedSupportedObject)):
+            if support.get(key):
+                g.add((support_iri, prop, entity_iri(episode, support[key])))
+        g.add((support_iri, RDFS.comment, Literal(
+            "Estimate from the represented carrying relation and robot self-model; not a measured physical support state.")))
+        if support.get("start_s") is not None and support.get("end_s") is not None:
+            g.add((support_iri, INSIGHT.estimateValidDuring,
+                   interval("Interval_support", support["start_s"], support["end_s"])))
 
-    # The fall.
-    accident = episode["accident"]
-    accident_iri = individual(accident["id"], SOMA.Accident)
-    g.add((accident_iri, INSIGHT.timeS, _decimal(accident["time_s"])))
-    g.add((accident_iri, DUL.hasLocation, ep[accident["place"]]))
-    g.add((accident_iri, INSIGHT.headingDeg, _decimal(accident["robot_pose"]["heading_deg"])))
-    for participant in accident["participants"]:
-        g.add((accident_iri, DUL.hasParticipant, ENTITY_IRIS[participant]))
-    g.add((accident_iri, INSIGHT.ends, support_iri))
-    g.add((accident_iri, RDFS.comment, Literal(f"Cause {accident['cause']}; observed as {accident['observed_as']}.")))
-    # What the system did after the fall is a reaction to it, never its cause.
-    for phase in episode["phases"]:
+    # A recorded change in representation, without inferring a physical accident or object pose.
+    observed = observation_record(episode)
+    observed_iri = individual(observed["id"], INSIGHT.ObservedAnomaly)
+    time_s = observed.get("time_s", (episode.get("time") or {}).get("t_obs_s"))
+    if time_s is not None:
+        g.add((observed_iri, INSIGHT.timeS, _decimal(time_s)))
+    affected = observed.get("affected_entity") or observed.get("subject")
+    if not affected and not episode.get("change") and not episode.get("observation"):
+        affected = support.get("supported")
+    if affected:
+        g.add((observed_iri, INSIGHT.affectedEntity, entity_iri(episode, affected)))
+    if robot is not None:
+        g.add((observed_iri, INSIGHT.observedBy, robot))
+    if observed.get("place") in {s["id"] for s in episode.get("segments", [])}:
+        g.add((observed_iri, INSIGHT.observedAtSegment, ep[observed["place"]]))
+    pose = observed.get("robot_pose") or {}
+    xy = pose.get("xy")
+    if xy is not None:
+        for prop, value in zip((INSIGHT.observerX, INSIGHT.observerY), xy):
+            if value is not None:
+                g.add((observed_iri, prop, _decimal(value)))
+    if pose.get("heading_deg") is not None:
+        g.add((observed_iri, INSIGHT.observerHeadingDeg, _decimal(pose["heading_deg"])))
+    if support_iri is not None and support.get("ended_by") == observed["id"]:
+        g.add((observed_iri, INSIGHT.invalidatesEstimate, support_iri))
+    summary = observed.get("summary") or observed.get("observed_as") or "Recorded representation change"
+    g.add((observed_iri, RDFS.comment, Literal(f"Observed as {summary}. The physical outcome is not established by this change.")))
+    # The system reacted to the perceived change; the physical event remains unknown.
+    for phase in episode.get("phases", []):
         if phase.get("is_system_reaction"):
-            g.add((ep[phase["id"]], SOMA.isReactionTo, accident_iri))
+            g.add((ep[phase["id"]], SOMA.isReactionTo, observed_iri))
 
     # Evidence: one observation per entry of the fixed list.
-    for entry in episode["evidence"]:
+    for entry in episode.get("evidence", []):
         iri = individual(entry["id"], SOSA.Observation)
         g.add((iri, SOSA.observedProperty, INSIGHT[entry["property"]]))
-        for sensor in SENSORS_BY_PROPERTY[entry["property"]]:
+        for sensor in SENSORS_BY_PROPERTY.get(entry["property"], []):
             g.add((iri, SOSA.madeBySensor, sensor))
         value = entry.get("value")
         if isinstance(value, bool):
@@ -206,7 +246,7 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
         if entry.get("is_system_reaction"):
             g.add((iri, INSIGHT.isSystemReaction, Literal(True)))
 
-    for iri in individuals + list(ENTITY_IRIS.values()):
+    for iri in individuals + [entity_iri(episode, value) for value in entities.values() if isinstance(value, str)]:
         g.add((episode_iri, DUL.isSettingFor, iri))
     return g
 

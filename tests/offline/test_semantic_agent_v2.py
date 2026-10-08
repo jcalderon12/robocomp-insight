@@ -27,7 +27,7 @@ docs_output/resultados/20_memoria_en_graphdb/CRITERIO.md):
   * when the batch is out, every hypothesis is in the episode's graph with the batch's status, and
     a discarded or incoherent one with the check that decided it (and the observation it read);
   * the verdict adds the nominal run and each simulated one, also when nothing is accepted, and
-    the verified cause causes the accident;
+    the supported explanation links the observation, hypothesis and simulation;
   * the episode's graph only uses TBox terms.
 
 Two faults of the first run in Webots (06/10) are checked too:
@@ -372,7 +372,9 @@ def run_agent_loop(episode_from_recording):
         assert db.episode_graphs() == {str(episode_iri)}
         stored = worker.graphdb_client.dataset.graph(episode_iri)
         ep = Namespace(str(episode_iri) + "#")
-        assert (ep.Accident_1, DUL.hasLocation, ep.Segment_final) in stored
+        assert (ep.Accident_1, INSIGHT.observedAtSegment, ep.Segment_final) in stored
+        assert (ep.Accident_1, RDF.type, INSIGHT.ObservedAnomaly) in stored
+        assert (ep.Support_bottle, RDF.type, INSIGHT.SupportEstimate) in stored
         # Next to it, what the memory decided about each hypothesis: the batch's status ...
         statuses = {str(i): str(s) for i, s in (Graph().parse(TBOX) + stored).query("""
             PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
@@ -417,18 +419,20 @@ def run_agent_loop(episode_from_recording):
         # What the consolidation wrote before, as it was; nothing removed.
         assert db.live == MIRROR | build_case_triples("bump_scaled", batch["case_id"])
         assert not db.removed
-        # The verified mechanism, in the episode's graph.
+        # The simulation-supported explanation, in the episode's graph.
         stored = worker.graphdb_client.dataset.graph(episode_iri)
         case = INST[f"Case_{batch['case_id']}"]
-        cause = ep["Cause_H01"]
+        cause = ep["Explanation_H01"]
         assert (case, INST.explainedBy, cause) in stored
         assert (cause, DUL.isDescribedBy, INSIGHT.Mechanism_ObstacleTraversed) in stored
-        assert (cause, DUL.hasLocation, ep.Segment_final) in stored
+        assert (cause, RDF.type, INSIGHT.SimulationSupportedExplanation) in stored
+        assert (ep.Hypothesis_H01, INSIGHT.anchoredTo, ep.Segment_final) in stored
         assert (cause, RDFS.label, Literal("Undetected bump on the last 1 m of the path before the fall")) in stored
-        # It caused the fall, it is the event of the accepted hypothesis, and a run verified it.
-        assert (cause, URIRef("http://www.ease-crc.org/ont/SOMA.owl#causes"), ep.Accident_1) in stored
-        assert (cause, DUL.hasSetting, ep.Hypothesis_H01) in stored
-        assert (cause, INSIGHT.verifiedBy, ep.Run_H01) in stored
+        # It selects a hypothesis and links its run, without asserting a physical causal event.
+        assert (cause, INSIGHT.explainsObservation, ep.Accident_1) in stored
+        assert (cause, INSIGHT.selectedHypothesis, ep.Hypothesis_H01) in stored
+        assert (cause, INSIGHT.supportedBySimulation, ep.Run_H01) in stored
+        assert not any(stored.triples((None, URIRef("http://www.ease-crc.org/ont/SOMA.owl#causes"), None)))
         runs = set(stored.subjects(RDF.type, INSIGHT.SimulationRun))
         assert runs == {ep.Run_nominal, ep.Run_H01, ep.Run_H02}, runs
         assert (ep.Run_H01, INSIGHT.testsHypothesis, ep.Hypothesis_H01) in stored
@@ -442,10 +446,12 @@ def run_agent_loop(episode_from_recording):
             PREFIX insight: <http://insight.local/ontology#>
             PREFIX inst: <http://insight.local/instances#>
             SELECT ?mechanism ?where ?t WHERE {
-              ?case inst:explainedBy ?cause . ?cause a insight:VerifiedCause ; dul:isDescribedBy ?m ;
-                    dul:hasLocation ?place . ?m insight:mechanismId ?mechanism .
+              ?case inst:explainedBy ?explanation .
+              ?explanation a insight:SimulationSupportedExplanation ; dul:isDescribedBy ?m ;
+                    insight:selectedHypothesis ?hypothesis ; insight:explainsObservation ?observed .
+              ?hypothesis insight:anchoredTo ?place . ?m insight:mechanismId ?mechanism .
               ?place dul:hasRegion ?region . ?region insight:toX ?where .
-              ?fall a <http://www.ease-crc.org/ont/SOMA.owl#Accident> ; insight:timeS ?t }"""))
+              ?observed a insight:ObservedAnomaly ; insight:timeS ?t }"""))
         assert [(str(m), float(x), float(t)) for m, x, t in rows] == [("obstacle_traversed", -0.507, 13.685)], rows
         # Only TBox terms in the whole episode graph: the episode, the decisions, the runs, the cause.
         tbox = Graph().parse(TBOX)
@@ -480,7 +486,7 @@ def run_agent_loop(episode_from_recording):
         second_ep = Namespace(str(graph_iri(second["episode"]["id"])) + "#")
         second_stored = db.dataset.graph(graph_iri(second["episode"]["id"]))
         assert (second_ep.Run_nominal, INSIGHT.effectRate, Literal(Decimal("0.0"))) in second_stored
-        assert not any(second_stored.subjects(RDF.type, INSIGHT.VerifiedCause))
+        assert not any(second_stored.subjects(RDF.type, INSIGHT.SimulationSupportedExplanation))
 
 
 def case_triples_in(live):

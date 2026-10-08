@@ -1,6 +1,6 @@
-# CQ6. Which magnitudes did the simulation find for the accepted cause? The LLM chooses kinds,
+# CQ6. Which magnitudes did simulation sample for the selected explanation? These are not measured causal parameters. The LLM chooses kinds,
 # never magnitudes: the memory covers the catalog's range and the simulator samples it.
-# Reads: the best repetition of the run that verified the cause.
+# Reads: the best repetition of the run supporting the explanation.
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
@@ -10,7 +10,7 @@ PREFIX insight: <http://insight.local/ontology#>
 PREFIX inst: <http://insight.local/instances#>
 
 SELECT ?hypothesis ?quantity ?value WHERE {
-  ?c a insight:VerifiedCause ; insight:hypothesisId ?hypothesis ; insight:verifiedBy ?run .
+  ?c a insight:SimulationSupportedExplanation ; insight:hypothesisId ?hypothesis ; insight:supportedBySimulation ?run .
   ?run dul:hasRegion ?sample .
   ?sample a insight:SampledValue ; insight:quantityName ?quantity ; dul:hasDataValue ?value .
 }

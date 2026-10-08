@@ -371,13 +371,14 @@ def check_rdf_1229():
         for sensor in sensors:
             assert (sensor, URIRef(sosa + "observes"), target) in tbox, (sensor, prop)
 
-    # In its own named graph, the episode answers when and where the bottle fell.
+    # The observation locates the robot, not the object; the invalidated support is an estimate.
     dataset = episode_dataset(episode)
     rows = list(dataset.query(PREFIXES + """
         SELECT ?g ?t ?place ?x ?y ?state WHERE { GRAPH ?g {
-          ?fall a soma:Accident ; dul:hasParticipant inst:PhysicalObject_Bottle ; insight:timeS ?t ;
-                dul:hasLocation ?place ; insight:ends ?state .
-          ?place dul:hasRegion ?region . ?region insight:toX ?x ; insight:toY ?y } }"""))
+          ?observed a insight:ObservedAnomaly ; insight:affectedEntity inst:PhysicalObject_Bottle ; insight:timeS ?t ;
+                insight:observedAtSegment ?place ; insight:invalidatesEstimate ?state ;
+                insight:observerX ?x ; insight:observerY ?y .
+          ?state a insight:SupportEstimate } }"""))
     assert len(rows) == 1, rows
     g, t, place, x, y, state = rows[0]
     assert g == graph_iri(episode["episode_id"])
@@ -395,20 +396,22 @@ def check_rdf_1229():
     reaction = {str(r[0]).split("#")[1] for r in merged.query(PREFIXES + """
         SELECT ?x WHERE { ?x insight:isSystemReaction true }""")}
     assert reaction == {"Phase_reaction", "Ev_reaction_braking"}, reaction
-    # The stop is a reaction to the fall, never its cause.
+    # The stop is a reaction to the perceived change, not proof of a physical fall.
     reacts_to = [tuple(str(x).split("#")[1] for x in row) for row in merged.query(PREFIXES + """
         SELECT ?x ?fall WHERE { ?x soma:isReactionTo ?fall }""")]
     assert reacts_to == [("Phase_reaction", "Accident_1")], reacts_to
     events ={str(r[0]).split("#")[1] for r in merged.query(PREFIXES + """
         SELECT ?x WHERE { ?x a/rdfs:subClassOf* dul:Event . FILTER(STRSTARTS(STR(?x), "http://insight.local/episodes/")) }""")}
-    assert {"Accident_1", "Support_bottle", "Phase_1", "Phase_reaction"} <= events, events
-    # The tray is a component of the robot, and it is the one that supports the bottle.
+    assert {"Accident_1", "Phase_1", "Phase_reaction"} <= events, events
+    assert "Support_bottle" not in events, events
+    assert not bool(merged.query(PREFIXES + "ASK { ?x a/rdfs:subClassOf* soma:Accident }").askAnswer)
+    # The tray is a known component; its support of the bottle is an estimate, not a physical state.
     assert bool(merged.query(PREFIXES + """
         ASK { inst:Agent_Robot dul:hasComponent inst:PhysicalObject_Tray .
               inst:PhysicalObject_Tray a/rdfs:subClassOf* dul:PhysicalObject .
-              ?role a soma:Supporter ; dul:classifies inst:PhysicalObject_Tray .
-              ?state dul:isClassifiedBy inst:SupportState_bottle_on_tray ;
-                     dul:hasParticipant inst:PhysicalObject_Tray , inst:PhysicalObject_Bottle }""").askAnswer)
+              ?estimate a insight:SupportEstimate ; insight:estimatedSupporter inst:PhysicalObject_Tray ;
+                     insight:estimatedSupportedObject inst:PhysicalObject_Bottle ;
+                     insight:estimateValidDuring ?i }""").askAnswer)
 
 
 def check_rdf_consistency_if_possible():

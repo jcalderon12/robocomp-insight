@@ -62,11 +62,15 @@ def check_up_to_date(tbox):
 
 
 def check_hierarchy(tbox):
-    # soma:SupportState classifies states; the support of the bottle is a soma:State (contract 1).
+    # Physical states remain available, but carrying-relation observations use a support estimate.
     assert ask(tbox, "ASK { soma:SupportState rdfs:subClassOf* dul:Concept }")
     assert not ask(tbox, "ASK { soma:SupportState rdfs:subClassOf* dul:Event }")
     for event_class in ("soma:State", "soma:Accident", "sosa:Observation", "insight:SystemReaction"):
         assert ask(tbox, f"ASK {{ {event_class} rdfs:subClassOf* dul:Event }}"), event_class
+    assert ask(tbox, "ASK { insight:ObservedAnomaly rdfs:subClassOf* dul:Event }")
+    for description in ("insight:SupportEstimate", "insight:SimulationSupportedExplanation"):
+        assert ask(tbox, f"ASK {{ {description} rdfs:subClassOf* dul:Description }}")
+        assert not ask(tbox, f"ASK {{ {description} rdfs:subClassOf* dul:Event }}")
     assert ask(tbox, "ASK { dul:PhysicalAgent rdfs:subClassOf dul:Agent, dul:PhysicalObject }")
     assert ask(tbox, "ASK { insight:Mechanism rdfs:subClassOf* dul:Description }")
     assert ask(tbox, "ASK { insight:PathSegment rdfs:subClassOf* dul:PhysicalPlace }")
