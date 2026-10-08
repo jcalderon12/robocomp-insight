@@ -3,8 +3,8 @@
 Before anything is simulated, each mechanism is checked against what the episode recorded:
 
   * its preconditions (`insight:requires`): if one is false, the hypothesis is incoherent;
-  * its contrast rules (`insight:hasContrastRule`): they only discard, or say that the memory
-    already explains the fall (a commanded brake). They never confirm a cause.
+  * its contrast rules (`insight:hasContrastRule`): they discard, inform about a recorded trace,
+    or say that the memory already explains the effect (a commanded brake). They never confirm a cause.
 
 What a mechanism is checked with comes from the INSIGHT TBox (agents/semantic/data/insight_tbox.ttl):
 which preconditions and rules it has, their effect and status, and the observable properties each
@@ -377,7 +377,9 @@ def _person_within_reach(view, anchors, th):
 
 
 def _bottle_reacquired(view, anchors, th):
-    return DISCARDS, [Condition("bottle_reacquired", view.value("bottle_reacquired"), "==", False)]
+    # This records restoration of the carrying relation within the available episode, not
+    # continuous physical support. Neither restoration nor its absence decides the cause.
+    return TRACE_SEEN, [Condition("bottle_reacquired", view.value("bottle_reacquired"), "==", True)]
 
 
 CHECKS: dict[str, Implementation] = {
@@ -446,6 +448,8 @@ def evaluate_check(view: EpisodeView, mechanism: Mechanism, check: Check,
     joiner = " or " if implementation.combine == "any" else " and "
     result.update(conditions=[c.as_dict() for c in conditions], verdict=verdict,
                   reason=joiner.join(c.text() for c in conditions))
+    if check.effect == "inform" and check.comment:
+        result["reason"] += f". {check.comment}"
     return result
 
 
@@ -482,7 +486,7 @@ def status_after_contrast(mechanism: Mechanism, outcome: str) -> str:
     if outcome != SURVIVES_CONTRAST:
         return outcome
     if not mechanism.realized_by:
-        # Not physical (checked against the recording) or without a realization at all.
+        # Surviving a check is not confirmation; the mechanism has no simulation realization.
         return "checked_not_simulable" if mechanism.rules else "not_simulable"
     return "pending"
 

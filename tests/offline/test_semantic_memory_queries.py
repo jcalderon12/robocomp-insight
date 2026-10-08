@@ -16,8 +16,13 @@ docs_output/resultados/20_memoria_en_graphdb/CRITERIO.md:
 
 The same questions on the real GraphDB, with its inference: experiments/semantic_memory_graphdb.py.
 
+The historical batch is preserved. A separate current-pipeline check verifies that carrying
+relation restoration only informs, that perception failure is not simulable rather than
+discarded, and that both the informative check and the reason are stored in RDF (contracts 1.10).
+
 Run from the repo root:  python3 tests/offline/test_semantic_memory_queries.py
 """
+import copy
 import json
 import sys
 import tempfile
@@ -27,9 +32,11 @@ REPO = Path(__file__).resolve().parents[2]
 SEMANTIC = REPO / "agents" / "semantic"
 sys.path.insert(0, str(SEMANTIC))
 
-from rdflib import OWL, RDF, RDFS, Graph, URIRef  # noqa: E402
+from rdflib import OWL, RDF, RDFS, Graph, Literal, Namespace, URIRef  # noqa: E402
 
+from src.case_rdf import hypothesis_iri  # noqa: E402
 from src.episode_rdf import graph_iri  # noqa: E402
+from src.hypothesis_pipeline import publish_batch  # noqa: E402
 from src.memory_queries import ONTOLOGY_GRAPH, case_dataset, load_questions, run  # noqa: E402
 
 CASE = SEMANTIC / "generated_hypotheses" / "semantic_unexplained_20261007T080222Z"
@@ -151,9 +158,45 @@ def check_consistency_if_possible(episode, batch, verdict, dataset):
     print("  HermiT: the TBox plus the whole case (episode, decisions, runs, cause) is consistent")
 
 
+def check_current_perception_failure_stays_unresolved(episode, historical_batch, verdict, dataset):
+    insight = Namespace("http://insight.local/ontology#")
+    dul = Namespace(DUL)
+    proposal = {"hypotheses": [{
+        "mechanism": "perception_failure", "new_mechanism_description": None,
+        "segment": None, "interval": "Interval_fall", "qualitative_parameters": {},
+        "expected_trace": [], "rationale": "The carrying representation may have failed.",
+        "title": "Perception failure",
+    }]}
+    for value, expected in ((False, "no_trace"), (True, "trace_seen"), (None, "undetermined")):
+        current_episode = copy.deepcopy(episode)
+        entry = next(e for e in current_episode["evidence"] if e["property"] == "bottle_reacquired")
+        entry["value"] = value
+        batch = publish_batch(current_episode, proposal, arm="production", tbox_path=TBOX,
+                              profiles=("carried_object_relation_loss",))
+        hypothesis = batch["hypotheses"][0]
+        assert hypothesis["status"] == "checked_not_simulable" and not hypothesis["testable"], hypothesis
+        assert hypothesis["cost_in_simulations"] == 0, hypothesis
+        assert hypothesis["checks"]["contrast"][0]["verdict"] == expected, hypothesis
+        current = case_dataset(episode=current_episode, batch=batch, verdict=None, mirror=MIRROR)
+        graph = current.graph(graph_iri(episode["episode_id"]))
+        h = hypothesis_iri(batch, hypothesis["hypothesis_id"])
+        assert (h, dul.isClassifiedBy, insight.Status_checked_not_simulable) in graph
+        check = graph.value(h, insight.checkedBy)
+        assert (check, insight.checkVerdict, Literal(expected)) in graph
+        assert "within the available recording" in str(graph.value(check, RDFS.comment))
+        row, = answers(current)["cq3_why_not_simulated"]
+        assert row["status"] == "checked_not_simulable" and row["check"] is None, row
+        assert "not simulable" in row["reason"], row
+        assert not list(graph.subjects(RDF.type, insight.SimulationRun))
+    # A new policy must not rewrite decisions that were recorded under the previous policy.
+    historical = next(h for h in historical_batch["hypotheses"] if h["mechanism"] == "perception_failure")
+    assert historical["status"] == "discarded", historical
+
+
 def main():
     case = load_case()
-    for check in (check_answers, check_only_tbox_terms, check_consistency_if_possible):
+    for check in (check_answers, check_only_tbox_terms, check_consistency_if_possible,
+                  check_current_perception_failure_stays_unresolved):
         check(*case)
         print(f"OK {check.__name__}")
     print("Semantic memory queries: all checks passed")

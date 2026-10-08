@@ -207,7 +207,7 @@ insight:person_distance_min a sosa:ObservableProperty ;
 
 insight:bottle_reacquired a sosa:ObservableProperty ;
     rdfs:label "bottle reacquired"@en ;
-    rdfs:comment "Whether the robot->bottle RT edge appears again after t_obs."@en .
+    rdfs:comment "Whether the robot->bottle RT edge appears again after t_obs within the available recording. This is restoration of the represented carrying relation, not any visual detection or proof of continuous physical support."@en .
 
 insight:reaction_onset a sosa:ObservableProperty ;
     rdfs:label "reaction onset"@en ;
@@ -553,9 +553,9 @@ insight:rule_person_within_reach a insight:ContrastRule ;
     rdfs:comment "Discards if the person was never closer than 1.5 m (1 m reach plus 0.5 m margin)."@en .
 
 insight:rule_bottle_reacquired a insight:ContrastRule ;
-    insight:ruleId "bottle_reacquired" ; insight:ruleEffect "discard" ; insight:ruleStatus "to_calibrate" ;
+    insight:ruleId "bottle_reacquired" ; insight:ruleEffect "inform" ; insight:ruleStatus "fixed" ;
     insight:checksProperty insight:bottle_reacquired ;
-    rdfs:comment "Discards if the bottle is not detected again before the end of the recording."@en .
+    rdfs:comment "Only informs whether the carrying relation was restored within the available recording. Its absence does not refute perception failure; its restoration does not establish uninterrupted physical support. Missing evidence is undetermined. This check neither discards nor confirms a cause."@en .
 
 
 # The ten mechanisms (contract 2, section 3.3).
@@ -907,7 +907,7 @@ insight:Status_discarded a insight:HypothesisStatus ; insight:statusId "discarde
 insight:Status_explained_by_memory a insight:HypothesisStatus ; insight:statusId "explained_by_memory" ;
     rdfs:comment "The recording already explains it (a commanded brake); the nominal run, always simulated, must reproduce the effect."@en .
 insight:Status_checked_not_simulable a insight:HypothesisStatus ; insight:statusId "checked_not_simulable" ;
-    rdfs:comment "Survives the contrast, but is not physical: what could be checked was checked against the recording."@en .
+    rdfs:comment "Survives the available recording checks but has no simulation realization. Compatibility is not confirmation, and lack of a realization does not mean the mechanism is non-physical."@en .
 insight:Status_not_simulable a insight:HypothesisStatus ; insight:statusId "not_simulable" ;
     rdfs:comment "No realization here (no suspension in the URDF, an experimental intervention, a cable parallel to the path) or a 'new' mechanism."@en .
 insight:Status_incoherent a insight:HypothesisStatus ; insight:statusId "incoherent" ;

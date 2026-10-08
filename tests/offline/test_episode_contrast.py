@@ -10,10 +10,12 @@ Checks:
     anchors its evidence does not cover; the recorded turn is compared with the ordered one scaled
     by the episode's own clock (contract 2, version 1.2), so a robot turning in free motion under
     the Webots clock does not keep a wheel failure alive;
+  * carrying-relation restoration, its absence within the recording and missing evidence only
+    inform: perception failure remains unresolved and not simulable (contracts 1.10);
   * the 12:29 recording of 2026-09-24 gives the column "12:29" of the contract's table 3.6;
   * in the five falls of that session (all with the bump), obstacle_traversed is never discarded
     nor found incoherent (criterion of A3), and the rest of the table is the one in
-    docs_output/resultados/05_contraste_giro_2409/.
+    docs_output/resultados/05_contraste_giro_2409/, except for the informative restoration check.
 
 The recordings are not in git (agents/mission_controller/recorded_missions/), nor is experiments/:
 both travel in the hand-over package.
@@ -46,7 +48,7 @@ EXPECTED_CHECKS = {
     "commanded_speed_change": ([], [("setpoint_step", "explain_or_discard", "to_calibrate")]),
     "uncommanded_motion": (["moving_in_interval"], [("speed_ratio_and_jolt", "discard", "to_calibrate")]),
     "bottle_removed_by_person": ([], [("person_within_reach", "discard", "fixed")]),
-    "perception_failure": ([], [("bottle_reacquired", "discard", "to_calibrate")]),
+    "perception_failure": ([], [("bottle_reacquired", "inform", "fixed")]),
     "suspension_failure": ([], []),
 }
 
@@ -163,12 +165,12 @@ def check_thresholds_on_synthetic_episode():
         "obstacle_traversed": SURVIVES_CONTRAST, "bottle_push": SURVIVES_CONTRAST,
         "robot_push": SURVIVES_CONTRAST, "slippery_floor": DISCARDED, "wheel_failure": DISCARDED,
         "commanded_speed_change": DISCARDED, "uncommanded_motion": DISCARDED,
-        "bottle_removed_by_person": DISCARDED, "perception_failure": DISCARDED,
+        "bottle_removed_by_person": DISCARDED, "perception_failure": SURVIVES_CONTRAST,
         "suspension_failure": SURVIVES_CONTRAST,
     }
     assert {m: r["outcome"] for m, r in contrast.items()} == expected, contrast
     assert check_of(contrast["obstacle_traversed"], "obstacle_jolt")["verdict"] == "trace_seen"
-    assert contrast["perception_failure"]["status_after_contrast"] == "discarded"
+    assert contrast["perception_failure"]["status_after_contrast"] == "checked_not_simulable"
     assert contrast["suspension_failure"]["status_after_contrast"] == "not_simulable"
     assert contrast["obstacle_traversed"]["status_after_contrast"] == "pending"
 
@@ -214,6 +216,23 @@ def check_missing_values_never_discard():
         assert result["checks"][-1]["verdict"] == "undetermined", (prop, result)
     no_baseline = with_evidence(episode, "longitudinal_accel_peak", baseline=None)
     assert outcome(no_baseline, "uncommanded_motion") == SURVIVES_CONTRAST
+
+
+def check_restoration_only_informs():
+    episode = synthetic_episode()
+    for value, verdict in ((True, "trace_seen"), (False, "no_trace"), (None, "undetermined")):
+        result = contrast_hypothesis(with_evidence(episode, "bottle_reacquired", value=value), "perception_failure")
+        check = check_of(result, "bottle_reacquired")
+        assert check["verdict"] == verdict and check["effect"] == "inform", result
+        assert check["conditions"][0]["value"] is value, check
+        assert "within the available recording" in check["reason"], check
+        assert result["outcome"] == SURVIVES_CONTRAST and result["decided_by"] is None, result
+        assert result["status_after_contrast"] == "checked_not_simulable", result
+    missing = copy.deepcopy(episode)
+    missing["evidence"] = [e for e in missing["evidence"] if e["property"] != "bottle_reacquired"]
+    result = contrast_hypothesis(missing, "perception_failure")
+    assert check_of(result, "bottle_reacquired")["verdict"] == "undetermined", result
+    assert result["outcome"] == SURVIVES_CONTRAST, result
 
 
 def check_reaction_is_never_read():
@@ -284,7 +303,7 @@ EXPECTED_2409 = {
     "commanded_speed_change":   (D,    D,    D,    D,    D),
     "uncommanded_motion":       (S,    D,    S,    S,    S),
     "bottle_removed_by_person": (D,    D,    D,    D,    D),
-    "perception_failure":       (D,    D,    D,    S,    D),
+    "perception_failure":       (S,    S,    S,    S,    S),
     "suspension_failure":       (S,    S,    S,    S,    S),
 }
 
@@ -311,11 +330,12 @@ def check_contract_example_1229(episodes):
     for mechanism_id, rule_id in (("slippery_floor", "traction_vs_friction"), ("wheel_failure", "turn_vs_command"),
                                   ("commanded_speed_change", "setpoint_step"),
                                   ("uncommanded_motion", "speed_ratio_and_jolt"),
-                                  ("bottle_removed_by_person", "person_within_reach"),
-                                  ("perception_failure", "bottle_reacquired")):
+                                  ("bottle_removed_by_person", "person_within_reach")):
         assert contrast[mechanism_id]["outcome"] == DISCARDED, mechanism_id
         assert contrast[mechanism_id]["decided_by"] == rule_id, mechanism_id
     assert contrast["robot_push"]["outcome"] == SURVIVES_CONTRAST     # lateral 0.37 is 2.8 x 0.13
+    assert contrast["perception_failure"]["status_after_contrast"] == "checked_not_simulable"
+    assert check_of(contrast["perception_failure"], "bottle_reacquired")["verdict"] == "no_trace"
 
 
 def check_five_falls_2409(episodes):
@@ -331,7 +351,7 @@ def check_five_falls_2409(episodes):
 
 def main():
     for check in (check_mechanisms_from_tbox, check_tbox_mismatch_is_refused, check_thresholds_on_synthetic_episode,
-                  check_missing_values_never_discard, check_reaction_is_never_read,
+                  check_missing_values_never_discard, check_restoration_only_informs, check_reaction_is_never_read,
                   check_turn_relative_to_the_episode, check_rules_only_speak_for_their_interval):
         check()
         print(f"OK {check.__name__}")
