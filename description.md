@@ -1,6 +1,6 @@
 # Shadow Robot Self-Model
 
-Shadow is an indoor mobile robot that can follow people and carry unfastened objects on a tray about 0.8 m above the floor. The current mission and payload are specified by the episode, not by this self-model.
+Shadow is an indoor mobile robot that can follow people and carry unfastened objects on a tray about 0.8 m above the floor.
 
 ## Body and Locomotion
 - Shadow uses a differential-drive mobile base: 2 drive wheels on a common lateral axis (radius 100 mm, 518 mm apart) and 2 passive caster wheels, one at the front and one at the back.

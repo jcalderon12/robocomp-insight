@@ -15,8 +15,13 @@ from rdflib import Graph, Namespace, RDFS
 INSIGHT = Namespace("http://insight.local/ontology#")
 DEFAULT_ENTITY_NAMESPACE = "http://insight.local/instances#"
 
+#: Contract-1 ids whose names already interpret the change. The prompt shows the neutral id and
+#: the answer is read back to the recorded one, so the JSON, the RDF and the simulator keep theirs.
+NEUTRAL_IDS = {"Accident_1": "Observation_1", "Interval_fall": "Interval_before_observation"}
 
-def _label(value: Any, labels: dict[str, str]) -> str:
+
+def entity_label(value: Any, labels: dict[str, str]) -> str:
+    """The label of an entity, or the local name of its IRI."""
     text = str(value)
     local = text.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
     return labels.get(text, labels.get(local, local))
@@ -53,12 +58,12 @@ def build_explanation_context(episode: dict[str, Any], graph: Graph,
     support = episode.get("support") or {}
     entities = episode.get("entities") or {}
     labels = episode.get("entity_labels") or {}
-    roles = {role: _label(entity, labels) for role, entity in entities.items()}
+    roles = {role: entity_label(entity, labels) for role, entity in entities.items()}
     role_entities = dict(entities)
     for role in ("supported", "supporter"):
         if support.get(role):
             role_entities[role] = support[role]
-            roles[role] = _label(support[role], labels)
+            roles[role] = entity_label(support[role], labels)
 
     def same_entity(recorded: Any, changed: Any) -> bool:
         if recorded == changed:
@@ -97,7 +102,7 @@ def build_explanation_context(episode: dict[str, Any], graph: Graph,
         affected = next(iter(subjects)) if len(subjects) == 1 else None
     if affected is None and legacy:
         affected = support.get("supported")
-    roles["affected_entity"] = _label(affected, labels) if affected else "the affected entity (not identified)"
+    roles["affected_entity"] = entity_label(affected, labels) if affected else "the affected entity (not identified)"
 
     registry = {}
     for node in graph.subjects(INSIGHT.profileId):
@@ -142,9 +147,12 @@ def build_explanation_context(episode: dict[str, Any], graph: Graph,
         raise ValueError("episode.change.unknowns must be a list of statements")
     profile_notes = [str(note) for profile_id in profiles
                      for note in graph.objects(registry[profile_id], INSIGHT.observationNote)]
+    observation_id = supplied.get("id") or event.get("id") or episode.get("episode_id", "observation")
+    recorded_ids = {observation_id} | {interval.get("id") for interval in episode.get("intervals", [])}
     return {
         "schema": "insight.explanation_context/1.0",
-        "observation_id": supplied.get("id") or event.get("id") or episode.get("episode_id", "observation"),
+        "observation_id": observation_id,
+        "display_ids": {recorded: shown for recorded, shown in NEUTRAL_IDS.items() if recorded in recorded_ids},
         "observed_at_s": supplied.get("time_s", (episode.get("time") or {}).get("t_obs_s", event.get("time_s"))),
         "summary": supplied.get("summary") or event.get("observed_as") or "Observed changes listed below",
         "changes": changes,

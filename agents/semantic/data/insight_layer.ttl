@@ -241,7 +241,7 @@ insight:person_distance_min a sosa:ObservableProperty ;
 
 insight:bottle_reacquired a sosa:ObservableProperty ;
     rdfs:label "bottle reacquired"@en ;
-    rdfs:comment "Whether the robot->bottle RT edge appears again after t_obs within the available recording. This is restoration of the represented carrying relation, not any visual detection or proof of continuous physical support."@en .
+    rdfs:comment "Whether the robot->bottle RT edge appears again after t_obs within the available recording."@en .
 
 insight:reaction_onset a sosa:ObservableProperty ;
     rdfs:label "reaction onset"@en ;
@@ -347,8 +347,7 @@ insight:Profile_CarriedObjectRelationLoss a insight:ExplanationProfile ;
     insight:matchesOperation "removed" ;
     insight:matchesPredicate dul:hasLocation ;
     insight:requiresAffectedRole "supported" ;
-    insight:legacyEpisodeSection "support" ;
-    insight:observationNote "The discontinued carrying relation describes the robot's representation. It does not by itself establish the affected entity's current location or a physical fall." .
+    insight:legacyEpisodeSection "support" .
 
 insight:SimulationIntervention a owl:Class ;
     rdfs:subClassOf dul:Description ;
@@ -614,7 +613,7 @@ insight:Mechanism_ObstacleTraversed a insight:Mechanism ;
     insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "undetected obstacle driven over"@en ;
     insight:mechanismId "obstacle_traversed" ;
-    insight:promptDescription "{robot} could drive over an undetected low object on the floor (a bump or a cable); the disturbance could displace {affected_entity} from its recorded support." ;
+    insight:promptDescription "{robot} could drive over an undetected low object on the floor (a bump or a cable); the disturbance could displace {affected_entity} from {supporter}." ;
     insight:titleTemplate "Undetected {shape} on {segment}" ;
     insight:family "external" ;
     insight:inOldCatalog true ;
@@ -695,7 +694,7 @@ insight:Mechanism_CommandedSpeedChange a insight:Mechanism ;
     insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "commanded brake or acceleration"@en ;
     insight:mechanismId "commanded_speed_change" ;
-    insight:promptDescription "A recorded command could change the carrier speed sharply; its possible effect on {affected_entity} must be checked against the episode." ;
+    insight:promptDescription "A recorded command could change the carrier speed sharply and displace {affected_entity}." ;
     insight:titleTemplate "Commanded speed change during {interval}" ;
     insight:family "internal" ;
     insight:inOldCatalog false ;
@@ -726,7 +725,7 @@ insight:Mechanism_BottleRemovedByPerson a insight:Mechanism ;
     insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "bottle removed by a person"@en ;
     insight:mechanismId "bottle_removed_by_person" ;
-    insight:promptDescription "A person within reach could remove {affected_entity} from {supporter}; proximity alone does not establish that the removal occurred." ;
+    insight:promptDescription "A person within reach could remove {affected_entity} from {supporter}." ;
     insight:titleTemplate "A person removed the bottle during {interval}" ;
     insight:family "external" ;
     insight:inOldCatalog false ;
@@ -740,7 +739,7 @@ insight:Mechanism_PerceptionFailure a insight:Mechanism ;
     insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
     rdfs:label "perception failure"@en ;
     insight:mechanismId "perception_failure" ;
-    insight:promptDescription "Detection, association or tracking of {affected_entity} could fail while its physical support remains unchanged. Neither absent nor renewed detection alone establishes what physically happened." ;
+    insight:promptDescription "Detection, association or tracking of {affected_entity} could fail while its physical support remains unchanged." ;
     insight:titleTemplate "False loss of the bottle during {interval}" ;
     insight:family "internal" ;
     insight:inOldCatalog false ;

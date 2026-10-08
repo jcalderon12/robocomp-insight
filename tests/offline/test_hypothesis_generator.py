@@ -29,6 +29,7 @@ sys.path.insert(0, str(REPO / "agents" / "inner_simulator" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from hypothesis_compiler import compile_batch  # noqa: E402
+from src.explanation_context import NEUTRAL_IDS  # noqa: E402
 from src.hypothesis_generator import build_prompt, generate_batch, read_self_model  # noqa: E402
 from src.hypothesis_pipeline import MECHANISM_ORDER  # noqa: E402
 from test_episode_contrast import episodes_2409  # noqa: E402
@@ -58,8 +59,8 @@ def check_prompt_1229(episode):
     prompt = build_prompt(episode, read_self_model(), budget=6)
     for segment in episode["segments"]:
         assert f"- {segment['id']}:" in prompt, segment["id"]
-    for interval in episode["intervals"]:
-        offered = f"- {interval['id']} = [" in prompt
+    for interval in episode["intervals"]:                                # shown with its neutral id
+        offered = f"- {NEUTRAL_IDS.get(interval['id'], interval['id'])} = [" in prompt
         assert offered == (interval["start_s"] < episode["time"]["t_obs_s"]), interval["id"]
     assert "Interval_reaction" not in prompt
     braking = next(e for e in episode["evidence"] if e.get("is_system_reaction"))

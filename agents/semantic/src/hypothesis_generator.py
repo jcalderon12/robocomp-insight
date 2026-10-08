@@ -11,8 +11,10 @@ The prompt gives the LLM, once each:
     a trace, whether they can be simulated and what they cost;
   * the robot's self-model (description.md).
 
-The observed delta, entity roles and selected profiles are saved in context_summary. No physical
-event is assumed from a structural retraction; unknown profiles never inherit a scenario's catalog.
+The observed delta, entity roles and selected profiles are saved in context_summary. The prompt
+states recorded facts and declared knowledge only, without instructions about what to conclude;
+ids whose names interpret the change are shown neutral and read back from the answer. Unknown
+profiles never inherit a scenario's catalog.
 The LLM answers in symbols (layer 3a) and hypothesis_pipeline turns the answer into the published
 batch (layer 3b). An answer that is not a JSON object, or breaks the schema, is sent back with its
 problems and asked again, up to `max_attempts`: at temperature 0, asking again without them would
@@ -24,6 +26,7 @@ case.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,8 +37,9 @@ from typing import Any, Callable, Optional
 import requests
 from rdflib import RDF, RDFS, Graph, Namespace
 
+from src.episode_builder import BASELINE_INTERVAL
 from src.episode_contrast import DEFAULT_TBOX
-from src.explanation_context import build_explanation_context, render_context_template
+from src.explanation_context import build_explanation_context, entity_label, render_context_template
 from src.hypothesis_pipeline import (
     DEFAULT_BUDGET, DEFAULT_CATALOG, NEW_MECHANISM, HypothesisSchemaError,
     error_batch, load_vocabulary, publish_batch, simulation_cost_description,
@@ -93,7 +97,7 @@ def observable_properties(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, tup
             for p in graph.subjects(RDF.type, SOSA.ObservableProperty)}
 
 
-def _evidence_line(entry: dict[str, Any], properties: dict[str, tuple[str, str]]) -> str:
+def _evidence_line(entry: dict[str, Any], properties: dict[str, tuple[str, str]], baseline: str) -> str:
     prop = entry["property"]
     unit = entry.get("unit")
     unit = "" if unit in (None, "1") else f" {unit}"
@@ -103,19 +107,19 @@ def _evidence_line(entry: dict[str, Any], properties: dict[str, tuple[str, str]]
     if entry.get("interval"):
         text += f", over {entry['interval']}"
     if entry.get("baseline") is not None:
-        text += f"; in free motion: {_n(entry['baseline'])}{unit}"
+        text += f"; {baseline}: {_n(entry['baseline'])}{unit}"
     if entry.get("commanded") is not None:
         text += f"; commanded: {_n(entry['commanded'])}{unit}"
     if entry.get("own_ratio_fall") is not None:
         text += (f"; travelled over commanded: {_n(entry['own_ratio_fall'])} there, "
-                 f"{_n(entry.get('own_ratio_baseline'))} in free motion")
+                 f"{_n(entry.get('own_ratio_baseline'))} {baseline}")
     label, comment = properties.get(prop, ("", ""))
     return f"- {text}." + (f" ({label}: {comment})" if comment else "")
 
 
 def describe_episode(episode: dict[str, Any], tbox_path: str | Path = DEFAULT_TBOX,
                      *, context: Optional[dict[str, Any]] = None) -> str:
-    """Render recorded facts and symbolic anchors without assuming a particular physical event."""
+    """Render recorded facts and symbolic anchors; build_prompt shows the neutral ids."""
     context = context if context is not None else build_explanation_context(
         episode, Graph().parse(str(tbox_path), format="turtle"))
     properties = observable_properties(tbox_path)
@@ -126,38 +130,45 @@ def describe_episode(episode: dict[str, Any], tbox_path: str | Path = DEFAULT_TB
     phases = [p for p in episode.get("phases", []) if not p.get("is_system_reaction")]
     support = episode.get("support") or {}
     event = episode.get("observation") or episode.get("accident") or {}
+    labels = episode.get("entity_labels") or {}
     lines = [f"## The episode {episode.get('episode_id', context['observation_id'])}", "",
              f"Reference frame: {frame.get('name', 'not recorded')}. Position units: "
              f"{frame.get('units', 'not recorded')}. Heading convention: {frame.get('heading', 'not recorded')}.",
-             f"Times in seconds; origin: {clock.get('origin', 'not recorded')}.",
-             "Identifiers are recorded labels; their names do not establish physical events.", "",
+             f"Times in seconds; origin: {clock.get('origin', 'not recorded')}.", "",
              "### Observed discrepancy",
              f"- {context['observation_id']}: {context['summary']}; observation time = {_n(observed_at)} s."]
     for change in context["changes"]:
-        lines.append(f"- Recorded change ({change['operation']}): subject={change.get('subject', 'unknown')}; "
-                     f"relation={change.get('predicate', 'unknown')}; object={change.get('object', 'unknown')}.")
+        terms = {key: entity_label(change[key], labels) if change.get(key) else "unknown"
+                 for key in ("subject", "predicate", "object")}
+        lines.append(f"- Recorded change ({change['operation']}): subject={terms['subject']}; "
+                     f"relation={terms['predicate']}; object={terms['object']}.")
     if context["mission"] is not None:
         mission = context["mission"]
         lines.append("- Recorded mission context: " + (mission if isinstance(mission, str) else
                      json.dumps(mission, ensure_ascii=False)) + ".")
-    if episode.get("entities"):
-        lines.append("- Recorded entity roles: " + "; ".join(
-            f"{role}={entity}" for role, entity in episode["entities"].items()) + ".")
-    lines.append("- Applicable ontology profiles: " + (", ".join(context["profile_labels"]) or "none declared") + ".")
+    # Each entity once, with the roles the change and the support give it, else the episode's name.
+    derived = ("affected_entity", "supported", "supporter")
+    entities: dict[str, list[str]] = {}
+    for role, entity in context["roles"].items():
+        if role != "affected_entity" or context["affected_entity"] is not None:
+            entities.setdefault(entity, []).append(role)
+    if entities:
+        lines.append("- Entities and their roles: " + "; ".join(
+            f"{entity} ({', '.join(r.replace('_', ' ') for r in ([r for r in roles if r in derived] or roles))})"
+            for entity, roles in entities.items()) + ".")
+    lines.append("- Kind of change, according to the ontology: "
+                 + (", ".join(context["profile_labels"]) or "none declared") + ".")
     lines.extend(f"- {note}" for note in context["profile_notes"])
-    lines.extend(f"- {note}" for note in context["selection_notes"])
     lines.extend(f"- Unknown: {note}" for note in context["unknowns"])
     pose = event.get("robot_pose") or {}
     if pose:
-        lines.append(f"- Recorded observer pose at the observation: position={pose.get('xy', 'unknown')}, "
-                     f"heading={_n(pose.get('heading_deg'))} deg. This does not locate the affected entity.")
+        lines.append(f"- Robot pose at the observation: position={pose.get('xy', 'unknown')}, "
+                     f"heading={_n(pose.get('heading_deg'))} deg.")
     if support:
-        lines.append(f"- Recorded support estimate {support.get('id', 'unnamed')}: "
-                     f"{support.get('supporter', 'unknown')} supporting {support.get('supported', 'unknown')}, "
-                     f"represented over [{_n(support.get('start_s'))}, {_n(support.get('end_s'))}] s. "
-                     "The end of this estimate is not an independently measured end of physical support.")
-    lines += ["- The cause of the discrepancy is not established. Marked system reactions are excluded "
-              "as candidate causes and anchors.", "", "### Recorded phases before the observation"]
+        lines.append(f"- Support relation in the robot's working memory: {support.get('supporter', 'unknown')} "
+                     f"supporting {support.get('supported', 'unknown')}, over "
+                     f"[{_n(support.get('start_s'))}, {_n(support.get('end_s'))}] s.")
+    lines += ["", "### Recorded phases before the observation"]
     for phase in phases:
         span = intervals.get(phase.get("interval"), {})
         if observed_at is not None and span.get("start_s") is not None and span["start_s"] >= observed_at:
@@ -189,18 +200,14 @@ def describe_episode(episode: dict[str, Any], tbox_path: str | Path = DEFAULT_TB
         if observed_at is not None and span.get("start_s") is not None and span["start_s"] >= observed_at:
             continue
         lines.append(f"- {interval_id} = [{_n(span.get('start_s'))}, {_n(span.get('end_s'))}] s.")
-    lines += ["", "### Evidence (recorded measurements; baseline values refer to their recorded reference)"]
+    lines += ["", "### Evidence (recorded measurements)"]
+    baseline = f"over {BASELINE_INTERVAL}" if BASELINE_INTERVAL in intervals else "baseline"
     for entry in episode.get("evidence", []):
         if entry.get("is_system_reaction") or entry["property"] == "reaction_onset":
             continue
-        lines.append(_evidence_line(entry, properties))
-    if any(entry.get("at_s", observed_at or 0) > (observed_at or 0)
-           for entry in episode.get("evidence", []) if not entry.get("is_system_reaction")
-           and entry.get("at_s") is not None):
-        lines.append("- Later observations describe state after the discrepancy; they are not earlier causes.")
+        lines.append(_evidence_line(entry, properties, baseline))
     if clock.get("episode_length_s") is not None:
-        lines.append(f"- Recording available through {_n(clock['episode_length_s'])} s. Lack of a later "
-                     "observation refers only to this recorded interval.")
+        lines.append(f"- Recording available through {_n(clock['episode_length_s'])} s.")
     return "\n".join(lines)
 
 
@@ -211,12 +218,11 @@ def describe_mechanisms(tbox_path: str | Path = DEFAULT_TBOX, catalog: Optional[
     profiles = tuple(context["profile_ids"]) if context is not None else None
     vocabulary = load_vocabulary(tbox_path, profiles)
     lines = ["## The mechanisms", "",
-             "These are candidate mechanisms declared applicable to the observed change by the ontology. "
-             "Their descriptions are hypotheses, not observations. Use their ids. Parameters are qualitative "
-             "kinds only; the memory supplies numerical magnitudes and simulation ranges.", ""]
+             "Candidate mechanisms that the ontology declares for this kind of change. Use their ids. "
+             "Parameters are qualitative kinds only; the memory supplies numerical magnitudes and simulation "
+             "ranges.", ""]
     if not vocabulary:
-        lines += ["No applicable mechanisms are declared for this change. Do not borrow mechanisms from "
-                  "a different case. An unlisted proposal is kept as `new` and is not simulated.", ""]
+        lines += ["The ontology declares no mechanism for this kind of change.", ""]
     for mechanism_id, terms in vocabulary.items():
         mechanism = terms.mechanism
         parameters = "; ".join(f"{name}: {' | '.join(values)}" for name, values in terms.parameters.items()) or "none"
@@ -283,34 +289,46 @@ def build_prompt(episode: dict[str, Any], self_model: str, budget: Optional[int]
         "- never write a number: no coordinates, times, fractions, forces nor probabilities. The memory turns "
         "the symbols into numbers;",
         "- read the evidence: a hypothesis should explain what the recording shows;",
-        "- distinguish observations, the robot's previous estimates and hypothetical physical events. "
-        "Do not turn a change in the robot's representation into an observed physical event;",
-        "- missing observations are unknown. Absence of redetection in a finite recording is not proof "
-        "of a physical displacement, and redetection alone does not establish continuous support;",
         f"- order the hypotheses from the most to the least plausible; propose at most {MAX_HYPOTHESES}. {simulated}",
-        "- propose a mechanism that explains the evidence even if it cannot be simulated;",
-        "- the observed discrepancy is what needs explanation, not a cause. System reactions after the "
-        "observation must not be used as earlier causes.",
+        "- propose a mechanism that explains the evidence even if it cannot be simulated.",
         "",
         "Answer with exactly one JSON object and nothing else (no markdown, no prose), in this format:",
         json.dumps(ANSWER_FORMAT, indent=2),
     ]
-    return "\n\n".join([
+    return _neutral_ids("\n\n".join([
         "You explain anomalies of a mobile robot. You propose hypotheses; the robot's memory checks them "
         "against the recording and simulates the ones that survive.",
         describe_episode(episode, tbox_path, context=context),
         describe_mechanisms(tbox_path, with_costs=budget is not None, context=context),
-        "## The robot (its self-model)\n\nThis supplied description specifies capabilities and prior model "
-        "information; it does not establish what occurred in this episode.\n\n" + self_model,
+        "## The robot (its self-model)\n\n" + self_model,
         "\n".join(task),
-    ])
+    ]), context.get("display_ids") or {})
 
 
-def feedback(problems: list[str]) -> str:
-    """What the LLM is told when its answer is refused."""
-    return ("Your answer was refused and nothing was simulated:\n"
-            + "\n".join(f"- {problem}" for problem in problems)
-            + "\nAnswer again with the whole JSON object, following the rules of the task.")
+def _neutral_ids(text: str, display_ids: dict[str, str]) -> str:
+    """The recorded ids replaced by the neutral ones the prompt shows (explanation_context.NEUTRAL_IDS)."""
+    for recorded, shown in display_ids.items():
+        text = re.sub(rf"\b{re.escape(recorded)}\b", shown, text)
+    return text
+
+
+def _recorded_ids(proposal: Any, display_ids: dict[str, str]) -> Any:
+    """The anchors of an answer read back from the neutral ids to the recorded ones."""
+    recorded = {shown: original for original, shown in display_ids.items()}
+    hypotheses = proposal.get("hypotheses") if isinstance(proposal, dict) else None
+    for hypothesis in hypotheses if isinstance(hypotheses, list) else []:
+        for anchor in ("segment", "interval"):
+            if isinstance(hypothesis, dict) and isinstance(hypothesis.get(anchor), str):
+                hypothesis[anchor] = recorded.get(hypothesis[anchor], hypothesis[anchor])
+    return proposal
+
+
+def feedback(problems: list[str], display_ids: Optional[dict[str, str]] = None) -> str:
+    """What the LLM is told when its answer is refused, with the ids its prompt showed."""
+    return _neutral_ids("Your answer was refused and nothing was simulated:\n"
+                        + "\n".join(f"- {problem}" for problem in problems)
+                        + "\nAnswer again with the whole JSON object, following the rules of the task.",
+                        display_ids or {})
 
 
 # --------------------------------------------------------------------------- #
@@ -377,7 +395,7 @@ def generate_batch(episode: dict[str, Any], llm: LLM, *, model: str, output_dir:
         attempt.update(elapsed_seconds=round(time.monotonic() - clock, 3), **({"ollama_native": metrics} if metrics else {}))
         messages.append({"role": "assistant", "content": answer})
         try:
-            proposal = _extract_json_object(answer)
+            proposal = _recorded_ids(_extract_json_object(answer), context["display_ids"])
             batch = publish_batch(episode, proposal, arm=ARM, budget=budget, attempts=number,
                                   profiles=profiles, **metadata)
         except HypothesisSchemaError as error:
@@ -391,7 +409,7 @@ def generate_batch(episode: dict[str, Any], llm: LLM, *, model: str, output_dir:
         attempt.update(status="refused", problems=problems)
         errors.append(f"attempt {number}: " + "; ".join(problems))
         log(f"attempt {number} refused: " + "; ".join(problems))
-        messages.append({"role": "user", "content": feedback(problems)})
+        messages.append({"role": "user", "content": feedback(problems, context["display_ids"])})
 
     if batch is None:
         batch = error_batch(episode, errors, arm=ARM, budget=budget, attempts=len(attempts), **metadata)

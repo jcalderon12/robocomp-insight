@@ -16,7 +16,7 @@ sys.path.insert(0, str(REPO / "agents" / "semantic"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.explanation_context import build_explanation_context  # noqa: E402
-from src.hypothesis_generator import build_prompt, generate_batch  # noqa: E402
+from src.hypothesis_generator import build_prompt, feedback, generate_batch  # noqa: E402
 from src.hypothesis_pipeline import MECHANISM_ORDER, anchored_enumeration, load_vocabulary  # noqa: E402
 from test_hypothesis_generator import ScriptedLLM  # noqa: E402
 
@@ -93,10 +93,21 @@ def check_existing_delta_and_legacy():
     task = prompt[prompt.index("## Your task"):]
     for phrase in ("The bottle fell", "explain the fall", "before the fall", "the bottle leaving the tray"):
         assert phrase not in prompt, phrase
+    # Facts and declared knowledge only: no instruction about what to conclude.
+    for phrase in ("does not establish", "not establish", "is not established", "not an independently measured",
+                   "does not locate", "Do not turn", "not proof", "free motion", "Identifiers are recorded labels",
+                   "proximity alone", "Neither absent nor renewed", "Do not borrow", "physical fall"):
+        assert phrase not in prompt, phrase
+    # Ids that interpret the change are shown neutral; entities by label, not by IRI.
+    assert context["display_ids"] == {"Accident_1": "Observation_1", "Interval_fall": "Interval_before_observation"}
+    assert "Accident_1" not in prompt and "Interval_fall" not in prompt
+    assert "- Interval_before_observation = [" in prompt and "over Interval_before_observation" in prompt
+    assert "subject=PhysicalObject_Bottle; relation=hasLocation; object=Agent_Robot." in prompt
+    assert "http://" not in prompt[:prompt.index("## The mechanisms")]
+    assert "PhysicalObject_Tray (supporter)" in prompt and "PhysicalObject_Bottle (supported, affected entity)" in prompt
     assert "deletion of the robot->bottle RT edge" in prompt
-    assert "not an independently measured end of physical support" in prompt
     assert "PhysicalObject_Bottle" in prompt and "PhysicalObject_Tray" in prompt
-    assert "Explain the observed discrepancy Accident_1" in task
+    assert "Explain the observed discrepancy Observation_1" in task
     assert "bottle" not in task.lower() and "tray" not in task.lower()
     assert "Interval_reaction" not in prompt
     assert "No removal intervention is implemented" in prompt
@@ -160,7 +171,7 @@ def check_unknown_and_missing_context():
     context = build_explanation_context(episode, graph)
     assert context["profile_ids"] == []
     prompt = build_prompt(episode, "Observer")
-    assert "No applicable mechanisms are declared" in prompt and "- robot_push:" not in prompt
+    assert "The ontology declares no mechanism for this kind of change." in prompt and "- robot_push:" not in prompt
     assert "- new:" in prompt
 
     # An explicit unrelated observation must not inherit the legacy object's profile.
@@ -184,11 +195,36 @@ def check_unknown_and_missing_context():
         "operation": "removed", "subject": "Object_X", "predicate": str(DUL.hasLocation), "object": "Robot_R"}}
     context = build_explanation_context(incomplete, graph)
     assert context["profile_ids"] == ["carried_object_relation_loss"] and context["selection_notes"]
+    # Selection notes are provenance of the batch, not text for the LLM.
+    assert "provisional" not in build_prompt(incomplete, "Observer")
+
+
+def check_neutral_ids_read_back():
+    """An answer with the neutral ids reaches the batch with the recorded ones; feedback shows the neutral."""
+    episode = json.loads(REAL.read_text())
+    answer = {"hypotheses": [
+        {"mechanism": "bottle_push", "new_mechanism_description": None, "segment": None,
+         "interval": "Interval_before_observation", "qualitative_parameters": {"direction": "any"},
+         "expected_trace": [], "rationale": "A push", "title": "Push"},
+        {"mechanism": "slippery_floor", "new_mechanism_description": None, "segment": None,
+         "interval": "Interval_before_observation", "qualitative_parameters": {},
+         "expected_trace": [], "rationale": "Slip", "title": "Slip"}]}
+    with tempfile.TemporaryDirectory() as tmp:
+        result = generate_batch(episode, ScriptedLLM(json.dumps(answer)), model="scripted", output_dir=Path(tmp))
+    assert result.ok and result.batch["attempts"] == 1, result.batch.get("errors")
+    push, slip = result.batch["hypotheses"]
+    assert push["anchors"]["interval"] == "Interval_fall" and push["status"] != "incoherent", push
+    # Read back before the checks: the memory's reasons name the recorded ids.
+    assert slip["status"] == "incoherent" and "got Interval_fall" in slip["checks"]["coherence"]["reason"], slip
+    assert result.batch["context_summary"]["explanation_context"]["observation_id"] == "Accident_1"
+    shown = feedback(["slippery_floor admits no interval anchor, got Interval_fall"],
+                     result.batch["context_summary"]["explanation_context"]["display_ids"])
+    assert "got Interval_before_observation" in shown and "Interval_fall" not in shown, shown
 
 
 def main():
     for check in (check_existing_delta_and_legacy, check_other_change_and_active_validation,
-                  check_unknown_and_missing_context):
+                  check_unknown_and_missing_context, check_neutral_ids_read_back):
         check()
         print(f"OK {check.__name__}")
     print("Explanation context: all checks passed")
