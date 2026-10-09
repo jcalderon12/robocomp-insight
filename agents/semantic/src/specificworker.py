@@ -59,6 +59,15 @@ GRAPHDB_RETRY_SECONDS = 5.0
 
 
 
+#: DSR updates that carry no fact of the semantic mirror: sensor streams, base setpoints, and the
+#: pose attributes of RT edges (the mirror only reads whether robot->bottle exists). With the UEx
+#: stack of 08/10 they arrive at ~350/s; handling and printing each one made the agent react to a
+#: lost bottle 5 s late (docs_output/resultados/27).
+NON_SEMANTIC_NODE_TYPES = frozenset({"imu"})
+NON_SEMANTIC_ATTRIBUTES = frozenset({"imu_accelerometer", "imu_gyroscope", "imu_magnetic_fields",
+                                     "imu_orientation", "robot_ref_adv_speed", "robot_ref_rot_speed"})
+
+
 class SpecificWorker(GenericWorker):
     # Class-level Qt signal: emitted from any thread (DSR slots may not run on the
     # main Qt thread). The QueuedConnection delivers it to _arm_sync_timer on the
@@ -78,6 +87,7 @@ class SpecificWorker(GenericWorker):
         # mutate semantic state, and from this point on slots could (in principle)
         # observe a partially-built worker.
         self._sync_lock = threading.Lock()
+        self._bottle_id = None          # cached id of the 'bottle' node (see _bottle_node_id)
         self._sync_needed = False
         self._sync_pending = False
         self._sync_timer = QTimer()
@@ -745,6 +755,8 @@ class SpecificWorker(GenericWorker):
     # =============================================
 
     def update_node_att(self, id: int, attribute_names: [str]):
+        if attribute_names and NON_SEMANTIC_ATTRIBUTES.issuperset(attribute_names):
+            return
         node = self.g.get_node(id)
         node_type = getattr(node, "type", None) if node is not None else None
         with self._sync_lock:
@@ -754,6 +766,10 @@ class SpecificWorker(GenericWorker):
         console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
 
     def update_node(self, id: int, type: str):
+        if type in NON_SEMANTIC_NODE_TYPES:
+            return
+        if type == "bottle":
+            self._bottle_id = id
         with self._sync_lock:
             semantic_changed = self.mapper.updated_node(self.g, type)
         if semantic_changed:
@@ -762,6 +778,7 @@ class SpecificWorker(GenericWorker):
         console.print(f"UPDATE NODE: {id} {type}", style='green')
 
     def delete_node(self, id: int):
+        self._bottle_id = None
         with self._sync_lock:
             self.mapper.initialize_from_dsr(self.g)
         self._request_sync()
@@ -770,6 +787,10 @@ class SpecificWorker(GenericWorker):
         console.print(f"DELETE NODE:: {id} ", style='green')
 
     def update_edge(self, fr: int, to: int, type: str):
+        # Of the RT edges, only robot->bottle changes the mirror (by existing or not); the rest are
+        # re-assigned every cycle with new poses.
+        if type == "RT" and to != self._bottle_node_id():
+            return
         with self._sync_lock:
             semantic_changed = self.mapper.updated_edge(self.g, type)
         if semantic_changed:
@@ -778,11 +799,19 @@ class SpecificWorker(GenericWorker):
         console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
 
     def update_edge_att(self, fr: int, to: int, type: str, attribute_names: [str]):
+        if type == "RT":           # a pose is not a semantic fact; the edge's existence is (update/delete_edge)
+            return
         with self._sync_lock:
             semantic_changed = self.mapper.updated_edge(self.g, type)
         if semantic_changed:
             self._request_sync()
         console.print(f"UPDATE EDGE ATT: {fr} to {type} {attribute_names}", style='green')
+
+    def _bottle_node_id(self):
+        if self._bottle_id is None:
+            node = self.g.get_node("bottle")
+            self._bottle_id = node.id if node is not None else None
+        return self._bottle_id
 
     def delete_edge(self, fr: int, to: int, type: str):
         with self._sync_lock:

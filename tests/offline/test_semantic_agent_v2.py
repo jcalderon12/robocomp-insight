@@ -530,8 +530,47 @@ def check_graphdb_client_requests():
     assert left == {"urn:insight:semantic:live"}, left
 
 
+def check_non_semantic_signals():
+    """With the UEx stack of 08/10 the DSR changes ~350 times/s (IMU at 60 Hz, poses at 38 Hz): the
+    agent drops the updates that carry no fact of the mirror before any DSR query or print, so it
+    reacts to a lost bottle in time (it lagged 5 s, resultados/27)."""
+    calls = []
+
+    class Graph:
+        def get_node(self, key):
+            calls.append(("get_node", key))
+            return types.SimpleNamespace(id=203, type="bottle") if key in ("bottle", 203) else \
+                types.SimpleNamespace(id=key, type="affordance")
+
+    class Mapper:
+        def updated_node(self, g, node_type):
+            calls.append(("updated_node", node_type))
+            return False
+
+        def updated_edge(self, g, edge_type):
+            calls.append(("updated_edge", edge_type))
+            return False
+
+    stub = types.SimpleNamespace(g=Graph(), mapper=Mapper(), _sync_lock=threading.Lock(), _bottle_id=None,
+                                 _request_sync=lambda: calls.append(("sync",)))
+    for name in ("update_node_att", "update_node", "update_edge", "update_edge_att", "_bottle_node_id"):
+        setattr(stub, name, types.MethodType(getattr(specificworker.SpecificWorker, name), stub))
+    stub.update_node_att(300, ["imu_accelerometer", "imu_gyroscope"])     # imu, imu_sintetic
+    stub.update_node_att(200, ["robot_ref_adv_speed", "robot_ref_rot_speed"])
+    stub.update_node(300, "imu")
+    stub.update_edge_att(100, 200, "RT", ["rt_translation", "rt_quaternion"])  # root->robot pose
+    assert calls == [], calls
+    stub.update_edge(100, 200, "RT")                                      # root->robot re-assigned
+    stub.update_edge(200, 300, "RT")                                      # robot->person re-assigned
+    assert calls == [("get_node", "bottle")], calls                       # the bottle id, looked up once
+    stub.update_edge(200, 203, "RT")                                      # robot->bottle: the fact
+    stub.update_node_att(401, ["aff_interacting"])                        # follow_me: a fact too
+    assert ("updated_edge", "RT") in calls and ("updated_node", "affordance") in calls, calls
+
+
 def main():
-    for check in (check_recording_rule, check_slot_annotations, check_graphdb_client_requests, check_agent_loop):
+    for check in (check_recording_rule, check_slot_annotations, check_non_semantic_signals,
+                  check_graphdb_client_requests, check_agent_loop):
         check()
         print(f"OK {check.__name__}")
     print("Semantic agent v2: all checks passed")
