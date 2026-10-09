@@ -45,6 +45,7 @@ from src.case_rdf import decision_graph, is_v2, simulation_graph
 from src.episode_contrast import DEFAULT_TBOX
 from src.episode_rdf import EPISODES, episode_graph, graph_iri
 from src.graphdb_client import GraphDBClient, GraphDBConfig
+from src.graphdb_writer import GraphDBWriter
 from src.hypothesis_config import HypothesisGeneratorConfig
 from src.hypothesis_context import build_hypothesis_generation_context, compact_timestamp_token
 from src.hypothesis_generator import generate_batch, ollama_chat
@@ -55,7 +56,6 @@ from src.verdict_ingestor import ingest_verdict, load_verdict, mechanism_graph
 # DSR contract with the inner simulator (attributes of the intention node)
 HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
 VERDICT_FILEPATH_ATTR = "verdict_filepath"
-GRAPHDB_RETRY_SECONDS = 5.0
 
 
 
@@ -115,7 +115,6 @@ class SpecificWorker(GenericWorker):
         self.hypotheses_path_published = False
         self.ingested_verdict_paths: set[str] = set()
         self._parsed_ingestions = {}
-        self._graphdb_retry_at = 0.0
         self.component_root = Path(__file__).resolve().parent.parent
         self.hypothesis_config = HypothesisGeneratorConfig.from_config(configData, self.component_root)
         enabled = self.hypothesis_config.enabled
@@ -141,6 +140,13 @@ class SpecificWorker(GenericWorker):
 
         self.mapper.initialize_from_dsr(self.g)
         self._bootstrap_remote_state()
+        # Every GraphDB write goes through its own thread: the loop, and the robot's stop, never wait for it.
+        self.graphdb_writer = (
+            GraphDBWriter(self.graphdb_client, lambda message, style: console.print(message, style=style),
+                          mirror=self.last_triples)
+            if self.graphdb_client is not None
+            else None
+        )
         self._load_ontology()
         ##
 
@@ -300,20 +306,17 @@ class SpecificWorker(GenericWorker):
             runs = simulation_graph(self.current_batch, verdict, verdict_path) if verdict is not None else None
             if ingestion.triples:
                 mechanism = mechanism_graph(self.current_batch, ingestion.accepted_hypothesis_id, self.current_episode)
-        if self.graphdb_client is not None and (ingestion.triples or runs is not None):
-            if time.monotonic() < self._graphdb_retry_at:
-                return
-            try:
-                if ingestion.triples:
-                    self.graphdb_client.apply_delta(added=set(ingestion.triples), removed=set())
-                for graph in (runs, mechanism):
-                    if graph is not None:
-                        self.graphdb_client.add_to_graph(graph.serialize(format="turtle"),
-                                                         str(graph_iri(self.current_batch["episode"]["id"])))
-            except Exception as exc:
-                self._graphdb_retry_at = time.monotonic() + GRAPHDB_RETRY_SECONDS
-                console.print(f"Could not consolidate the verdict in GraphDB: {exc}", style="red")
-                return
+        if self.graphdb_writer is not None and (ingestion.triples or runs is not None):
+            triples = set(ingestion.triples)
+            payloads = [graph.serialize(format="turtle") for graph in (runs, mechanism) if graph is not None]
+            episode_iri = str(graph_iri(self.current_batch["episode"]["id"])) if payloads else None
+
+            def consolidate(client):
+                if triples:
+                    client.apply_delta(added=triples, removed=set())
+                for payload in payloads:
+                    client.add_to_graph(payload, episode_iri)
+            self.graphdb_writer.submit(f"consolidate the verdict of case '{ingestion.case_id}'", consolidate)
         if runs is not None:
             console.print(f"Simulation runs of case '{ingestion.case_id}' in the episode graph "
                           f"({len(runs)} triples).", style="cyan")
@@ -466,16 +469,19 @@ class SpecificWorker(GenericWorker):
         disk, so that what the agent stores can be queried with its classes (and GraphDB infers
         with them). Replaced as a whole, so the store always holds the TBox in use. If GraphDB is
         not reachable, the next case tries again."""
-        if self.graphdb_client is None or self._ontology_loaded:
+        if self.graphdb_writer is None or self._ontology_loaded:
             return
-        try:
-            self.graphdb_client.replace_graph(Path(DEFAULT_TBOX).read_text(encoding="utf-8"),
-                                              self.graphdb_config.ontology_graph)
-        except Exception as exc:
-            console.print(f"Could not load the INSIGHT TBox into GraphDB: {exc}", style="yellow")
-            return
-        self._ontology_loaded = True
-        console.print(f"INSIGHT TBox loaded into {self.graphdb_config.ontology_graph}.", style="cyan")
+        tbox = Path(DEFAULT_TBOX).read_text(encoding="utf-8")
+        graph = self.graphdb_config.ontology_graph
+        self._ontology_loaded = True          # queued; back to False if every attempt fails
+
+        def load(client):
+            client.replace_graph(tbox, graph)
+            return f"INSIGHT TBox loaded into {graph}."
+
+        def failed():
+            self._ontology_loaded = False
+        self.graphdb_writer.submit("load the INSIGHT TBox", load, on_failure=failed)
 
     def _arm_sync_timer(self) -> None:
         """Arm the coalescing timer. Runs on the main thread (QueuedConnection)."""
@@ -514,8 +520,8 @@ class SpecificWorker(GenericWorker):
             self._sync_timer.start()
 
     def sync_semantic_to_graphdb(self):
-        # Snapshot all state under the lock; do HTTP outside the lock so a slow
-        # apply_delta does not block DSR slot handlers.
+        # Validate the change under the lock and queue it for GraphDB: this runs on the main
+        # thread, the one that stops the robot, so it does not wait for GraphDB (graphdb_writer).
         with self._sync_lock:
             state = self.mapper.get_state()
             current_triples = set(state.triples)
@@ -524,10 +530,8 @@ class SpecificWorker(GenericWorker):
             added_triples = current_triples - self.last_triples
 
             # Only validate when the semantic state has actually changed since the last
-            # validation. last_signature tracks "last signature pushed to remote" and gets
-            # held back on apply_delta failure; _last_validated_signature is independent so
-            # transient remote failures don't cause us to re-fire the validator on the same
-            # delta every Compute tick.
+            # validation. last_signature tracks the last state queued for GraphDB, which starts
+            # as what GraphDB held at start-up; _last_validated_signature, the last one validated.
             if signature != self._last_validated_signature:
                 if self.bootstrap_sync:
                     console.print("Skipping causal validation during bootstrap synchronization.", style="yellow")
@@ -552,40 +556,16 @@ class SpecificWorker(GenericWorker):
                         self.hypothesis_generation_done = False
                 self._last_validated_signature = signature
 
+            self.bootstrap_sync = False
             if signature == self.last_signature:
-                self.bootstrap_sync = False
                 return
-
-            if self.graphdb_client is None:
-                self.last_signature = signature
-                self.last_triples = current_triples
-                self.bootstrap_sync = False
-                console.print("GraphDB disabled. Semantic state updated locally.", style="yellow")
-                return
-
-        # HTTP without the lock: apply_delta may take hundreds of ms.
-        try:
-            self.graphdb_client.apply_delta(
-                added=added_triples,
-                removed=removed_triples,
-            )
-        except Exception as e:
-            with self._sync_lock:
-                self.bootstrap_sync = False
-            console.print(f"Failed to update GraphDB: {e}", style="red")
-            return
-
-        with self._sync_lock:
             self.last_signature = signature
             self.last_triples = current_triples
-            self.bootstrap_sync = False
 
-        console.print(
-            f"Semantic Graph synchronized to {self.graphdb_config.named_graph} "
-            f"with +{len(added_triples)} / -{len(removed_triples)} changes "
-            f"({len(current_triples)} current triples).",
-            style="green",
-        )
+        if self.graphdb_writer is None:
+            console.print("GraphDB disabled. Semantic state updated locally.", style="yellow")
+            return
+        self.graphdb_writer.sync_mirror(current_triples)
 
     def generate_hypotheses_json(self) -> None:
         if self.hypothesis_config.generation == "v2":
@@ -708,42 +688,35 @@ class SpecificWorker(GenericWorker):
         What a case writes (its episode, its explanation) stays until the next case starts, so it
         can be inspected after a run. Nothing in the loop reads previous cases back: this keeps
         GraphDB from piling up one case per run."""
-        if self.graphdb_client is None:
+        if self.graphdb_writer is None:
             return
         self._load_ontology()
         with self._sync_lock:
-            state = self.mapper.get_state()
-            mirror = set(state.triples)
-        try:
-            self.graphdb_client.replace_with_triples(mirror)
-            self.graphdb_client.drop_graphs(EPISODES)
-        except Exception as exc:
-            console.print(f"Could not clear the previous cases from GraphDB: {exc}", style="yellow")
-            return
-        with self._sync_lock:
-            self.last_triples = mirror
-            self.last_signature = state.signature
-        console.print("GraphDB cleared of previous cases: only the mirror of the working memory.", style="cyan")
+            mirror = set(self.mapper.get_state().triples)
+        self.graphdb_writer.reset(mirror, EPISODES)
 
     def _store_episode(self, episode: dict) -> None:
         """Keep the episode in the semantic memory: its own named graph in GraphDB."""
-        if self.graphdb_client is None:
+        if self.graphdb_writer is None:
             return
         try:
-            self.graphdb_client.replace_graph(episode_graph(episode).serialize(format="turtle"),
-                                              str(graph_iri(episode["episode_id"])))
+            turtle, graph = episode_graph(episode).serialize(format="turtle"), str(graph_iri(episode["episode_id"]))
         except Exception as exc:
             console.print(f"[Generation v2] Could not store the episode in GraphDB: {exc}", style="yellow")
+            return
+        self.graphdb_writer.submit("store the episode", lambda client: client.replace_graph(turtle, graph))
 
     def _store_decisions(self, batch: dict, episode: dict, batch_path) -> None:
         """Keep what the memory decided about each hypothesis next to the episode (contracts 1.8)."""
-        if self.graphdb_client is None:
+        if self.graphdb_writer is None:
             return
         try:
-            self.graphdb_client.add_to_graph(decision_graph(batch, episode, str(batch_path)).serialize(format="turtle"),
-                                             str(graph_iri(episode["episode_id"])))
+            turtle = decision_graph(batch, episode, str(batch_path)).serialize(format="turtle")
         except Exception as exc:
             console.print(f"[Generation v2] Could not store the decisions in GraphDB: {exc}", style="yellow")
+            return
+        graph = str(graph_iri(episode["episode_id"]))
+        self.graphdb_writer.submit("store the decisions", lambda client: client.add_to_graph(turtle, graph))
 
     def _trigger_summary(self) -> dict:
         def listed(triples):
