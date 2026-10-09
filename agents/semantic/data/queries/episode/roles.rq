@@ -1,0 +1,14 @@
+# Which entity plays each role of the episode, in its order, and the label the episode gives it.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?index ?role ?entity_id ?label WHERE {
+  ?episode dul:isSettingFor ?binding .
+  ?binding a insight:RoleBinding ; insight:listIndex ?index ; insight:roleName ?role ; insight:entityId ?entity_id .
+  OPTIONAL { ?binding insight:boundEntity ?entity . ?entity insight:displayLabel ?label }
+}
+ORDER BY ?index

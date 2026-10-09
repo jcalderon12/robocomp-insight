@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from rdflib import OWL, RDF, RDFS, XSD, Graph, Literal, URIRef
 
-from src.episode_contrast import DEFAULT_TBOX
+from src.episode_contrast import DEFAULT_TBOX, tbox_graph
 from src.episode_rdf import DUL, INSIGHT, INST, episode_namespace, observation_iri
 
 NOMINAL_ID = "__nominal__"
@@ -52,9 +52,9 @@ def run_iri(batch: dict, hypothesis_id: str) -> URIRef:
 
 
 @lru_cache(maxsize=4)
-def _tbox_terms(tbox_path: str) -> tuple[dict[str, URIRef], frozenset[URIRef]]:
+def _tbox_terms(tbox_path: str | Graph) -> tuple[dict[str, URIRef], frozenset[URIRef]]:
     """The episode checks by rule id, and the kinds the TBox declares."""
-    tbox = Graph().parse(tbox_path, format="turtle")
+    tbox = tbox_graph(tbox_path)
     checks = {str(rule_id): check for check, rule_id in tbox.subject_objects(INSIGHT.ruleId)}
     kinds = frozenset(tbox.subjects(RDF.type, INSIGHT.Kind))
     return checks, kinds
@@ -89,11 +89,11 @@ def is_v2(batch: Optional[dict]) -> bool:
 
 
 def decision_graph(batch: dict, episode: dict, batch_path: Optional[str] = None,
-                   tbox_path: str | Path = DEFAULT_TBOX) -> Graph:
+                   tbox_path: str | Path | Graph = DEFAULT_TBOX) -> Graph:
     """The anomaly case, the request to the LLM, and what the memory decided about each hypothesis."""
     if not is_v2(batch):
         raise ValueError("the decision trail needs a v2 batch (schema 2.0, with its episode)")
-    checks, kinds = _tbox_terms(str(tbox_path))
+    checks, kinds = _tbox_terms(tbox_path if isinstance(tbox_path, Graph) else str(tbox_path))
     ep = episode_namespace(batch["episode"]["id"])
     graph = _new_graph(batch)
     observations = _observations_by_property(episode)

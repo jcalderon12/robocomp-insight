@@ -5,14 +5,15 @@ main thread. A GraphDB write there held all of it for as long as GraphDB took to
 repository's inference on, 5 s timeouts, and the robot stopped 5 s after losing the bottle (09/10).
 The agent queues its writes here instead. One thread applies them in the order they were queued and
 retries a failed one before going on, so a write never overtakes an earlier one (a case's episode
-never lands before the reset that clears the previous case).
+never lands before the mirror is restored). A read of the semantic memory goes through the same
+queue (call), so it sees every write queued before it.
 """
 from __future__ import annotations
 
 import queue
 import threading
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 #: Attempts per write, and the wait between them. Every write is idempotent (graph replacements,
 #: INSERT/DELETE DATA, and Turtle without blank nodes), so repeating one after a timeout is safe.
@@ -50,16 +51,36 @@ class GraphDBWriter:
                     f"changes ({len(target)} current triples).")
         self.submit("synchronize the semantic mirror", write)
 
-    def reset(self, mirror, drop_prefix: str) -> None:
-        """The live graph back to the mirror alone, and every named graph under the prefix dropped."""
+    def restore_mirror(self, mirror) -> None:
+        """The live graph back to the mirror of the working memory alone. The graphs of the cases stay:
+        GraphDB is the long-term memory (decision of 08/10)."""
         mirror = frozenset(mirror)
 
         def write(client):
             client.replace_with_triples(mirror)
             self._mirror = mirror
-            client.drop_graphs(drop_prefix)
-            return "GraphDB cleared of previous cases: only the mirror of the working memory."
-        self.submit("clear the previous cases", write)
+            return "Live graph restored to the mirror of the working memory; previous cases kept."
+        self.submit("restore the mirror", write)
+
+    def call(self, what: str, operation: Callable, timeout_s: Optional[float] = None):
+        """Run operation(client) after every write queued before it, with the same retries, and return
+        what it returns. Raises the last error if every attempt fails, or TimeoutError."""
+        done, outcome = threading.Event(), {}
+
+        def run(client):
+            try:
+                outcome["value"] = operation(client)
+            except Exception as error:      # kept for the caller; the writer retries and logs it
+                outcome["error"] = error
+                raise
+            outcome.pop("error", None)
+            done.set()
+        self._jobs.put((what, run, done.set))
+        if not done.wait(timeout_s):
+            raise TimeoutError(f"GraphDB did not {what} within {timeout_s:g} s")
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["value"]
 
     def join(self) -> None:
         """Wait until every queued write is done or given up."""

@@ -15,3 +15,4 @@ SELECT DISTINCT ?case ?recording ?model ?attempts ?batch ?verdict WHERE {
   OPTIONAL { ?g insight:batchPath ?batch }
   OPTIONAL { ?c insight:verdictPath ?verdict }
 }
+ORDER BY ?case

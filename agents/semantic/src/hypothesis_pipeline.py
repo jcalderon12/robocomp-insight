@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import json
 import math
 import re
 import uuid
@@ -51,8 +50,9 @@ from rdflib import Graph, URIRef
 
 from src.episode_contrast import (
     DEFAULT_TBOX, DISCARDED, EXPLAINED_BY_MEMORY, FALL_INTERVAL, INCOHERENT, INSIGHT, EpisodeView, Mechanism,
-    contrast_hypothesis, default_anchors, load_mechanisms,
+    contrast_hypothesis, default_anchors, load_mechanisms, tbox_graph,
 )
+from src.episode_rdf import record_sha256 as _record_sha256
 from src.intervention_catalog import InterventionCatalog
 
 DEFAULT_CATALOG = Path(__file__).resolve().parents[3] / "etc" / "intervention_catalog.json"
@@ -138,7 +138,7 @@ class MechanismTerms:
 
 
 @lru_cache(maxsize=4)
-def load_vocabulary(tbox_path: str | Path = DEFAULT_TBOX,
+def load_vocabulary(tbox_path: str | Path | Graph = DEFAULT_TBOX,
                     profiles: Optional[tuple[str, ...]] = None) -> dict[str, MechanismTerms]:
     """The mechanisms of the TBox, by id, with their parameters, title and catalog intervention.
 
@@ -147,7 +147,7 @@ def load_vocabulary(tbox_path: str | Path = DEFAULT_TBOX,
     can declare their qualitative parameters in the TBox.
     """
     mechanisms = load_mechanisms(tbox_path, profiles)
-    graph = Graph().parse(str(tbox_path), format="turtle")
+    graph = tbox_graph(tbox_path)
     vocabulary: dict[str, MechanismTerms] = {}
     order = {mechanism_id: index for index, mechanism_id in enumerate(MECHANISM_ORDER)}
     for mechanism_id in sorted(mechanisms, key=lambda name: (order.get(name, len(order)), name)):
@@ -688,20 +688,31 @@ def apply_budget(entries: list[dict[str, Any]], budget: Optional[int]) -> int:
 
 def episode_sha256(episode: dict[str, Any]) -> str:
     """Hash of the episode JSON, canonical (sorted keys, no spaces)."""
-    canonical = json.dumps(episode, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return _record_sha256(episode)
+
+
+def mechanisms_version(tbox_path: str | Path | Graph) -> str:
+    """sha256 of the TBox file; for a graph read from the semantic memory, of its canonical form."""
+    if isinstance(tbox_path, Graph):
+        from rdflib.compare import to_isomorphic
+        return hashlib.sha256(str(to_isomorphic(tbox_path).graph_digest()).encode("utf-8")).hexdigest()
+    return hashlib.sha256(Path(tbox_path).read_bytes()).hexdigest()
 
 
 def _header(episode: dict[str, Any], *, arm: str, budget: Optional[int], used: int, status: str, errors: list[str],
             case_id: Optional[str] = None, trace_id: Optional[str] = None, generated_at: Optional[str] = None,
             trigger: Optional[dict] = None, context_summary: Optional[dict] = None, model: Optional[str] = None,
             prompt_path: Optional[str] = None, attempts: Optional[int] = None, episode_path: Optional[str] = None,
-            tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, Any]:
-    """The fields of a layer-3b batch other than its hypotheses (contract 3, section 4.3)."""
+            tbox_path: str | Path | Graph = DEFAULT_TBOX, record_sha256: Optional[str] = None,
+            tbox_sha256: Optional[str] = None, semantic_memory: Optional[dict] = None) -> dict[str, Any]:
+    """The fields of a layer-3b batch other than its hypotheses (contract 3, section 4.3).
+
+    A batch built from the semantic memory cites the contract-1 record and the TBox file the memory
+    says the case was written from (record_sha256, tbox_sha256), and what it read (semantic_memory)."""
     if arm not in ARMS:
         raise ValueError(f"arm must be one of {ARMS}, got '{arm}'")
     source = episode.get("source") or {}
-    return {
+    header = {
         "schema_version": SCHEMA_VERSION,
         "case_id": case_id or episode["episode_id"],
         "trace_id": trace_id or f"trace_{uuid.uuid4().hex}",
@@ -711,14 +722,18 @@ def _header(episode: dict[str, Any], *, arm: str, budget: Optional[int], used: i
         "trigger": trigger or {},
         "context_summary": context_summary or {},
         "arm": arm,
-        "episode": {"id": episode["episode_id"], "path": episode_path, "sha256": episode_sha256(episode),
+        "episode": {"id": episode["episode_id"], "path": episode_path,
+                    "sha256": record_sha256 or episode_sha256(episode),
                     "recording": {"path": source.get("path"), "sha256": source.get("sha256")}},
-        "mechanisms_version": hashlib.sha256(Path(tbox_path).read_bytes()).hexdigest(),
+        "mechanisms_version": tbox_sha256 or mechanisms_version(tbox_path),
         "budget": {"k": budget, "used": used, "unit": "compiled cause; the nominal run is free"},
         "model": model,
         "prompt_path": prompt_path,
         "attempts": attempts,
     }
+    if semantic_memory is not None:
+        header["semantic_memory"] = semantic_memory
+    return header
 
 
 def error_batch(episode: dict[str, Any], errors: list[str], *, arm: str, budget: Optional[int] = DEFAULT_BUDGET,
@@ -729,7 +744,7 @@ def error_batch(episode: dict[str, Any], errors: list[str], *, arm: str, budget:
 
 
 def publish_batch(episode: dict[str, Any], proposal: Any, *, arm: str, budget: Optional[int] = DEFAULT_BUDGET,
-                  tbox_path: str | Path = DEFAULT_TBOX, catalog: Optional[InterventionCatalog] = None,
+                  tbox_path: str | Path | Graph = DEFAULT_TBOX, catalog: Optional[InterventionCatalog] = None,
                   profiles: Optional[tuple[str, ...]] = None,
                   **metadata: Any) -> dict[str, Any]:
     """The batch of layer 3b for a layer-3a proposal over the episode.
@@ -770,7 +785,7 @@ def publish_batch(episode: dict[str, Any], proposal: Any, *, arm: str, budget: O
 # --------------------------------------------------------------------------- #
 # The anchored enumeration (task B4), as layer 3a
 # --------------------------------------------------------------------------- #
-def anchored_enumeration(tbox_path: str | Path = DEFAULT_TBOX,
+def anchored_enumeration(tbox_path: str | Path | Graph = DEFAULT_TBOX,
                          profiles: Optional[tuple[str, ...]] = None) -> dict[str, Any]:
     """Every mechanism on the anchors of the fall (Segment_final, Interval_fall), with every value
     of its qualitative parameters, in the order of contract 2.

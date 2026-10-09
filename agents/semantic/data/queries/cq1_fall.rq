@@ -1,5 +1,5 @@
 # CQ1. Which representation change was observed, when, and at which robot pose? What support was estimated?
-# Reads: the observed anomaly and support estimate. The legacy filename is retained.
+# Reads: the observed anomaly and support estimate, per case. The legacy filename is retained.
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
@@ -8,9 +8,10 @@ PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX insight: <http://insight.local/ontology#>
 PREFIX inst: <http://insight.local/instances#>
 
-SELECT DISTINCT ?observation ?t_obs ?affected_entity ?segment ?robot_x ?robot_y ?phase ?motion
+SELECT DISTINCT ?case ?observation ?t_obs ?affected_entity ?segment ?robot_x ?robot_y ?phase ?motion
                 ?phase_start ?phase_end ?reaction ?estimate ?supporter ?supported ?estimate_start ?estimate_end WHERE {
   ?episode a insight:Episode ; dul:isSettingFor ?observed .
+  OPTIONAL { ?episode dul:isSettingFor ?case_iri . ?case_iri a inst:AnomalyCase ; rdfs:label ?case }
   ?observed a insight:ObservedAnomaly ; rdfs:label ?observation .
   OPTIONAL { ?observed insight:timeS ?t_obs }
   OPTIONAL { ?observed insight:affectedEntity ?affected_entity }
@@ -32,3 +33,4 @@ SELECT DISTINCT ?observation ?t_obs ?affected_entity ?segment ?robot_x ?robot_y 
                ?estimate_interval insight:startS ?estimate_start ; insight:endS ?estimate_end }
   }
 }
+ORDER BY ?case

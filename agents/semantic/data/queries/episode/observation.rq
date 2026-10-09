@@ -1,0 +1,23 @@
+# The observed change: its record, instant, the observer's pose, and how it was recorded.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?observation ?section ?recorded_id ?time ?segment ?x ?y ?heading ?observed_as ?summary
+       ?validator_reason ?affected_entity ?mission WHERE {
+  ?episode dul:isSettingFor ?observed .
+  ?observed a insight:ObservedAnomaly ; rdfs:label ?observation ; insight:contractSection ?section .
+  OPTIONAL { ?observed insight:recordedId ?recorded_id }
+  OPTIONAL { ?observed insight:timeS ?time }
+  OPTIONAL { ?observed insight:observedAtSegment ?segment_iri . ?segment_iri rdfs:label ?segment }
+  OPTIONAL { ?observed insight:observerX ?x ; insight:observerY ?y }
+  OPTIONAL { ?observed insight:observerHeadingDeg ?heading }
+  OPTIONAL { ?observed insight:observedAs ?observed_as }
+  OPTIONAL { ?observed insight:changeSummary ?summary }
+  OPTIONAL { ?observed insight:validatorReason ?validator_reason }
+  OPTIONAL { ?observed insight:declaredAffectedEntityId ?affected_entity }
+  OPTIONAL { ?observed insight:missionDescription ?mission }
+}

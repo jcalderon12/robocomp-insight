@@ -1,0 +1,20 @@
+# The path segments, in the episode's order: where they run, when, and how fast.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?index ?id ?order ?interval ?from_x ?from_y ?to_x ?to_y ?x_min ?x_max ?y_min ?y_max
+       ?length ?heading ?speed WHERE {
+  ?episode dul:isSettingFor ?segment .
+  ?segment a insight:PathSegment ; insight:listIndex ?index ; rdfs:label ?id ;
+           insight:orderBackFromFall ?order ; insight:traversedDuring ?interval_iri ;
+           insight:lengthM ?length ; insight:meanSpeedMps ?speed ; dul:hasRegion ?region .
+  ?interval_iri rdfs:label ?interval .
+  ?region insight:fromX ?from_x ; insight:fromY ?from_y ; insight:toX ?to_x ; insight:toY ?to_y ;
+          insight:xMin ?x_min ; insight:xMax ?x_max ; insight:yMin ?y_min ; insight:yMax ?y_max ;
+          insight:headingDeg ?heading .
+}
+ORDER BY ?index

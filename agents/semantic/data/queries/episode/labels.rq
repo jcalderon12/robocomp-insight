@@ -1,0 +1,13 @@
+# The labels the episode gives to entities, with the role binding of each one when it has one.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?entity ?label ?entity_id WHERE {
+  ?entity insight:displayLabel ?label .
+  OPTIONAL { ?episode dul:isSettingFor ?binding . ?binding insight:boundEntity ?entity ; insight:entityId ?entity_id }
+}
+ORDER BY ?entity

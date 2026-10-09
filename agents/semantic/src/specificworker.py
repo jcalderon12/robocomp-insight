@@ -43,15 +43,17 @@ from src.ontology_mapping import DSRSemanticWrapper, UNEXPLAINED_INTENTION_NAME,
 from src.episode_memory_reader import episode_from_memory, recording_to_explain
 from src.case_rdf import decision_graph, is_v2, simulation_graph
 from src.episode_contrast import DEFAULT_TBOX
-from src.episode_rdf import EPISODES, episode_graph, graph_iri
+from src.episode_rdf import graph_iri
 from src.graphdb_client import GraphDBClient, GraphDBConfig
 from src.graphdb_writer import GraphDBWriter
 from src.hypothesis_config import HypothesisGeneratorConfig
 from src.hypothesis_context import build_hypothesis_generation_context, compact_timestamp_token
-from src.hypothesis_generator import generate_batch, ollama_chat
+from src.hypothesis_generator import ARM, GenerationResult, generate_from_memory, ollama_chat
+from src.hypothesis_pipeline import error_batch
 from src.hypothesis_service import SemanticHypothesisService
 from src.live_causal_validator import LiveCausalValidator
-from src.verdict_ingestor import ingest_verdict, load_verdict, mechanism_graph
+from src.semantic_memory import SemanticMemoryError, case_graph, snapshot_from_dataset
+from src.verdict_ingestor import case_triples_graph, ingest_verdict, load_verdict, mechanism_graph
 
 # DSR contract with the inner simulator (attributes of the intention node)
 HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
@@ -66,6 +68,10 @@ VERDICT_FILEPATH_ATTR = "verdict_filepath"
 NON_SEMANTIC_NODE_TYPES = frozenset({"imu"})
 NON_SEMANTIC_ATTRIBUTES = frozenset({"imu_accelerometer", "imu_gyroscope", "imu_magnetic_fields",
                                      "imu_orientation", "robot_ref_adv_speed", "robot_ref_rot_speed"})
+
+#: How long the generation waits for GraphDB to store the case and give it back. A healthy GraphDB
+#: answers in milliseconds; past this the batch goes out empty (the simulator waits 120 s for it).
+MEMORY_READ_TIMEOUT_S = 30.0
 
 
 class SpecificWorker(GenericWorker):
@@ -298,21 +304,24 @@ class SpecificWorker(GenericWorker):
                 )
             return
 
-        # The simulation results and supported explanation go next to the decisions. Selecting
-        # an explanation does not assert a physical cause (contracts 1.11).
+        # The simulation results and supported explanation go next to the decisions, in the case's
+        # graph, with the legacy consolidation triples (contracts 1.12). Selecting an explanation does
+        # not assert a physical cause (contracts 1.11).
         runs = mechanism = None
-        if is_v2(self.current_batch):
+        v2 = is_v2(self.current_batch)
+        if v2:
             verdict = load_verdict(verdict_path)
             runs = simulation_graph(self.current_batch, verdict, verdict_path) if verdict is not None else None
             if ingestion.triples:
                 mechanism = mechanism_graph(self.current_batch, ingestion.accepted_hypothesis_id, self.current_episode)
         if self.graphdb_writer is not None and (ingestion.triples or runs is not None):
             triples = set(ingestion.triples)
-            payloads = [graph.serialize(format="turtle") for graph in (runs, mechanism) if graph is not None]
-            episode_iri = str(graph_iri(self.current_batch["episode"]["id"])) if payloads else None
+            legacy = case_triples_graph(triples) if v2 and triples else None
+            payloads = [graph.serialize(format="turtle") for graph in (legacy, runs, mechanism) if graph is not None]
+            episode_iri = str(graph_iri(self.current_batch["episode"]["id"])) if v2 else None
 
             def consolidate(client):
-                if triples:
+                if not v2 and triples:      # generation v1 has no case graph: the live graph, as before
                     client.apply_delta(added=triples, removed=set())
                 for payload in payloads:
                     client.add_to_graph(payload, episode_iri)
@@ -465,10 +474,9 @@ class SpecificWorker(GenericWorker):
             )
 
     def _load_ontology(self) -> None:
-        """Put the INSIGHT TBox in its own named graph of GraphDB, the one the pipeline reads from
-        disk, so that what the agent stores can be queried with its classes (and GraphDB infers
-        with them). Replaced as a whole, so the store always holds the TBox in use. If GraphDB is
-        not reachable, the next case tries again."""
+        """Put the INSIGHT TBox in its own named graph of GraphDB: the schema of what the agent stores,
+        and what the generation reads its vocabulary from. Replaced as a whole, so the store always
+        holds the TBox in use. If GraphDB is not reachable, the next case tries again."""
         if self.graphdb_writer is None or self._ontology_loaded:
             return
         tbox = Path(DEFAULT_TBOX).read_text(encoding="utf-8")
@@ -598,7 +606,7 @@ class SpecificWorker(GenericWorker):
             style="cyan",
         )
 
-        self._reset_previous_cases()
+        self._restore_mirror()
         try:
             generation_started_at = time.perf_counter()
             result = self.hypothesis_service.generate(context)
@@ -629,13 +637,17 @@ class SpecificWorker(GenericWorker):
             )
 
     def _generate_from_episode(self) -> None:
-        """Generation v2 (contract 3): the episode from the recording of the episodic memory, the
-        LLM in symbols, then coherence, contrast, grounding and budget (hypothesis_generator).
+        """Generation v2 (contract 3): the episode from the recording of the episodic memory goes to the
+        semantic memory (GraphDB), with the change the live validator found unexplained; the generation
+        reads the case back from there (the TBox's graph and the case's) and runs the LLM in symbols,
+        then coherence, contrast, grounding and budget (hypothesis_generator).
 
         The recording holds the fall and the reaction once the follow mission stops: wait for it as
         the inner simulator does (recording_to_explain). One attempt per unexplained change. A
         batch whose LLM attempts all failed is published too: it has no hypotheses, the simulator
-        only runs the nominal, and the case stays unexplained.
+        only runs the nominal, and the case stays unexplained. So is one when the semantic memory
+        cannot store or give back the case: the LLM is not asked, and the episode's JSON is never read
+        in its place (plan_memoria_semantica.md, change B).
         """
         nodes = self.episodic_g.get_nodes() if self.episodic_g is not None else []
         recording = recording_to_explain(nodes)
@@ -650,30 +662,38 @@ class SpecificWorker(GenericWorker):
             return
         self._waiting_for_recording = False
         self.hypothesis_generation_done = True
-        self._reset_previous_cases()
+        self._restore_mirror()
         config = self.hypothesis_config
         case_id = f"semantic_unexplained_{compact_timestamp_token()}"
+        trigger = self._trigger_summary()
         started = time.perf_counter()
         try:
             episode = episode_from_memory(recording)
             config.output_dir.mkdir(parents=True, exist_ok=True)
             episode_path = config.output_dir / f"{case_id}_episode.json"
             episode_path.write_text(json.dumps(episode, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
-            self._store_episode(episode)
-            result = generate_batch(
-                episode, self.llm, model=config.primary_model, output_dir=config.output_dir, case_id=case_id,
+        except Exception as exc:
+            console.print(f"[Generation v2] No batch for '{recording}': {exc}", style="red")
+            return
+        try:
+            memory = self._store_and_read_case(case_id, episode, trigger)
+            result = generate_from_memory(
+                memory, self.llm, model=config.primary_model, output_dir=config.output_dir, case_id=case_id,
                 budget=config.budget, max_attempts=config.max_attempts, self_model_path=config.description_path,
-                episode_path=str(episode_path), trigger=self._trigger_summary(),
-                log=lambda message: console.print(f"[Generation v2] {message}", style="cyan"),
+                episode_path=str(episode_path), log=lambda message: console.print(f"[Generation v2] {message}", style="cyan"),
             )
+        except (SemanticMemoryError, TimeoutError, OSError) as exc:
+            console.print(f"[Generation v2] The semantic memory could not give case '{case_id}' back: {exc}. "
+                          "The LLM is not asked; the batch goes out without hypotheses.", style="red")
+            result = self._memory_error_batch(case_id, episode, trigger, episode_path, exc)
         except Exception as exc:
             console.print(f"[Generation v2] No batch for '{recording}': {exc}", style="red")
             return
         self.current_batch = result.batch
-        self.current_episode = episode
+        self.current_episode = result.episode or episode
         self.last_hypotheses_path = result.batch_path
         self.hypotheses_path_published = False
-        self._store_decisions(result.batch, episode, result.batch_path)
+        self._store_decisions(result.batch, self.current_episode, result.batch_path)
         to_simulate = sum(h["status"] == "to_simulate" for h in result.batch["hypotheses"])
         console.print(
             f"[Generation v2] Batch '{case_id}' ({result.batch['status']}) at {result.batch_path}: "
@@ -682,29 +702,43 @@ class SpecificWorker(GenericWorker):
             style="cyan" if result.ok else "yellow",
         )
 
-    def _reset_previous_cases(self) -> None:
-        """Each case starts from a clean semantic memory in GraphDB: the live graph goes back to the
-        mirror of the working memory alone, and the episode graphs of previous cases are dropped.
-        What a case writes (its episode, its explanation) stays until the next case starts, so it
-        can be inspected after a run. Nothing in the loop reads previous cases back: this keeps
-        GraphDB from piling up one case per run."""
+    def _restore_mirror(self) -> None:
+        """A case starts with the live graph back to the mirror of the working memory alone. The graphs
+        of previous cases stay: GraphDB is the semantic memory's long-term store (decision of 08/10),
+        and each case is in its own graph, with the TBox, contracts and code it was written with."""
         if self.graphdb_writer is None:
             return
         self._load_ontology()
         with self._sync_lock:
             mirror = set(self.mapper.get_state().triples)
-        self.graphdb_writer.reset(mirror, EPISODES)
+        self.graphdb_writer.restore_mirror(mirror)
 
-    def _store_episode(self, episode: dict) -> None:
-        """Keep the episode in the semantic memory: its own named graph in GraphDB."""
+    def _store_and_read_case(self, case_id: str, episode: dict, trigger: dict):
+        """Write the case to its graph in GraphDB (the episode, the trigger and the provenance) and read
+        it back with the TBox's graph: the snapshot the generation reads. Both go through the writer's
+        queue, after every earlier write; the robot is already stopped."""
         if self.graphdb_writer is None:
-            return
-        try:
-            turtle, graph = episode_graph(episode).serialize(format="turtle"), str(graph_iri(episode["episode_id"]))
-        except Exception as exc:
-            console.print(f"[Generation v2] Could not store the episode in GraphDB: {exc}", style="yellow")
-            return
-        self.graphdb_writer.submit("store the episode", lambda client: client.replace_graph(turtle, graph))
+            raise SemanticMemoryError("GraphDB is disabled in the config: there is no semantic memory to read from")
+        graph, ontology = str(graph_iri(episode["episode_id"])), self.graphdb_config.ontology_graph
+        turtle = case_graph(episode, trigger, case_id).serialize(format="turtle")
+
+        def store_and_read(client):
+            client.replace_graph(turtle, graph)
+            return client.read_graphs([ontology, graph])
+        dataset = self.graphdb_writer.call("store the case and read it back", store_and_read,
+                                           timeout_s=MEMORY_READ_TIMEOUT_S)
+        return snapshot_from_dataset(dataset, ontology, graph)
+
+    def _memory_error_batch(self, case_id: str, episode: dict, trigger: dict, episode_path, error) -> GenerationResult:
+        """The batch published when the semantic memory could not give the case back: no hypotheses."""
+        config = self.hypothesis_config
+        batch = error_batch(episode, [f"semantic memory: {error}"], arm=ARM, budget=config.budget, attempts=0,
+                            case_id=case_id, model=config.primary_model, trigger=trigger,
+                            episode_path=str(episode_path))
+        batch_path = config.output_dir / f"{case_id}.json"
+        batch_path.write_text(json.dumps(batch, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        return GenerationResult(ok=False, batch=batch, batch_path=batch_path, prompt_path=None, transcript_path=None,
+                                episode=episode)
 
     def _store_decisions(self, batch: dict, episode: dict, batch_path) -> None:
         """Keep what the memory decided about each hypothesis next to the episode (contracts 1.8)."""

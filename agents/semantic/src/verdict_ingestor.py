@@ -4,7 +4,9 @@
     insight:Case_<case_id>  insight:concernsEvent  insight:Event_BottleLocationChange
     insight:Case_<case_id>  insight:explainedBy    insight:Event_<Intervention>
 
-With generation v2, the episode graph records a simulation-supported explanation linking the
+With generation v2 they go to the case's named graph, next to the episode (contracts 1.12; before,
+to the live graph, which each case restores to the mirror of the working memory). The episode
+graph also records a simulation-supported explanation linking the
 selected hypothesis, the simulation run and the observed representation change. It does not
 instantiate a physical causal event or assert soma:causes. Legacy live-graph identifiers and
 links stay available; their types now distinguish representation changes from explanations.
@@ -61,6 +63,14 @@ def build_case_triples(cause_name: str, case_id: str) -> set[Triple]:
         (event_iri, str(RDF.type), str(INSIGHT_TBOX.SimulationSupportedExplanation)),
         (effect_iri, str(RDF.type), str(INSIGHT_TBOX.ObservedAnomaly)),
     }
+
+
+def case_triples_graph(triples) -> Graph:
+    """The legacy consolidation triples (all IRIs) as a graph, to go to the case's named graph."""
+    graph = Graph()
+    for s, p, o in triples:
+        graph.add((URIRef(s), URIRef(p), URIRef(o)))
+    return graph
 
 
 def load_verdict(verdict_path: str | Path) -> Optional[dict]:

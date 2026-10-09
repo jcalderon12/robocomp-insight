@@ -9,7 +9,7 @@ and the episodic graphs), a simulated GraphDB and a scripted LLM, over the 12:29
   3. the simulator's compiler takes that batch;
   4. with a verdict that accepts the bump (a dome of unknown size), GraphDB gets the case explained by obstacle_traversed on
      Segment_final, with the title written from the mechanism; what the consolidation wrote before
-     in the live graph is written as it was, and nothing is removed from it.
+     in the live graph goes, as it was, to the case's graph (contracts 1.12), and nothing is removed.
 Also: the agent waits for the recording as the inner simulator does (a running "Search Problem
 Cause" mission and the "Follow Person" file path), keeps the episode in its own named graph, and
 ignores a verdict that does not answer its batch (the simulator's static causes, when it finds
@@ -20,10 +20,16 @@ with the repository's inference on), the robot stopped 5 s after losing the bott
 is now found unexplained while GraphDB has not answered; the writes land in the order they were
 queued, a failed one is retried, and the next sync of the mirror makes up for one given up.
 
-GraphDB does not pile up one case per run: when a case starts, the live graph goes back to the
-mirror of the working memory alone and the episode graphs of previous cases are dropped; what the
-case writes stays until the next one (a second case, on the 12:40 recording, finds none of the
-first). Other named graphs are left alone.
+GraphDB is the long-term memory (contracts 1.12): when a case starts, the live graph goes back to the
+mirror of the working memory alone, and the graphs of previous cases stay (a second case, on the
+12:40 recording, leaves the first one as it was). Each case says with which TBox, contracts and code
+it was written. Other named graphs are left alone.
+
+The LLM only reads the semantic memory (change B of plan_memoria_semantica.md): the agent writes the
+case to GraphDB (the episode, the change the validator found unexplained and the provenance), reads
+it back with the TBox, and builds the prompt from that; the prompt is the one the episode's JSON
+gives. If GraphDB cannot store or give back the case, the LLM is not asked: the batch goes out with
+no hypotheses and the error, and the JSON is never read in its place.
 
 What the memory decides is kept in the memory (contracts 1.8; criterion in
 docs_output/resultados/20_memoria_en_graphdb/CRITERIO.md):
@@ -86,12 +92,14 @@ from hypothesis_compiler import compile_batch  # noqa: E402
 from rdflib import OWL, RDF, RDFS, Dataset, Graph, Literal, Namespace, URIRef  # noqa: E402
 from src.episode_memory_reader import recording_to_explain  # noqa: E402
 from src.episode_rdf import EPISODES, graph_iri  # noqa: E402
+from src.hypothesis_generator import build_prompt, read_self_model  # noqa: E402
 from src.memory_queries import ONTOLOGY_GRAPH  # noqa: E402
 from src.graphdb_client import GraphDBClient, GraphDBConfig  # noqa: E402
 from src.graphdb_writer import GraphDBWriter  # noqa: E402
 from src.live_causal_validator import LiveCausalValidator  # noqa: E402
 from src.ontology_mapping import AGENT_ROBOT, PHYSICAL_OBJECT_BOTTLE  # noqa: E402
 from src.hypothesis_config import ConfigError, HypothesisGeneratorConfig  # noqa: E402
+from src.hypothesis_pipeline import episode_sha256  # noqa: E402
 from src.verdict_ingestor import build_case_triples  # noqa: E402
 from test_episode_builder import differences  # noqa: E402
 
@@ -145,6 +153,7 @@ class FakeGraphDB:
     def __init__(self):
         self.live, self.removed, self.dataset = set(), set(), Dataset()
         self.down = False
+        self.reads = []
 
     def _reachable(self):
         if self.down:
@@ -177,6 +186,16 @@ class FakeGraphDB:
             if str(context.identifier).startswith(prefix):
                 self.dataset.remove_graph(context)
 
+    def read_graphs(self, graphs):
+        self._reachable()
+        self.reads.append(list(graphs))
+        read = Dataset()
+        for graph in graphs:
+            target = read.graph(URIRef(graph))
+            for triple in self.dataset.graph(URIRef(graph)):
+                target.add(triple)
+        return read
+
     def episode_graphs(self):
         return {str(c.identifier) for c in self.dataset.contexts() if str(c.identifier).startswith(EPISODES) and len(c)}
 
@@ -184,6 +203,10 @@ class FakeGraphDB:
 #: What the agent mirrors of the working memory (a few of the 9 triples).
 MIRROR = {(str(INST.Agent_Robot), str(DUL.hasLocation), str(INST.PhysicalPlace_Room)),
           (str(INST.PhysicalObject_Bottle), str(DUL.hasLocation), str(INST.Agent_Robot))}
+
+
+#: The change the validator finds unexplained when the bottle is lost.
+LOST = (str(INST.PhysicalObject_Bottle), str(DUL.hasLocation), str(INST.Agent_Robot))
 
 
 class ScriptedLLM:
@@ -209,9 +232,10 @@ ANSWER = json.dumps({"hypotheses": [
 ]})
 
 WORKER_METHODS = ("compute", "deactivate_follow_affordance", "insert_intention_hanging_for_robot",
-                  "generate_hypotheses_json", "_generate_from_episode", "_store_episode", "_trigger_summary",
-                  "_publish_path_attribute", "_check_and_ingest_verdict", "_resolve_unexplained_cycle",
-                  "_log_hypothesis_event", "_reset_previous_cases", "_load_ontology", "_store_decisions")
+                  "generate_hypotheses_json", "_generate_from_episode", "_store_and_read_case", "_trigger_summary",
+                  "_memory_error_batch", "_publish_path_attribute", "_check_and_ingest_verdict",
+                  "_resolve_unexplained_cycle", "_log_hypothesis_event", "_restore_mirror", "_load_ontology",
+                  "_store_decisions")
 
 
 def make_worker(output_dir):
@@ -227,7 +251,7 @@ def make_worker(output_dir):
         graphdb_writer=GraphDBWriter(db, lambda message, style: None, retry_seconds=0.01),
         hypothesis_config=config, hypothesis_service=None, llm=ScriptedLLM(ANSWER),
         unexplained=True, unexplained_reason="Bottle lost location on robot without explicit causal evidence.",
-        trigger_added=frozenset(), trigger_removed=frozenset(), stop_inserted=False,
+        trigger_added=frozenset(), trigger_removed=frozenset({LOST}), stop_inserted=False,
         hypothesis_generation_done=False, last_hypotheses_path=None, hypotheses_path_published=False,
         ingested_verdict_paths=set(), _parsed_ingestions={},
         current_batch=None, current_episode=None, _waiting_for_recording=False, _foreign_verdict_paths=set(),
@@ -383,15 +407,32 @@ def run_agent_loop(episode_from_recording):
         assert not found, found[:5]
         assert batch["episode"]["id"] == episode["episode_id"] == "rec_mission_Follow_Person_24092026_122924"
 
-        # The case starts from a clean GraphDB: the mirror alone, and no previous episode. The TBox,
-        # which could not be loaded at start-up, is there now, in its own graph.
+        # The case starts with the live graph back to the mirror alone; the previous case stays. The
+        # TBox, which could not be loaded at start-up, is there now, in its own graph.
         assert worker._ontology_loaded and len(db.dataset.graph(URIRef(ONTOLOGY_GRAPH))) == tbox_size
         assert db.live == MIRROR, db.live - MIRROR
         assert worker.graphdb_writer._mirror == MIRROR
         assert len(db.dataset.graph(URIRef("urn:other:graph"))) == 1        # not the agent's: left alone
-        # The episode is kept in the semantic memory, in its own named graph.
+        # The episode is kept in the semantic memory, in its own named graph, next to the old case.
         episode_iri = graph_iri(episode["episode_id"])
-        assert db.episode_graphs() == {str(episode_iri)}
+        assert db.episode_graphs() == {EPISODES + "rec_old", str(episode_iri)}
+        # The prompt was built from the memory: the TBox's graph and the case's, read back from GraphDB.
+        assert db.reads == [[ONTOLOGY_GRAPH, str(episode_iri)]], db.reads
+        assert batch["semantic_memory"]["source"] == "graphdb", batch["semantic_memory"]
+        assert batch["semantic_memory"]["graphs"] == [ONTOLOGY_GRAPH, str(episode_iri)]
+        from_json = build_prompt(json.loads(Path(batch["episode"]["path"]).read_text(encoding="utf-8")),
+                                 read_self_model(worker.hypothesis_config.description_path),
+                                 worker.hypothesis_config.budget, trigger=batch["trigger"])
+        assert Path(published.replace(".json", "_prompt.md")).read_text(encoding="utf-8") == from_json + "\n"
+        assert batch["trigger"]["removed_triples"] == [dict(zip(("subject", "predicate", "object"), LOST))]
+        assert "subject=PhysicalObject_Bottle; relation=hasLocation; object=Agent_Robot." in from_json
+        assert batch["episode"]["sha256"] == episode_sha256(json.loads(Path(batch["episode"]["path"]).read_text()))
+        # The case says with which TBox, contracts and code it was written.
+        stored = worker.graphdb_client.dataset.graph(episode_iri)
+        case = INST[f"Case_{batch['case_id']}"]
+        assert (case, INSIGHT.tboxVersion, Literal("0.3")) in stored
+        assert (case, INSIGHT.contractsVersion, Literal("1.12")) in stored
+        assert batch["mechanisms_version"] == str(stored.value(case, INSIGHT.tboxSha256))
         stored = worker.graphdb_client.dataset.graph(episode_iri)
         ep = Namespace(str(episode_iri) + "#")
         assert (ep.Accident_1, INSIGHT.observedAtSegment, ep.Segment_final) in stored
@@ -438,12 +479,13 @@ def run_agent_loop(episode_from_recording):
                                   for e in compiled["entries"]]}
         publish_verdict(worker, Path(tmp) / "verdict.json", verdict)
         compute(worker)
-        # What the consolidation wrote before, as it was; nothing removed.
-        assert db.live == MIRROR | build_case_triples("bump_scaled", batch["case_id"])
-        assert not db.removed
-        # The simulation-supported explanation, in the episode's graph.
+        # What the consolidation wrote before in the live graph, as it was, in the case's graph; the
+        # live graph keeps the mirror alone, and nothing is removed.
         stored = worker.graphdb_client.dataset.graph(episode_iri)
-        case = INST[f"Case_{batch['case_id']}"]
+        assert db.live == MIRROR and not db.removed
+        legacy = build_case_triples("bump_scaled", batch["case_id"])
+        assert all((URIRef(s), URIRef(p), URIRef(o)) in stored for s, p, o in legacy), legacy
+        # The simulation-supported explanation, in the episode's graph.
         cause = ep["Explanation_H01"]
         assert (case, INST.explainedBy, cause) in stored
         assert (cause, DUL.isDescribedBy, INSIGHT.Mechanism_ObstacleTraversed) in stored
@@ -484,9 +526,10 @@ def run_agent_loop(episode_from_recording):
         assert {o for _, p, o in stored if p == RDF.type} - {OWL.NamedIndividual} <= classes
         # The cycle is closed; what the case wrote stays until the next one.
         assert not worker.unexplained and worker.g.get_node("unexplained") is None and worker.current_batch is None
-        assert db.episode_graphs() == {str(episode_iri)} and case_triples_in(db.live) == {str(case)}
+        assert db.episode_graphs() == {EPISODES + "rec_old", str(episode_iri)} and not case_triples_in(db.live)
+        first_case = set(stored)
 
-        # A second case, on the 12:40 recording: it finds nothing of the first.
+        # A second case, on the 12:40 recording: the first one stays as it was.
         worker.unexplained = True
         worker.llm = ScriptedLLM(ANSWER)
         follow.attrs["filepath"].value = str(RECORDING_1240)
@@ -494,9 +537,10 @@ def run_agent_loop(episode_from_recording):
         second = json.loads(Path(worker.g.get_node("unexplained").attrs["hypotheses_filepath"].value)
                             .read_text(encoding="utf-8"))
         assert second["episode"]["id"] == "rec_mission_Follow_Person_24092026_124030"
-        assert db.episode_graphs() == {str(graph_iri(second["episode"]["id"]))}
+        assert db.episode_graphs() == {EPISODES + "rec_old", str(episode_iri), str(graph_iri(second["episode"]["id"]))}
+        assert set(db.dataset.graph(episode_iri)) == first_case
         assert db.live == MIRROR and not case_triples_in(db.live)
-        assert len(db.dataset.graph(URIRef(ONTOLOGY_GRAPH))) == tbox_size      # no reset touches the TBox
+        assert len(db.dataset.graph(URIRef(ONTOLOGY_GRAPH))) == tbox_size      # no case touches the TBox
 
         # A verdict that accepts nothing: the live graph is not touched, but what was simulated stays.
         publish_verdict(worker, Path(tmp) / "verdict_none.json",
@@ -515,11 +559,43 @@ def case_triples_in(live):
     return {s for s, p, o in live if p == str(RDF.type) and o == str(INST.AnomalyCase)}
 
 
+def check_memory_unavailable():
+    """GraphDB cannot store or give back the case: the LLM is not asked, and the batch goes out with no
+    hypotheses and the error, so the simulator runs the nominal alone and the case stays unexplained."""
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = make_worker(tmp)
+        worker.episodic_g = FakeGraph(node("Follow Person-1", 10, status="stopped", filepath=str(RECORDING_1229)),
+                                      node("Search Problem Cause-1", 11, status="running"))
+        worker.graphdb_client.down = True
+        compute(worker)
+        assert worker.llm.calls == 0
+        published = worker.g.get_node("unexplained").attrs["hypotheses_filepath"].value
+        batch = json.loads(Path(published).read_text(encoding="utf-8"))
+        assert batch["status"] == "error" and batch["hypotheses"] == [] and batch["attempts"] == 0, batch["status"]
+        assert batch["errors"][0].startswith("semantic memory: GraphDB is not reachable"), batch["errors"]
+        assert batch["trigger"]["unexplained_reason"].startswith("Bottle lost location")
+        assert not list(Path(tmp).glob("*_prompt.md"))
+        assert compile_batch(batch)["entries"][0]["hypothesis_id"] == "__nominal__"
+        # Without GraphDB in the config there is no semantic memory either.
+        worker = make_worker(tmp)
+        worker.episodic_g = FakeGraph(node("Follow Person-1", 10, status="stopped", filepath=str(RECORDING_1229)),
+                                      node("Search Problem Cause-1", 11, status="running"))
+        worker.graphdb_writer = worker.graphdb_client = None
+        worker.compute()
+        assert worker.llm.calls == 0 and worker.current_batch["status"] == "error", worker.current_batch["errors"]
+
+
 def check_graphdb_client_requests():
-    """The real client: the live graph replaced with the mirror, and only the episode graphs dropped."""
+    """The real client: the live graph replaced with the mirror, named graphs read back as they are,
+    and (a one-off cleanup, never done by the agent) only the episode graphs dropped."""
     calls = []
 
     class Session:
+        def get(self, url, **kwargs):
+            calls.append(("get", kwargs))
+            text = f"<{EPISODES}rec_a#Episode> <{RDF.type}> <{INSIGHT.Episode}> .\n"
+            return types.SimpleNamespace(raise_for_status=lambda: None, text=text)
+
         def post(self, url, **kwargs):
             calls.append(("post", kwargs))
             return types.SimpleNamespace(raise_for_status=lambda: None)
@@ -536,6 +612,10 @@ def check_graphdb_client_requests():
     assert method == "put" and request["params"] == {"context": "<urn:insight:semantic:live>"}, request
     sent = Graph().parse(data=request["data"].decode("utf-8"), format="nt")
     assert {(str(s), str(p), str(o)) for s, p, o in sent} == MIRROR
+
+    read = client.read_graphs([ONTOLOGY_GRAPH, EPISODES + "rec_a"])
+    assert [c[1]["params"] for c in calls[-2:]] == [{"context": f"<{ONTOLOGY_GRAPH}>"}, {"context": f"<{EPISODES}rec_a>"}]
+    assert (URIRef(EPISODES + "rec_a#Episode"), RDF.type, INSIGHT.Episode) in read.graph(URIRef(EPISODES + "rec_a"))
 
     client.drop_graphs(EPISODES)
     method, request = calls[-1]
@@ -585,9 +665,10 @@ def check_graphdb_off_main_thread():
     writer.join()
     assert db.live == lost | {other}, db.live
 
-    # In order, with retries: the reset fails once, the next sync every time (given up); the one
-    # after it is computed against what GraphDB holds, not against the sync given up.
-    outcomes = iter([False, True, True, True, False, False, True])
+    # In order, with retries: restoring the mirror fails once, the next sync every time (given up);
+    # the one after it is computed against what GraphDB holds, not against the sync given up. The
+    # graphs of previous cases are never dropped.
+    outcomes = iter([False, True, True, False, False, True])
 
     class FlakyGraphDB(FakeGraphDB):
         def _reachable(self):
@@ -598,15 +679,26 @@ def check_graphdb_off_main_thread():
     db.dataset.graph(URIRef(EPISODES + "rec_old")).add((INST.Episode_old, RDF.type, INSIGHT.Episode))
     writer = GraphDBWriter(db, lambda message, style: logs.append(message), attempts=2, retry_seconds=0.01)
     extra = {(str(INST.A), str(RDF.type), str(INST.B)), (str(INST.C), str(RDF.type), str(INST.D))}
-    writer.reset(MIRROR, EPISODES)
+    writer.restore_mirror(MIRROR)
     writer.submit("store the episode", lambda client: client.replace_graph(
         f"<{EPISODES}rec_new#Episode> a <{INSIGHT.Episode}> .", EPISODES + "rec_new"))
     writer.sync_mirror(MIRROR | set(list(extra)[:1]))
     writer.sync_mirror(MIRROR | extra)
+    read = writer.call("read the new episode", lambda client: client.read_graphs([EPISODES + "rec_new"]))
+    assert len(read.graph(URIRef(EPISODES + "rec_new"))) == 1         # a read sees every write queued before it
     writer.join()
-    assert db.episode_graphs() == {EPISODES + "rec_new"}       # stored after the reset dropped the old one
+    assert db.episode_graphs() == {EPISODES + "rec_old", EPISODES + "rec_new"}
     assert db.live == MIRROR | extra, db.live
     assert sum("retrying" in m for m in logs) == 2 and sum("gave up" in m for m in logs) == 1, logs
+    # A read that fails every time raises its error to the caller.
+    def unreachable(client):
+        raise ConnectionError("GraphDB is not reachable")
+    try:
+        writer.call("read", unreachable)
+    except ConnectionError:
+        pass
+    else:
+        raise AssertionError("a read GraphDB never answered returned")
 
 
 def check_non_semantic_signals():
@@ -649,7 +741,7 @@ def check_non_semantic_signals():
 
 def main():
     for check in (check_recording_rule, check_slot_annotations, check_non_semantic_signals, check_graphdb_off_main_thread,
-                  check_graphdb_client_requests, check_agent_loop):
+                  check_graphdb_client_requests, check_agent_loop, check_memory_unavailable):
         check()
         print(f"OK {check.__name__}")
     print("Semantic agent v2: all checks passed")

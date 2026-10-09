@@ -8,7 +8,8 @@ PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX insight: <http://insight.local/ontology#>
 PREFIX inst: <http://insight.local/instances#>
 
-SELECT ?id ?status ?check ?verdict ?property ?value ?comparison ?reason WHERE {
+SELECT ?case ?id ?status ?check ?verdict ?property ?value ?comparison ?reason WHERE {
+  ?case_iri a inst:AnomalyCase ; rdfs:label ?case ; dul:isSettingFor ?h .
   ?h a insight:Hypothesis ; insight:hypothesisId ?id ; dul:isClassifiedBy ?s .
   ?s insight:statusId ?status .
   FILTER(?status != "to_simulate")
@@ -23,4 +24,4 @@ SELECT ?id ?status ?check ?verdict ?property ?value ?comparison ?reason WHERE {
   }
   OPTIONAL { ?h insight:statusReason ?reason }
 }
-ORDER BY ?id ?property
+ORDER BY ?case ?id ?property

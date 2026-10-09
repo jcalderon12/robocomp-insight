@@ -9,9 +9,10 @@ PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX insight: <http://insight.local/ontology#>
 PREFIX inst: <http://insight.local/instances#>
 
-SELECT ?hypothesis ?quantity ?value WHERE {
+SELECT ?case ?hypothesis ?quantity ?value WHERE {
+  ?case_iri a inst:AnomalyCase ; rdfs:label ?case ; inst:explainedBy ?c .
   ?c a insight:SimulationSupportedExplanation ; insight:hypothesisId ?hypothesis ; insight:supportedBySimulation ?run .
   ?run dul:hasRegion ?sample .
   ?sample a insight:SampledValue ; insight:quantityName ?quantity ; dul:hasDataValue ?value .
 }
-ORDER BY ?quantity
+ORDER BY ?case ?quantity

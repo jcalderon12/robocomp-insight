@@ -8,16 +8,24 @@ inst:Sensor_IMU, ...). The vocabulary is the INSIGHT TBox (agents/semantic/data/
 
 The graph only adds: the triples production mirrors from the working memory stay as they are.
 
-What the TBox has no term for stays only in the JSON: the setpoint and heading ranges of a phase,
-the signed value of a peak and the two ratios behind speed_ratio. The observation's coordinates
-belong to the robot, not the object. Legacy accident/support JSON fields describe a representation
-change and an estimate: they never assert a physical fall or the end of physical support.
+Since contracts 1.12 the graph keeps every field of contract 1 that the prompt, the vocabulary, the
+contrast and the grounding read, so that they read the case from the semantic memory
+(semantic_memory.py) and not from the JSON: the frame and the clock, the roles of the entities and
+their labels, the order of every list, the setpoint and heading ranges of each phase, the signed
+value of a peak, the two ratios behind speed_ratio, the recorded change that the live validator
+found unexplained (with its reason), and the sha256 of the contract-1 record. The legacy
+`participants` and `cause` of the accident record are left out: they describe the change as an
+accident, which the memory does not assert. The observation's coordinates belong to the robot, not
+the object. Legacy accident/support JSON fields describe a representation change and an estimate:
+they never assert a physical fall or the end of physical support.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from decimal import Decimal
-from typing import Any
+from typing import Any, Optional
 
 from rdflib import RDF, RDFS, XSD, Dataset, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL
@@ -73,24 +81,63 @@ def entity_iri(episode: dict[str, Any], identifier: str) -> URIRef:
     return URIRef(episode.get("entity_namespace", str(INST)) + identifier)
 
 
+#: The sections of contract 1 that can hold the observed change, in the order they are looked for.
+OBSERVATION_SECTIONS = ("change", "observation", "accident")
+#: Local name of an observed change whose record gives it no id.
+UNIDENTIFIED_OBSERVATION = "ObservedChange"
+#: Where a recorded change comes from: the record of the change, or the live validator's delta.
+CHANGE_SOURCES = ("change", "changes", "removed_triples", "added_triples")
+
+
+def observation_section(episode: dict[str, Any]) -> str:
+    """The section that holds the observed change: change, observation or the legacy accident."""
+    section = next((name for name in OBSERVATION_SECTIONS if episode.get(name)), None)
+    if section is None:
+        raise ValueError("the RDF episode needs an observed change")
+    return section
+
+
 def observation_record(episode: dict[str, Any]) -> dict[str, Any]:
     """Explicit observed change, or the legacy field whose name does not establish an accident."""
-    record = episode.get("change") or episode.get("observation") or episode.get("accident")
-    if not record or not record.get("id"):
-        raise ValueError("the RDF episode needs an identified observed change")
-    return record
+    return episode[observation_section(episode)]
+
+
+def observation_id(episode: dict[str, Any]) -> str:
+    return observation_record(episode).get("id") or UNIDENTIFIED_OBSERVATION
 
 
 def observation_iri(episode: dict[str, Any]) -> URIRef:
-    return episode_namespace(episode["episode_id"])[observation_record(episode)["id"]]
+    return episode_namespace(episode["episode_id"])[observation_id(episode)]
+
+
+def record_sha256(episode: dict[str, Any]) -> str:
+    """sha256 of the contract-1 record, canonical (sorted keys, no spaces): what a batch cites."""
+    canonical = json.dumps(episode, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _decimal(value: float) -> Literal:
     return Literal(Decimal(repr(float(value))), datatype=XSD.decimal)
 
 
-def episode_graph(episode: dict[str, Any]) -> Graph:
-    """The triples of one episode (to be stored in its named graph)."""
+def _number(value: Any) -> Literal:
+    """A recorded value with its type: a boolean, an integer or a decimal."""
+    if isinstance(value, bool):
+        return Literal(value)
+    if isinstance(value, int):
+        return Literal(value, datatype=XSD.integer)
+    return _decimal(value)
+
+
+def _index(value: int) -> Literal:
+    return Literal(value, datatype=XSD.nonNegativeInteger)
+
+
+def episode_graph(episode: dict[str, Any], trigger: Optional[dict[str, Any]] = None) -> Graph:
+    """The triples of one episode (to be stored in its named graph).
+
+    `trigger` is the delta the live validator found unexplained (the batch's trigger: its reason and
+    the removed and added triples of the working memory); it goes with the observed change."""
     ep = episode_namespace(episode["episode_id"])
     g = Graph()
     for prefix, namespace in (("dul", DUL), ("soma", SOMA), ("sosa", SOSA), ("insight", INSIGHT),
@@ -133,24 +180,63 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
         g.add((episode_iri, INSIGHT.recordedIn, Literal(episode["source"]["path"], datatype=XSD.anyURI)))
     if (episode.get("time") or {}).get("origin_ns") is not None:
         g.add((episode_iri, INSIGHT.timeOriginNs, Literal(int(episode["time"]["origin_ns"]), datatype=XSD.integer)))
+    g.add((episode_iri, INSIGHT.recordSha256, Literal(record_sha256(episode))))
+    texts = [(episode, "schema", INSIGHT.episodeSchema), (episode, "entity_namespace", INSIGHT.entityNamespace),
+             (episode, "mission", INSIGHT.missionDescription)]
+    source, frame, clock = episode.get("source") or {}, episode.get("frame") or {}, episode.get("time") or {}
+    texts += [(source, "kind", INSIGHT.sourceKind), (source, "sha256", INSIGHT.recordingSha256),
+              (source, "builder", INSIGHT.builtBy), (source, "reader", INSIGHT.readBy),
+              (source, "pose_axes", INSIGHT.poseAxes), (frame, "name", INSIGHT.frameName),
+              (frame, "units", INSIGHT.positionUnits), (frame, "heading", INSIGHT.headingConvention),
+              (clock, "origin", INSIGHT.timeOrigin)]
+    for record, key, prop in texts:
+        if isinstance(record.get(key), (str, dict)):
+            value = record[key]
+            g.add((episode_iri, prop, Literal(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))))
+    for key, prop in (("origin_offset_from_file_start_s", INSIGHT.originOffsetS), ("t_obs_s", INSIGHT.observationTimeS),
+                      ("episode_length_s", INSIGHT.episodeLengthS), ("simulation_horizon_s", INSIGHT.simulationHorizonS)):
+        if clock.get(key) is not None:
+            g.add((episode_iri, prop, _number(clock[key])))
+
+    # Which entity plays each role, in the episode's order, and how the episode labels them.
+    for index, (role, entity) in enumerate(entities.items()):
+        if not isinstance(entity, str):
+            continue
+        binding = individual(f"Role_{role}", INSIGHT.RoleBinding)
+        g.add((binding, INSIGHT.listIndex, _index(index)))
+        g.add((binding, INSIGHT.roleName, Literal(role)))
+        g.add((binding, INSIGHT.entityId, Literal(entity)))
+        g.add((binding, INSIGHT.boundEntity, entity_iri(episode, entity)))
+    for key, label in (episode.get("entity_labels") or {}).items():
+        g.add((entity_iri(episode, key), INSIGHT.displayLabel, Literal(str(label))))
 
     intervals = {}
-    for entry in episode.get("intervals", []):
+    for index, entry in enumerate(episode.get("intervals", [])):
         intervals[entry["id"]] = interval(entry["id"], entry["start_s"], entry["end_s"])
+        g.add((intervals[entry["id"]], INSIGHT.listIndex, _index(index)))
+        if entry.get("is_system_reaction"):
+            g.add((intervals[entry["id"]], INSIGHT.isSystemReaction, Literal(True)))
 
     # Phases: what the robot was doing; the reaction is the system's, never a cause.
-    for phase in episode.get("phases", []):
+    for index, phase in enumerate(episode.get("phases", [])):
         if phase.get("is_system_reaction"):
             iri = individual(phase["id"], INSIGHT.SystemReaction)
             g.add((iri, INSIGHT.isSystemReaction, Literal(True)))
             if phase.get("note"):
                 g.add((iri, RDFS.comment, Literal(phase["note"])))
+            if phase.get("stopped_at_s") is not None:
+                g.add((iri, INSIGHT.stoppedAtS, _number(phase["stopped_at_s"])))
         else:
             iri = individual(phase["id"], DUL.Action)
             g.add((iri, INSIGHT.motionKind, Literal(phase["kind"])))
             g.add((iri, INSIGHT.meanSpeedMps, _decimal(phase["mean_speed_mps"])))
             if phase["kind"] in LOCOMOTION:
                 g.add((iri, DUL.isClassifiedBy, LOCOMOTION[phase["kind"]]))
+            for key, props in (("setpoint_mps", (INSIGHT.setpointMinMps, INSIGHT.setpointMaxMps)),
+                               ("heading_deg_range", (INSIGHT.headingMinDeg, INSIGHT.headingMaxDeg))):
+                for prop, value in zip(props, phase.get(key) or ()):
+                    g.add((iri, prop, _number(value)))
+        g.add((iri, INSIGHT.listIndex, _index(index)))
         g.add((iri, DUL.hasTimeInterval, intervals[phase["interval"]]))
         if robot is not None:
             g.add((iri, DUL.hasParticipant, robot))
@@ -160,8 +246,9 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
         g.add((concept, RDFS.label, Literal(kind)))
 
     # Path segments and their regions.
-    for segment in episode.get("segments", []):
+    for index, segment in enumerate(episode.get("segments", [])):
         iri = individual(segment["id"], INSIGHT.PathSegment)
+        g.add((iri, INSIGHT.listIndex, _index(index)))
         region = individual(f"Region_{segment['id']}", DUL.SpaceRegion)
         g.add((iri, DUL.hasRegion, region))
         g.add((iri, INSIGHT.traversedDuring, intervals[segment["interval"]]))
@@ -193,8 +280,49 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
                    interval("Interval_support", support["start_s"], support["end_s"])))
 
     # A recorded change in representation, without inferring a physical accident or object pose.
-    observed = observation_record(episode)
-    observed_iri = individual(observed["id"], INSIGHT.ObservedAnomaly)
+    section = observation_section(episode)
+    observed = episode[section]
+    observed_iri = individual(observation_id(episode), INSIGHT.ObservedAnomaly)
+    g.add((observed_iri, INSIGHT.contractSection, Literal(section)))
+    if observed.get("id"):
+        g.add((observed_iri, INSIGHT.recordedId, Literal(observed["id"])))
+    for key, prop in (("observed_as", INSIGHT.observedAs), ("summary", INSIGHT.changeSummary),
+                      ("affected_entity", INSIGHT.declaredAffectedEntityId)):
+        if isinstance(observed.get(key), str):
+            g.add((observed_iri, prop, Literal(observed[key])))
+    if observed.get("mission") is not None:
+        mission = observed["mission"]
+        g.add((observed_iri, INSIGHT.missionDescription,
+               Literal(mission if isinstance(mission, str) else json.dumps(mission, ensure_ascii=False))))
+    for profile_id in observed.get("profile_ids") or []:
+        g.add((observed_iri, INSIGHT.declaredProfileId, Literal(str(profile_id))))
+    for index, statement in enumerate(observed.get("unknowns") or []):
+        unknown = individual(f"Unknown_{index + 1}", INSIGHT.StatedUnknown)
+        g.add((unknown, INSIGHT.listIndex, _index(index)))
+        g.add((unknown, RDFS.comment, Literal(str(statement))))
+        g.add((observed_iri, INSIGHT.hasStatedUnknown, unknown))
+
+    # The changes of the working memory in which it was observed: those of its record, and the
+    # delta the live validator found unexplained, in their order.
+    changes = []
+    if isinstance(observed.get("changes"), list):
+        changes += [("changes", change) for change in observed["changes"] if isinstance(change, dict)]
+    elif observed.get("operation"):
+        changes.append(("change", observed))
+    if trigger:
+        if trigger.get("unexplained_reason") is not None:
+            g.add((observed_iri, INSIGHT.validatorReason, Literal(str(trigger["unexplained_reason"]))))
+        for key, operation in (("removed_triples", "removed"), ("added_triples", "added")):
+            changes += [(key, {"operation": operation, **triple}) for triple in trigger.get(key) or []]
+    for index, (origin, change) in enumerate(changes):
+        recorded = individual(f"Change_{index + 1}", INSIGHT.RecordedChange)
+        g.add((recorded, INSIGHT.listIndex, _index(index)))
+        g.add((recorded, INSIGHT.changeSource, Literal(origin)))
+        for key, prop in (("operation", INSIGHT.changeOperation), ("subject", INSIGHT.changeSubject),
+                          ("predicate", INSIGHT.changePredicate), ("object", INSIGHT.changeObject)):
+            if change.get(key) is not None:
+                g.add((recorded, prop, Literal(str(change[key]))))
+        g.add((observed_iri, INSIGHT.recordedAs, recorded))
     time_s = observed.get("time_s", (episode.get("time") or {}).get("t_obs_s"))
     if time_s is not None:
         g.add((observed_iri, INSIGHT.timeS, _decimal(time_s)))
@@ -225,22 +353,23 @@ def episode_graph(episode: dict[str, Any]) -> Graph:
             g.add((ep[phase["id"]], SOMA.isReactionTo, observed_iri))
 
     # Evidence: one observation per entry of the fixed list.
-    for entry in episode.get("evidence", []):
+    for index, entry in enumerate(episode.get("evidence", [])):
         iri = individual(entry["id"], SOSA.Observation)
+        g.add((iri, INSIGHT.listIndex, _index(index)))
         g.add((iri, SOSA.observedProperty, INSIGHT[entry["property"]]))
         for sensor in SENSORS_BY_PROPERTY.get(entry["property"], []):
             g.add((iri, SOSA.madeBySensor, sensor))
         value = entry.get("value")
-        if isinstance(value, bool):
-            g.add((iri, SOSA.hasSimpleResult, Literal(value)))
-        elif value is not None:
-            g.add((iri, SOSA.hasSimpleResult, _decimal(value)))
+        if value is not None:
+            g.add((iri, SOSA.hasSimpleResult, _number(value)))
         if entry.get("interval"):
             g.add((iri, SOSA.phenomenonTime, intervals[entry["interval"]]))
         for key, prop in (("at_s", INSIGHT.atTimeS), ("baseline", INSIGHT.baselineValue),
-                          ("commanded", INSIGHT.commandedValue)):
+                          ("commanded", INSIGHT.commandedValue), ("signed_value", INSIGHT.signedValue),
+                          ("own_ratio_fall", INSIGHT.travelledOverCommanded),
+                          ("own_ratio_baseline", INSIGHT.travelledOverCommandedBaseline)):
             if entry.get(key) is not None:
-                g.add((iri, prop, _decimal(entry[key])))
+                g.add((iri, prop, _number(entry[key])))
         if entry.get("unit"):
             g.add((iri, INSIGHT.unit, Literal(entry["unit"])))
         if entry.get("is_system_reaction"):

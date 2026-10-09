@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Iterable
 import requests
-from rdflib import Graph
+from rdflib import Dataset, Graph, URIRef
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -81,6 +81,21 @@ class GraphDBClient:
         graph = Graph()
         graph.parse(data=payload, format="nt")
         return {(str(subj), str(pred), str(obj)) for subj, pred, obj in graph}
+
+    def read_graphs(self, graphs: Iterable[str]) -> Dataset:
+        """The named graphs, read as they are now, in one dataset (one request each)."""
+        dataset = Dataset()
+        for graph in graphs:
+            response = self.session.get(
+                self.config.statements_url,
+                params={"context": f"<{graph}>"},
+                headers={"Accept": "application/n-triples"},
+                auth=self._auth(),
+                timeout=self.config.timeout_seconds,
+            )
+            response.raise_for_status()
+            dataset.graph(URIRef(graph)).parse(data=response.text, format="nt")
+        return dataset
 
     def apply_delta(self, *, added, removed) -> None:
         removed = tuple(sorted(removed))

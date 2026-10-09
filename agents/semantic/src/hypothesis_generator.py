@@ -11,6 +11,12 @@ The prompt gives the LLM, once each:
     a trace, whether they can be simulated and what they cost;
   * the robot's self-model (description.md).
 
+Everything the prompt, the validation of the answer and the batch read comes from one snapshot of
+the semantic memory (semantic_memory.py): the TBox's graph and the case's graph, with the episode
+and the change the live validator recorded. In production the agent reads them from GraphDB
+(generate_from_memory); generate_batch builds the same snapshot locally from an episode, so the
+experiments and the tests go through the same reading.
+
 The observed delta, entity roles and selected profiles are saved in context_summary. The prompt
 states recorded facts and declared knowledge only, without instructions about what to conclude;
 ids whose names interpret the change are shown neutral and read back from the answer. Unknown
@@ -38,7 +44,7 @@ import requests
 from rdflib import RDF, RDFS, Graph, Namespace
 
 from src.episode_builder import BASELINE_INTERVAL
-from src.episode_contrast import DEFAULT_TBOX
+from src.episode_contrast import DEFAULT_TBOX, tbox_graph
 from src.explanation_context import build_explanation_context, entity_label, render_context_template
 from src.hypothesis_pipeline import (
     DEFAULT_BUDGET, DEFAULT_CATALOG, NEW_MECHANISM, HypothesisSchemaError,
@@ -46,6 +52,7 @@ from src.hypothesis_pipeline import (
 )
 from src.intervention_catalog import InterventionCatalog
 from src.hypothesis_service import _extract_json_object, _normalize_message_content, _ollama_native_metrics
+from src.semantic_memory import MemorySnapshot, local_snapshot, read_case
 
 REPO = Path(__file__).resolve().parents[3]
 DEFAULT_SELF_MODEL = REPO / "description.md"
@@ -90,9 +97,9 @@ def _n(value: Any) -> str:
 
 
 @lru_cache(maxsize=4)
-def observable_properties(tbox_path: str | Path = DEFAULT_TBOX) -> dict[str, tuple[str, str]]:
+def observable_properties(tbox_path: str | Path | Graph = DEFAULT_TBOX) -> dict[str, tuple[str, str]]:
     """Each observable property of the TBox, by local name: (label, comment)."""
-    graph = Graph().parse(str(tbox_path), format="turtle")
+    graph = tbox_graph(tbox_path)
     return {str(p).rsplit("#", 1)[-1]: (str(graph.value(p, RDFS.label) or ""), str(graph.value(p, RDFS.comment) or ""))
             for p in graph.subjects(RDF.type, SOSA.ObservableProperty)}
 
@@ -117,11 +124,10 @@ def _evidence_line(entry: dict[str, Any], properties: dict[str, tuple[str, str]]
     return f"- {text}." + (f" ({label}: {comment})" if comment else "")
 
 
-def describe_episode(episode: dict[str, Any], tbox_path: str | Path = DEFAULT_TBOX,
+def describe_episode(episode: dict[str, Any], tbox_path: str | Path | Graph = DEFAULT_TBOX,
                      *, context: Optional[dict[str, Any]] = None) -> str:
     """Render recorded facts and symbolic anchors; build_prompt shows the neutral ids."""
-    context = context if context is not None else build_explanation_context(
-        episode, Graph().parse(str(tbox_path), format="turtle"))
+    context = context if context is not None else build_explanation_context(episode, tbox_graph(tbox_path))
     properties = observable_properties(tbox_path)
     clock, frame = episode.get("time") or {}, episode.get("frame") or {}
     observed_at = context["observed_at_s"]
@@ -211,7 +217,7 @@ def describe_episode(episode: dict[str, Any], tbox_path: str | Path = DEFAULT_TB
     return "\n".join(lines)
 
 
-def describe_mechanisms(tbox_path: str | Path = DEFAULT_TBOX, catalog: Optional[InterventionCatalog] = None,
+def describe_mechanisms(tbox_path: str | Path | Graph = DEFAULT_TBOX, catalog: Optional[InterventionCatalog] = None,
                         with_costs: bool = True, context: Optional[dict[str, Any]] = None) -> str:
     """The active vocabulary, with role-bound descriptions and optional grounding costs."""
     catalog = catalog or InterventionCatalog.from_file(DEFAULT_CATALOG)
@@ -267,10 +273,9 @@ ANSWER_FORMAT = {"hypotheses": [{
 
 
 def build_prompt(episode: dict[str, Any], self_model: str, budget: Optional[int] = DEFAULT_BUDGET,
-                 tbox_path: str | Path = DEFAULT_TBOX, *, trigger: Optional[dict[str, Any]] = None,
+                 tbox_path: str | Path | Graph = DEFAULT_TBOX, *, trigger: Optional[dict[str, Any]] = None,
                  context: Optional[dict[str, Any]] = None) -> str:
-    context = context if context is not None else build_explanation_context(
-        episode, Graph().parse(str(tbox_path), format="turtle"), trigger)
+    context = context if context is not None else build_explanation_context(episode, tbox_graph(tbox_path), trigger)
     if budget is None:
         simulated = ("Each one is checked against the recording, and every one that survives and can be simulated "
                      "is simulated;")
@@ -341,6 +346,7 @@ class GenerationResult:
     batch_path: Path
     prompt_path: Path
     transcript_path: Path
+    episode: Optional[dict[str, Any]] = None    #: the episode as the semantic memory gave it
 
 
 def _shown(path: Path) -> str:
@@ -354,25 +360,41 @@ def _shown(path: Path) -> str:
 def generate_batch(episode: dict[str, Any], llm: LLM, *, model: str, output_dir: Path,
                    case_id: Optional[str] = None, budget: Optional[int] = DEFAULT_BUDGET,
                    max_attempts: int = DEFAULT_MAX_ATTEMPTS, self_model_path: Path = DEFAULT_SELF_MODEL,
-                   tbox_path: str | Path = DEFAULT_TBOX, episode_path: Optional[str] = None,
+                   tbox_path: str | Path | Graph = DEFAULT_TBOX, episode_path: Optional[str] = None,
                    trigger: Optional[dict] = None, log: Optional[Callable[[str], None]] = None) -> GenerationResult:
-    """Ask the LLM for a layer-3a proposal over the episode and publish its layer-3b batch.
+    """generate_from_memory over the snapshot the agent would read after writing this episode (and the
+    validator's trigger) to the semantic memory, built locally: the TBox and the case's graph."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    case_id = case_id or f"generation_v2_{episode['episode_id']}_{stamp}"
+    return generate_from_memory(local_snapshot(episode, trigger, tbox_path, case_id), llm, model=model,
+                                output_dir=output_dir, case_id=case_id, budget=budget, max_attempts=max_attempts,
+                                self_model_path=self_model_path, episode_path=episode_path, log=log)
+
+
+def generate_from_memory(memory: MemorySnapshot, llm: LLM, *, model: str, output_dir: Path, case_id: str,
+                         budget: Optional[int] = DEFAULT_BUDGET, max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+                         self_model_path: Path = DEFAULT_SELF_MODEL, episode_path: Optional[str] = None,
+                         log: Optional[Callable[[str], None]] = None) -> GenerationResult:
+    """Ask the LLM for a layer-3a proposal over the case the semantic memory holds, and publish its
+    layer-3b batch. The episode, the trigger and the TBox are the ones read from the memory.
 
     Writes, in output_dir: {case_id}.json (the batch), {case_id}_prompt.md (the prompt) and
     {case_id}_transcript.json (every message of the conversation). If no answer passes the schema in
     max_attempts, the batch has status `error`, no hypotheses and the problems of each attempt.
+    Raises SemanticMemoryError if the memory does not hold the case.
     """
     log = log or (lambda message: None)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    case_id = case_id or f"generation_v2_{episode['episode_id']}_{stamp}"
-    context = build_explanation_context(episode, Graph().parse(str(tbox_path), format="turtle"), trigger)
+    case = read_case(memory, case_id)
+    episode, trigger, tbox_path = case.episode, case.trigger, memory.tbox
+    context = build_explanation_context(episode, tbox_path, trigger)
     profiles = tuple(context["profile_ids"])
     prompt = build_prompt(episode, read_self_model(self_model_path), budget, tbox_path, context=context)
     prompt_path = output_dir / f"{case_id}_prompt.md"
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
     metadata = {"case_id": case_id, "model": model, "prompt_path": _shown(prompt_path), "episode_path": episode_path,
-                "trigger": trigger, "tbox_path": tbox_path,
+                "trigger": trigger, "tbox_path": tbox_path, "record_sha256": case.record_sha256,
+                "tbox_sha256": case.provenance["tbox_sha256"], "semantic_memory": memory.summary(),
                 "context_summary": {"explanation_context": context,
                                     "mechanism_ids": list(load_vocabulary(tbox_path, profiles))}}
 
@@ -420,4 +442,4 @@ def generate_batch(episode: dict[str, Any], llm: LLM, *, model: str, output_dir:
     transcript_path.write_text(json.dumps({"case_id": case_id, "model": model, "messages": messages},
                                           indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     return GenerationResult(ok=batch["status"] == "success", batch=batch, batch_path=batch_path,
-                            prompt_path=prompt_path, transcript_path=transcript_path)
+                            prompt_path=prompt_path, transcript_path=transcript_path, episode=episode)

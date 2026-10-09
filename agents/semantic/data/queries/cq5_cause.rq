@@ -8,9 +8,9 @@ PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX insight: <http://insight.local/ontology#>
 PREFIX inst: <http://insight.local/instances#>
 
-SELECT DISTINCT ?explanation ?hypothesis ?mechanism ?anchor ?observation ?repetitions ?effect_rate ?mistimed ?median_error_s
+SELECT DISTINCT ?case ?explanation ?hypothesis ?mechanism ?anchor ?observation ?repetitions ?effect_rate ?mistimed ?median_error_s
                 ?nominal_repetitions ?nominal_effect_rate ?unresolved_alternatives WHERE {
-  ?case a inst:AnomalyCase ; inst:explainedBy ?c ; dul:isSettingFor ?nominal .
+  ?case_iri a inst:AnomalyCase ; rdfs:label ?case ; inst:explainedBy ?c ; dul:isSettingFor ?nominal .
   ?c a insight:SimulationSupportedExplanation ; rdfs:label ?explanation ;
      insight:explainsObservation ?observed ; dul:isDescribedBy ?m ;
      insight:selectedHypothesis ?h ; insight:supportedBySimulation ?run .
@@ -29,3 +29,4 @@ SELECT DISTINCT ?explanation ?hypothesis ?mechanism ?anchor ?observation ?repeti
     } GROUP BY ?c
   }
 }
+ORDER BY ?case

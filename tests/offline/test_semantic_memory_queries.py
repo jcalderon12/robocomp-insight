@@ -14,7 +14,11 @@ docs_output/resultados/20_memoria_en_graphdb/CRITERIO.md:
   * the episode's graph only uses TBox terms, and HermiT finds the TBox plus the whole case
     consistent (if owlready2 is installed).
 
-The same questions on the real GraphDB, with its inference: experiments/semantic_memory_graphdb.py.
+GraphDB keeps every case (contracts 1.12): a second case added to the same store leaves the first
+as it was, every question names the case of each row, and CQ10 lists the cases with the TBox,
+contracts, code and LLM each one was written with.
+
+The same questions on the real GraphDB: experiments/semantic_memory_graphdb.py.
 
 The historical batch is preserved. A separate current-pipeline check verifies that carrying
 relation restoration only informs, that perception failure is not simulable rather than
@@ -69,7 +73,9 @@ def answers(dataset):
 
 def check_answers(episode, batch, verdict, dataset):
     got = answers(dataset)
-    assert len(got) == 9, sorted(got)
+    assert len(got) == 10, sorted(got)
+    assert all(row["case"] == batch["case_id"] for name, rows in got.items()
+               if name not in ("cq4_traces_by_sensor", "cq8_not_simulable") for row in rows), got
 
     fall = got["cq1_fall"]
     assert len(fall) == 1, fall
@@ -122,6 +128,35 @@ def check_answers(episode, batch, verdict, dataset):
     provenance = got["cq9_provenance"]
     assert len(provenance) == 1 and provenance[0]["model"] == batch["model"], provenance
     assert provenance[0]["recording"].endswith("mission_Follow_Person_07102026_100057.txt"), provenance
+
+
+def check_two_cases_kept(episode, batch, verdict, dataset):
+    """A second case, in its own graph, leaves the first one as it was; the answers tell them apart."""
+    first_graph = dataset.graph(graph_iri(episode["episode_id"]))
+    first = set(first_graph)
+    second_episode = copy.deepcopy(episode)
+    second_episode["episode_id"] = episode["episode_id"] + "_again"
+    second_batch = copy.deepcopy(batch)
+    second_batch["case_id"], second_batch["episode"]["id"] = "second_case", second_episode["episode_id"]
+    abstained = {"case_id": "second_case", "accepted_hypothesis_id": None, "abstention_reason": "nominal_reproduces_effect",
+                 "hypotheses": [{"hypothesis_id": "__nominal__", "cause": {"name": "none"}, "repetitions": 10,
+                                 "effect_rate": 0.1, "accepted": False}]}
+    case_dataset(episode=second_episode, batch=second_batch, verdict=abstained, mirror=MIRROR, dataset=dataset)
+    assert set(dataset.graph(graph_iri(episode["episode_id"]))) == first
+    got = answers(dataset)
+    cases = {row["case"]: row for row in got["cq10_cases"]}
+    assert set(cases) == {batch["case_id"], "second_case"}, cases
+    for row in cases.values():
+        assert (row["tbox_version"], row["contracts_version"]) == ("0.3", "1.12"), row
+        assert len(row["tbox_sha256"]) == 64 and row["code_commit"] and row["model"] == batch["model"], row
+    assert cases["second_case"]["episode_id"] == second_episode["episode_id"]
+    proposals = {}
+    for row in got["cq2_proposals"]:
+        proposals.setdefault(row["case"], []).append(row["id"])
+    assert proposals[batch["case_id"]] == proposals["second_case"] == [h["hypothesis_id"] for h in batch["hypotheses"]]
+    assert [row["case"] for row in got["cq5_cause"]] == [batch["case_id"]], got["cq5_cause"]
+    assert {row["case"] for row in got["cq1_fall"]} == {batch["case_id"], "second_case"}
+    assert {row["case"] for row in got["cq7_simulations"]} == {batch["case_id"], "second_case"}
 
 
 def check_only_tbox_terms(episode, batch, verdict, dataset):
@@ -202,6 +237,8 @@ def main():
                   check_current_perception_failure_stays_unresolved):
         check(*case)
         print(f"OK {check.__name__}")
+    check_two_cases_kept(*load_case())
+    print("OK check_two_cases_kept")
     print("Semantic memory queries: all checks passed")
 
 

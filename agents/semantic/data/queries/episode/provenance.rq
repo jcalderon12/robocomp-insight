@@ -1,0 +1,15 @@
+# The provenance of a case: the TBox, contracts and code it was written with. ?case is bound by the reader.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?tbox_version ?tbox_sha256 ?contracts_version ?code_commit WHERE {
+  ?case a inst:AnomalyCase .
+  OPTIONAL { ?case insight:tboxVersion ?tbox_version }
+  OPTIONAL { ?case insight:tboxSha256 ?tbox_sha256 }
+  OPTIONAL { ?case insight:contractsVersion ?contracts_version }
+  OPTIONAL { ?case insight:codeCommit ?code_commit }
+}

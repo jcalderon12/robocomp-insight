@@ -8,8 +8,9 @@ PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX insight: <http://insight.local/ontology#>
 PREFIX inst: <http://insight.local/instances#>
 
-SELECT ?id ?rank ?mechanism (GROUP_CONCAT(DISTINCT COALESCE(?anchor, ""); separator=", ") AS ?anchors)
+SELECT ?case ?id ?rank ?mechanism (GROUP_CONCAT(DISTINCT COALESCE(?anchor, ""); separator=", ") AS ?anchors)
        (GROUP_CONCAT(DISTINCT COALESCE(?kind, ""); separator=", ") AS ?kinds) ?status WHERE {
+  ?case_iri a inst:AnomalyCase ; rdfs:label ?case ; dul:isSettingFor ?h .
   ?h a insight:Hypothesis ; insight:hypothesisId ?id ; insight:rank ?rank ;
      dul:isClassifiedBy ?s .
   ?s insight:statusId ?status .
@@ -18,5 +19,5 @@ SELECT ?id ?rank ?mechanism (GROUP_CONCAT(DISTINCT COALESCE(?anchor, ""); separa
   OPTIONAL { ?h dul:isClassifiedBy ?k . ?k insight:kindValue ?value ; insight:ofParameter ?p .
              ?p insight:parameterName ?name . BIND(CONCAT(?name, "=", ?value) AS ?kind) }
 }
-GROUP BY ?id ?rank ?mechanism ?status
-ORDER BY ?rank ?id
+GROUP BY ?case ?id ?rank ?mechanism ?status
+ORDER BY ?case ?rank ?id

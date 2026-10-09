@@ -40,6 +40,12 @@ from src.explanation_context import mechanism_nodes
 INSIGHT = Namespace("http://insight.local/ontology#")
 DEFAULT_TBOX = Path(__file__).resolve().parents[1] / "data" / "insight_tbox.ttl"
 
+
+def tbox_graph(tbox: str | Path | Graph) -> Graph:
+    """The TBox as a graph: the one read from the semantic memory, or parsed from a file (offline).
+    What is derived from it is cached by graph identity, so each read is a graph of its own."""
+    return tbox if isinstance(tbox, Graph) else Graph().parse(str(tbox), format="turtle")
+
 GRAVITY_M_S2 = 9.81
 FALL_INTERVAL = "Interval_fall"
 FINAL_SEGMENT = "Segment_final"
@@ -127,14 +133,14 @@ def _check(graph: Graph, node, kind: str) -> Check:
 
 
 @lru_cache(maxsize=4)
-def load_mechanisms(tbox_path: str | Path = DEFAULT_TBOX,
+def load_mechanisms(tbox_path: str | Path | Graph = DEFAULT_TBOX,
                     profiles: Optional[tuple[str, ...]] = None) -> dict[str, Mechanism]:
     """The mechanisms of the TBox and their checks, by mechanism id.
 
     Raises if the TBox has a check this module does not implement, or if a rule reads other
     properties than the ones its implementation reads.
     """
-    graph = Graph().parse(str(tbox_path), format="turtle")
+    graph = tbox_graph(tbox_path)
     mechanisms: dict[str, Mechanism] = {}
     for node in mechanism_nodes(graph, profiles):
         # A mechanism may be simulated in more than one way (the obstacle: a dome of unknown size for a

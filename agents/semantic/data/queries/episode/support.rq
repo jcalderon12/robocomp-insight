@@ -1,0 +1,16 @@
+# The support estimate: who was estimated to support what, over which interval, and what invalidated it.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?id ?supporter ?supported ?start ?end ?ended_by WHERE {
+  ?episode dul:isSettingFor ?estimate .
+  ?estimate a insight:SupportEstimate ; rdfs:label ?id .
+  OPTIONAL { ?estimate insight:estimatedSupporter ?supporter }
+  OPTIONAL { ?estimate insight:estimatedSupportedObject ?supported }
+  OPTIONAL { ?estimate insight:estimateValidDuring ?interval . ?interval insight:startS ?start ; insight:endS ?end }
+  OPTIONAL { ?observed insight:invalidatesEstimate ?estimate ; insight:recordedId ?ended_by }
+}
