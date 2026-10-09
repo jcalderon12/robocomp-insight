@@ -29,6 +29,8 @@ AGENT_PERSON = INSIGHT.Agent_Person
 AGENT_ROBOT = INSIGHT.Agent_Robot
 PHYSICAL_OBJECT_BOTTLE = INSIGHT.PhysicalObject_Bottle
 PHYSICAL_PLACE_ROOM = INSIGHT.PhysicalPlace_Room
+# The DSR node that is the room of the ontology: "room" in older graphs, "root" since 08/10.
+WORLD_NODE_TYPES = ("room", "root")
 ACTION_FOLLOW = INSIGHT.Action_Follow
 FOLLOW_AFFORDANCE_NAME = "follow_me"
 UNEXPLAINED_INTENTION_NAME = "unexplained"
@@ -140,7 +142,7 @@ class DSRSemanticWrapper:
 
     def sync_for_node_type(self, dsr_graph, node_type: str) -> bool:
         node_type = (node_type or "").lower()
-        if node_type == "room":
+        if node_type in WORLD_NODE_TYPES:
             self.sync_room(dsr_graph)
             self.sync_robot(dsr_graph)
             self.sync_person(dsr_graph)
@@ -195,13 +197,18 @@ class DSRSemanticWrapper:
 
 
 
+    @staticmethod
+    def _world_node_exists(dsr_graph) -> bool:
+        """The DSR world node: "room" in older graphs, "root" since the UEx DSR of 08/10."""
+        return any(dsr_graph.get_node(name) is not None for name in WORLD_NODE_TYPES)
+
     def sync_room(self, dsr_graph) -> None:
-        room_existe = dsr_graph.get_node("room") is not None
+        room_existe = self._world_node_exists(dsr_graph)
         self.set_fact(room_existe, str(PHYSICAL_PLACE_ROOM), str(RDF.type), str(DUL.PhysicalPlace))
 
 
     def sync_robot(self, dsr_graph) -> None:
-        room_existe = dsr_graph.get_node("room") is not None
+        room_existe = self._world_node_exists(dsr_graph)
         robot_existe = dsr_graph.get_node("robot") is not None
 
         self.set_fact(robot_existe, str(AGENT_ROBOT), str(RDF.type), str(DUL.PhysicalAgent))
@@ -209,7 +216,7 @@ class DSRSemanticWrapper:
 
 
     def sync_person(self, dsr_graph) -> None:
-        room_existe = dsr_graph.get_node("room") is not None
+        room_existe = self._world_node_exists(dsr_graph)
         person_existe = dsr_graph.get_node("person") is not None
 
         self.set_fact(person_existe, str(AGENT_PERSON), str(RDF.type), str(DUL.PhysicalAgent))

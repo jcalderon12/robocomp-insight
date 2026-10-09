@@ -25,7 +25,7 @@ Conventions (contract 1):
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 import numpy as np
@@ -122,6 +122,34 @@ def yaw_from_quaternion(quaternion) -> float:
     """Yaw (rad) of an [x, y, z, w] quaternion."""
     x, y, z, w = (float(c) for c in quaternion)
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+#: Robot path (m) needed to tell from the motion which axes the recorded positions use.
+AXES_MIN_PATH_M = 0.3
+
+
+def recorded_axes(pose_xy: np.ndarray, pose_yaw: np.ndarray) -> str:
+    """"recorded" when the recorded positions agree with the recorded orientation, "swapped_xy"
+    when they agree with x and y exchanged, "undetermined" otherwise (the recorded axes are kept).
+
+    The UEx DSR of 08/10 writes root->robot as (y, x, z) of the Webots world and keeps the Webots
+    orientation. A following robot moves forward, along +y of its DSR frame, so the axes under
+    which the motion agrees with the heading are the right ones. The inner simulator decides the
+    same way (episode_scene.recorded_axes).
+    """
+    steps = np.diff(np.asarray(pose_xy, dtype=float), axis=0)
+    path = float(np.linalg.norm(steps, axis=1).sum()) if len(steps) else 0.0
+    if path < AXES_MIN_PATH_M:
+        return "undetermined"
+    yaw = np.asarray(pose_yaw, dtype=float)[1:]
+    forward = np.column_stack([-np.sin(yaw), np.cos(yaw)])
+    direct = float(np.sum(steps * forward)) / path
+    swapped = float(np.sum(steps[:, ::-1] * forward)) / path
+    if swapped > 0.5 and swapped - direct > 0.3:
+        return "swapped_xy"
+    if direct > 0.5 and direct - swapped > 0.3:
+        return "recorded"
+    return "undetermined"
 
 
 def newest_rt_slot(translation, timestamps) -> Optional[tuple[int, list[float]]]:
@@ -335,6 +363,9 @@ def build_episode(series: RecordedSeries, episode_id: Optional[str] = None) -> d
         raise EpisodeError(f"{series.path}: the robot->bottle edge is never deleted; there is no fall.")
     if len(series.pose_t) < 2:
         raise EpisodeError(f"{series.path}: fewer than two robot poses.")
+    axes = recorded_axes(series.pose_xy, series.pose_yaw)
+    if axes == "swapped_xy":
+        series = replace(series, pose_xy=np.asarray(series.pose_xy, dtype=float)[:, ::-1].copy())
 
     length = float(series.length_s)
     horizon = min(length, t_obs + EFFECT_HORIZON_MARGIN_S)
@@ -421,7 +452,7 @@ def build_episode(series: RecordedSeries, episode_id: Optional[str] = None) -> d
         "schema": SCHEMA,
         "episode_id": episode_id or _default_episode_id(series.path),
         "source": {"kind": "recording", "path": series.path, "sha256": series.sha256,
-                   "builder": BUILDER, "reader": series.reader},
+                   "builder": BUILDER, "reader": series.reader, "pose_axes": axes},
         "frame": {"name": "room", "units": "m", "heading": "deg, room frame, 0 = +x, counter-clockwise"},
         "time": {
             "origin": "first_imu_event",

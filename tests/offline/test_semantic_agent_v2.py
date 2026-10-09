@@ -247,6 +247,10 @@ def check_recording_rule():
     later = node("Follow Person-2", 12, status="stopped", filepath="/rec/b.txt")
     assert recording_to_explain([follow, later, running]) == "/rec/b.txt"            # the last one, as the simulator
     assert recording_to_explain([node("Follow Person-3", 13, status="stopped", filepath=""), running]) is None
+    # Since 08/10 mission_controller names the automatic missions "..._attempt_N"; both schemes count.
+    renamed = [node("follow_person_attempt_1-20261008-1", 14, status="stopped", filepath="/rec/c.txt"),
+               node("search_cause_attempt_1-20261008-2", 15, status="running")]
+    assert recording_to_explain(renamed) == "/rec/c.txt"
     try:
         HypothesisGeneratorConfig.from_config({"hypothesisGenerator": {
             "PrimaryModel": "m", "OllamaBaseUrl": "u", "PreferredClient": "c", "OutputDir": "o",

@@ -96,6 +96,35 @@ def synthetic_series(bottle_back_at=None, stalls_at=None) -> RecordedSeries:
         bottle_edge=bottle_edge)
 
 
+def check_swapped_axes():
+    """The UEx DSR of 08/10 writes root->robot as (y, x) of the Webots world: the builder recovers
+    the room axes from the motion and records which ones it used."""
+    from dataclasses import replace
+    from src.episode_builder import recorded_axes
+    series = synthetic_series()
+    swapped = replace(series, pose_xy=series.pose_xy[:, ::-1].copy())
+    assert recorded_axes(series.pose_xy, series.pose_yaw) == "recorded"
+    assert recorded_axes(swapped.pose_xy, swapped.pose_yaw) == "swapped_xy"
+    assert recorded_axes(np.zeros_like(series.pose_xy), series.pose_yaw) == "undetermined"
+    straight, corrected = build_episode(series), build_episode(swapped)
+    assert straight["source"]["pose_axes"] == "recorded" and corrected["source"]["pose_axes"] == "swapped_xy"
+    for key in ("segments", "phases", "intervals", "accident"):
+        assert corrected.get(key) == straight.get(key), key
+    recording = RECORDINGS / "mission_follow_person_08102026_192854.txt"
+    if not recording.exists():                 # Webots with the UEx main of 08/10, bump 25x3.5 cm
+        return
+    try:
+        from src.episode_memory_reader import episode_from_memory
+        episode = episode_from_memory(recording)
+    except ImportError as error:
+        print(f"  SKIP: the episodic-memory API cannot be imported ({error})")
+        return
+    else:
+        final = next(s for s in episode["segments"] if s["id"] == "Segment_final")
+        assert episode["source"]["pose_axes"] == "swapped_xy", episode["source"]
+        assert abs(final["from_xy"][1] + 0.3) < 0.05 and abs(final["to_xy"][1] + 0.3) < 0.05, final
+
+
 def check_core_on_synthetic_series():
     episode = build_episode(synthetic_series())
     json.dumps(episode)
@@ -439,7 +468,7 @@ def check_rdf_consistency_if_possible():
 
 
 def main():
-    for check in (check_core_on_synthetic_series, check_episode_1229, check_other_falls_2409,
+    for check in (check_core_on_synthetic_series, check_swapped_axes, check_episode_1229, check_other_falls_2409,
                   check_fall_interval_holds_the_pitch_peak_2409, check_readers_agree, check_rdf_1229,
                   check_rdf_consistency_if_possible):
         check()

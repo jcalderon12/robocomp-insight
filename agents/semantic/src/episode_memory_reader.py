@@ -38,7 +38,10 @@ READER = "episodic_memory_api"
 NANOSECONDS = 1e-9
 READY_TIMEOUT_S = 10.0
 
-ROOM, ROBOT, PERSON, BOTTLE, IMU = "room", "robot", "person", "bottle", "imu"
+ROBOT, PERSON, BOTTLE, IMU = "robot", "person", "bottle", "imu"
+#: The world node the robot pose hangs from: "room" in older recordings, "root" since the UEx
+#: DSR of 08/10. The inner simulator resolves it the same way (episode_scene).
+WORLD_NODES = ("room", "root")
 
 
 def open_recording(path: str | Path, timeout_s: float = READY_TIMEOUT_S):
@@ -77,7 +80,10 @@ def read_series(api, path: Optional[str | Path] = None) -> RecordedSeries:
     """The series of the episode builder, read through an indexed EpisodicMemoryAPI."""
     path = Path(path if path is not None else api.get_filepath())
     ids = _node_ids(api)
-    for name in (ROOM, ROBOT, IMU, BOTTLE):
+    world = next((name for name in WORLD_NODES if name in ids), None)
+    if world is None:
+        raise EpisodeError(f"{path}: no world node ({' or '.join(WORLD_NODES)}) in the recording")
+    for name in (ROBOT, IMU, BOTTLE):
         if name not in ids:
             raise EpisodeError(f"{path}: no '{name}' node in the recording")
 
@@ -111,7 +117,7 @@ def read_series(api, path: Optional[str | Path] = None) -> RecordedSeries:
             rot.append((int(event.timestamp), float(attributes["robot_ref_rot_speed"])))
 
     poses = []
-    for event in api.get_edge_history(ids[ROOM], ids[ROBOT], "RT"):
+    for event in api.get_edge_history(ids[world], ids[ROBOT], "RT"):
         if event.modification_type != "MEA":
             continue
         attributes = _attributes(event)
@@ -180,8 +186,22 @@ def read_series(api, path: Optional[str | Path] = None) -> RecordedSeries:
 
 
 #: Episodic-graph missions: the one recorded while following, and the one that starts when the
-#: follow mission stops without the bottle (mission_controller).
-FOLLOW_MISSION, SEARCH_MISSION = "Follow Person", "Search Problem Cause"
+#: follow mission stops without the bottle (mission_controller). Nodes are named after the
+#: mission's custom name: "Follow Person" / "Search Problem Cause" in older runs, and
+#: "follow_person_attempt_N" / "search_cause_attempt_N" since 08/10. The inner simulator
+#: matches them the same way (check_for_problems).
+FOLLOW_PREFIXES = ("follow_person",)
+SEARCH_PREFIXES = ("search_problem_cause", "search_cause")
+
+
+def mission_kind(name: str) -> Optional[str]:
+    """"follow" or "search" for an episodic mission node name, whatever its naming scheme."""
+    normalized = name.strip().lower().replace(" ", "_")
+    if normalized.startswith(FOLLOW_PREFIXES):
+        return "follow"
+    if normalized.startswith(SEARCH_PREFIXES):
+        return "search"
+    return None
 
 
 def recording_to_explain(episodic_nodes) -> Optional[str]:
@@ -194,9 +214,10 @@ def recording_to_explain(episodic_nodes) -> Optional[str]:
     """
     search = follow = None
     for node in episodic_nodes:
-        if node.name.startswith(SEARCH_MISSION):
+        kind = mission_kind(node.name)
+        if kind == "search":
             search = node
-        if node.name.startswith(FOLLOW_MISSION):
+        if kind == "follow":
             follow = node
     if search is None or follow is None or "status" not in search.attrs or "filepath" not in follow.attrs:
         return None
