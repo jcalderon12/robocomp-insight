@@ -293,7 +293,10 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     const float Kd_ang = 0.1f;   
 
 	float linear_velocity  = Kp_lin * distance_error + Kd_lin * d_distance_error;
-	float angular_velocity = -(Kp_ang * angle_to_target + Kd_ang * d_angle_error);
+	// Positive angle_to_target = target on the left (concept_person), and a positive rot turns the
+	// differential base counterclockwise (webots-bridge): steer with the same sign. The negated
+	// law turned away from the person once a bump knocked the heading off (recording of 08/10 19:07).
+	float angular_velocity = Kp_ang * angle_to_target + Kd_ang * d_angle_error;
 
 	float angle_attenuation = std::cos(std::clamp(angle_to_target, -HALF_PI, HALF_PI));
 	linear_velocity *= angle_attenuation;
