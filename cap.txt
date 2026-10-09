@@ -1,0 +1,388 @@
+Antes de nada, un aviso técnico: subiste specificworker.cpp dos veces con el mismo nombre, así que solo me ha llegado un fichero (el de mission_controller, que es justo el que dices que es el más grande). Si querías que viera también el de concept_person actualizado, súbelo con otro nombre para que no se pisen.
+
+Gracias por el contexto completo — ayuda mucho a entender el diseño (grafo compartido + grafos locales, el rol de cada concept_agent, el handshake con episodic_memory, el papel de fake_castilla_la_mancha como creador del nodo problem, etc.). Lo tendré en cuenta para cuando lleguemos a la fase de search_problem_cause.
+
+Dicho esto, sobre el problema que nos ocupa ahora mismo (el movimiento del robot): he revisado mission_controller's specificworker.cpp buscando específicamente cualquier cosa relacionada con velocidades, OmniRobot, setSpeedBase o el signo de rotación, y no toca nada de eso — su responsabilidad es orquestar misiones, el handshake con episodic_memory, y el scheduler de afordancias. No añade ni contradice nada de lo que ya sabemos sobre el bug del signo en concept_robot. Así que, en cuanto al bug de movimiento, seguimos donde lo dejamos: confirmado y resuelto con la eliminación del -.
+
+Dónde buscaría ahora para el "por qué solo funciona en la máquina original"
+
+Como el propio código de concept_robot (mismo .cpp) se comporta distinto según la máquina, y ya hemos descartado el locale como causa de este síntoma concreto, el diferencial tiene que estar en algo que no es el .cpp en sí. Los candidatos que yo comprobaría, en orden de probabilidad:
+
+El .wbt / PROTO del robot en Webots. Si el mundo o el PROTO del OmniRobot que usa la máquina original define el eje de rotación positivo en sentido contrario (algo nada raro si en algún momento se regeneró el PROTO, o si hay dos versiones del mismo robot circulando), el mismo código C++ con el mismo signo produciría giros en sentidos opuestos en cada máquina. Es la explicación más limpia porque no requiere que el código fuente difiera en absoluto.
+La versión del componente puente webots2robocomp / rcnode (los veo en tu captura como agentes separados: webots, rcnode, bridge). Si alguno de ellos remapea o invierte ejes internamente en una versión y no en otra, tendrías exactamente este efecto sin que concept_robot.cpp tenga ninguna culpa.
+Historial real del fichero. Si tenéis el repo con git, un git log -p -- <ruta>/specificworker.cpp filtrado a esa línea de setSpeedBase, o comparar el hash del commit que corre en la máquina original contra el que tienes tú, cerraría la pregunta de raíz: ¿es el mismo código exacto, o hay un commit/parche local no sincronizado?
+
+Si me confirmas que tenéis control de versiones para el proyecto (¿es todo un monorepo de componentes RoboComp, o cada agente es su propio repo?), te digo el comando exacto de git que usaría para ir a por la opción 3, que es la más concluyente y la más rápida de comprobar.
+
+
+---
+
+
+He revisado los cuatro ficheros. La pieza clave está en specificworker_bridge.cpp, en la función que traduce setSpeedBase a velocidades de rueda:
+
+void SpecificWorker::OmniRobot_setSpeedBase(float advx, float advz, float rot)
+{
+    speeds[0] = 1.0 / WHEEL_RADIUS * (advz - advx + (LX + LY) * rot);
+    speeds[1] = 1.0 / WHEEL_RADIUS * (advz + advx - (LX + LY) * rot);
+    speeds[2] = 1.0 / WHEEL_RADIUS * (advz + advx + (LX + LY) * rot);
+    speeds[3] = 1.0 / WHEEL_RADIUS * (advz - advx - (LX + LY) * rot);
+
+Esta es la matriz de cinemática estándar para ruedas omni/mecanum, y con rot positivo sumando en dos ruedas y restando en las otras dos (agrupadas de forma cruzada, no por pares izquierda/derecha), la convención que implementa es la habitual: rot positivo = giro antihorario visto desde arriba (regla de la mano derecha), que es exactamente la convención estándar que asume atan2(y, x) con x=adelante, y=izquierda. No hay ninguna inversión de signo "escondida" aquí — la cinemática del puente es coherente con el controlador ya corregido (sin el -).
+
+En Shadow.proto, los 4 HingeJoint de las ruedas tienen todos axis -1 0 0 — mismo eje, mismo signo, en las cuatro. Tampoco hay asimetría ahí que pudiera compensarse con un signo distinto en otra parte.
+
+Lo que esto significa
+
+No encuentro en Shadow.proto, SimpleWorld_Bump.wbt ni specificworker_bridge.cpp ningún motivo legítimo para que el - en concept_robot fuera necesario en ninguna máquina — la cadena completa (proto → puente → controlador) es internamente consistente sin esa negación, tal y como confirmamos empíricamente. Y como dices que todo está sincronizado por git en todas las máquinas (proto, mundo, puente, concept_robot...), la explicación de "una versión distinta del mundo/proto en la máquina original" que planteé antes queda descartada: si el fichero es el mismo en todas partes, el efecto tendría que ser el mismo en todas partes.
+
+Esto deja, en mi opinión, dos hipótesis mucho más probables que una diferencia de entorno real:
+
+Cambios locales no commiteados en la máquina original. Que git diga "todo actualizado" (mismo commit checkeado) no descarta que haya un git diff sin commitear en esa máquina concreta — es justamente el tipo de cosa que un desarrollador puede olvidar subir si "ya le funciona en local". Pediría, en esa máquina, un git status y git diff -- <ruta>/concept_robot/src/specificworker.cpp antes de dar por hecho que el fichero es idéntico.
+La demostración original nunca puso a prueba el signo. Si en las pruebas de la máquina original la persona empezaba siempre casi perfectamente centrada (y ≈ 0, como de hecho vimos en attempt7 cuando funcionó bien), el término angular apenas actúa — con y cercano a cero, angle_to_target es minúsculo, así que el signo de esa negación casi no tiene efecto observable. Es decir: es perfectamente posible que en la máquina original el bug estuviera presente igualmente, pero nunca se manifestara porque el escenario de prueba no generaba un error angular lo bastante grande como para que la persona lo notara — mientras que en vuestras pruebas, con la persona algo más desplazada lateralmente desde el principio, el error de signo se hace evidente de inmediato.
+
+Yo probaría lo primero (un git status/git diff limpio en la máquina original, concretamente sobre ese fichero) antes de nada — es la comprobación más rápida y la que de forma más concluyente resuelve la pregunta de "¿es mío o es del código original?".
+
+
+---
+
+
+Perfecto, concept_robot confirma exactamente el estado que esperábamos: el fix del signo está aplicado (línea 137, sin el -), el wrap-around de la derivada angular también está puesto (líneas 238-240), y todo el resto de la lógica (getVelocitiesFromDSR, stop_robot, auto_localization) es coherente con lo que ya habíamos revisado. Así que sí, concept_robot es el foco correcto para el "corto plazo", y a día de hoy, con estos dos cambios, es donde deberíamos centrarnos para pulir el sistema de movimiento antes de subirlo al repo principal.
+
+Sobre la velocidad más lenta en tu portátil
+
+Aquí yo no tocaría las constantes de velocidad (WEBOTS_MAX_LINEAR_SPEED, los Kp) como primera opción, porque sospecho que el problema no está en qué velocidad le pides al robot, sino en a qué ritmo Webots consigue simular esa velocidad en tiempo real. Es una distinción importante:
+
+setSpeedBase fija una velocidad angular de rueda constante en el motor. Esa velocidad, en tiempo simulado, es idéntica en tu portátil y en el laboratorio — el motor gira igual de rápido por segundo de simulación en ambos sitios.
+Lo que puede diferir es cuántos segundos de simulación consigue avanzar Webots por cada segundo de reloj real. Esto se conoce como el real-time factor (RTF), y Webots lo muestra en la barra de estado inferior de la interfaz (normalmente un número como 1.00x, 0.45x, etc.) mientras corre la simulación.
+
+Si tu portátil tiene menos CPU/GPU disponible que los equipos de laboratorio, es muy probable que el RTF caiga por debajo de 1 — Webots sigue calculando la física correctamente, pero tarda más en tiempo real para hacerlo, y por tanto percibes al robot moviéndose más despacio, aunque el comando de velocidad enviado sea idéntico.
+
+Por qué no subiría la velocidad como parche
+
+Si el síntoma es un RTF bajo y "arreglas" la lentitud subiendo la velocidad comandada, el día que ejecutes lo mismo en un equipo más potente (o via TeamViewer contra el del laboratorio, que es justo tu plan de mañana), el robot iría demasiado rápido ahí, porque en esa máquina el RTF sí estará cerca de 1. Es decir, estarías introduciendo una dependencia oculta de máquina justo en el sitio donde llevamos toda la conversación intentando eliminarla.
+
+Qué comprobaría primero
+Mira el indicador de RTF en la barra de Webots durante una misión en tu portátil vs. lo que recuerdes/veas en el laboratorio. Si está claramente por debajo de 1x en tu portátil, confirma la hipótesis.
+Reduce la carga de render/física en vez de compensar con velocidad:
+Revisa WorldInfo.basicTimeStep en SimpleWorld_Bump.wbt — si es muy pequeño (p.ej. 8 ms), cada segundo de simulación exige más pasos de física por segundo real. Subirlo un poco (a costa de algo de precisión) puede acercar el RTF a 1 sin tocar el código de movimiento.
+Desactiva temporalmente sensores/cámaras que no necesites para esta prueba concreta (el zed, el helios/lidar, el bpearl) si el bridge los está leyendo en cada ciclo — leer y renderizar esos dispositivos es buena parte del coste computacional por paso.
+Si tienes disponible, prueba el modo "fast" / sin sincronización con reloj real de Webots para pruebas de datos (no para "ver" el experimento en vivo) — ahí no habría lentitud aparente porque Webots corre tan rápido como puede sin intentar igualar el reloj real.
+Comprueba también el uso de CPU del propio proceso concept_robot/webots-bridge durante la misión (top/htop) — si tu portátil tiene el compute() de RoboComp compitiendo por CPU con Webots, eso también reduce el throughput efectivo aunque no sea estrictamente "culpa" de Webots.
+
+Con la sesión de TeamViewer contra el laboratorio de mañana, esto se puede confirmar rápido: si ejecutas Webots en la máquina del laboratorio controlándola por TeamViewer desde tu portátil, el RTF dependerá del hardware del laboratorio, no del tuyo — si ahí se mueve a velocidad normal, tienes la confirmación definitiva de que es un tema de rendimiento/RTF de tu equipo y no del código.
+
+
+---
+
+
+Con la descripción que das y lo que ya sabemos del código, creo que no necesitas ni siquiera el log combinado para dar con esto — al releer concept_person con esta pista nueva ("empieza a fallar justo cuando tiene que girar de verdad, no cuando va recto"), hay un fallo de diseño bastante claro que encaja perfectamente con el círculo que describes.
+
+El problema: mezcla de marcos de referencia (mundo vs. robot)
+
+Mira otra vez get_person_relative_position() en concept_person:
+
+auto person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
+auto robot_pose  = this->webots2robocomp_proxy->getObjectPose(robot_def);
+
+std::vector<float> p_pos = {person_pose.position.x / 1000.f, person_pose.position.y / 1000.f, person_pose.position.z / 1000.f};
+std::vector<float> r_pos = {robot_pose.position.x / 1000.f, robot_pose.position.y / 1000.f, robot_pose.position.z / 1000.f};
+
+relative_position = {p_pos[0] - r_pos[0], p_pos[1] - r_pos[1], p_pos[2] - r_pos[2]};
+
+Esto es una simple resta de posiciones en coordenadas del mundo de Webots. No hay ninguna rotación por la orientación del robot en ningún punto. Ese vector se escribe directamente en la arista RT que luego lee concept_robot.
+
+Y en follow_target(), concept_robot usa ese vector como si estuviera expresado en el marco local del robot (x = adelante, y = lateral respecto a hacia donde mira el robot ahora mismo):
+
+float x = t[0];
+float y = t[1];
+float angle_to_target = std::atan2(y, x);
+
+Estas dos cosas solo son compatibles mientras el robot esté orientado igual que el eje X del mundo (es decir, mientras nunca haya girado). Y es exactamente lo que ha pasado en todas las pruebas que hemos visto hasta ahora: el robot arranca mirando hacia la persona, avanza casi recto, apenas gira — así que "delta en coordenadas del mundo" y "delta en coordenadas del robot" coinciden por pura casualidad geométrica del escenario, no porque el código lo garantice.
+
+Por qué esto produce justo un círculo cuando el robot gira de verdad
+
+En cuanto mueves a la persona hacia un lado y el robot empieza a girar en serio para encararla, su orientación real (theta) se aleja de 0. Pero el vector que recibe de concept_person sigue calculado en coordenadas del mundo, no rotado según su nueva orientación. El robot entonces interpreta mal dónde está "adelante" respecto a sí mismo, gira para corregir un error que en realidad no existe en su propio marco, eso cambia su orientación aún más, lo que vuelve a desalinear el vector world-frame de la próxima lectura... y así se retroalimenta indefinidamente. El resultado típico de este tipo de fallo es justo lo que describes: un lazo estable de persecución que nunca cierra, orbitando a una distancia parecida a la que tenía cuando empezó a girar, en un sentido consistente (aquí antihorario) — no es un comportamiento caótico, es un ciclo límite geométrico.
+
+Esto también explica de forma muy natural por qué en la máquina original "funcionaba": si en sus pruebas nunca llegaron a mover a la persona lo bastante para forzar un giro sostenido tras la aproximación (como tú has hecho ahora, deliberadamente, con la imagen que mandas), este bug simplemente nunca se disparó — no porque el código fuera distinto, sino porque el escenario de prueba no lo exponía.
+
+El fix
+
+concept_person necesita rotar el delta de posiciones (mundo) al marco local del robot usando la orientación actual de este último, antes de escribirlo en la arista RT:
+
+auto person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
+auto robot_pose  = this->webots2robocomp_proxy->getObjectPose(robot_def);
+
+float dx = (person_pose.position.x - robot_pose.position.x) / 1000.f;
+float dy = (person_pose.position.y - robot_pose.position.y) / 1000.f;
+float dz = (person_pose.position.z - robot_pose.position.z) / 1000.f;
+
+Eigen::Quaternionf q(robot_pose.orientation.w, robot_pose.orientation.x,
+                     robot_pose.orientation.y, robot_pose.orientation.z);
+q.normalize();
+float theta = q.toRotationMatrix().eulerAngles(0, 1, 2)[2]; // yaw del robot en el mundo
+
+float local_x =  std::cos(theta) * dx + std::sin(theta) * dy;
+float local_y = -std::sin(theta) * dx + std::cos(theta) * dy;
+
+relative_position = {local_x, local_y, dz};
+
+(El signo exacto de la rotación y qué eje de Euler corresponde al yaw depende de la convención de ejes de vuestro mundo Webots — el mismo código de specificworker_bridge.cpp ya extrae el yaw del robot en otro punto con rotationMatrixToEulerZYX, así que os podéis basar en esa misma convención para garantizar consistencia entre agentes.)
+
+Cómo confirmarlo rápido, sin logs completos
+
+No hace falta que guardes toda la sesión combinada todavía. Bastaría con un print puntual en concept_person, junto al x,y que ya imprime concept_robot, mostrando también theta (la orientación actual del robot) en el mismo instante. Si ves que en el momento en que empieza el círculo, theta ya no está cerca de 0 (se ha alejado bastante de la orientación inicial) mientras el x,y sigue comportándose como si el robot mirara igual que al principio, tienes la confirmación visual inmediata de la hipótesis, antes de tocar nada.
+
+Si quieres, cuando tengas ese print añadido, súbeme aunque sea un fragmento corto (no necesitas la sesión entera) del momento exacto en que empieza a girar — con x, y, theta juntos en las mismas líneas — y lo confirmamos del todo antes de que apliques el cambio en concept_person.
+
+
+---
+
+
+Aquí tienes exactamente qué añadir y dónde, en ambos ficheros. Uso std::chrono::steady_clock en milisegundos en los dos — es el mismo reloj monótono (basado en el tiempo de arranque de la máquina) en ambos procesos, así que los timestamps son directamente comparables entre concept_person y concept_robot, tal como ya hicimos en attempt7.
+
+En concept_person — specificworker_person.cpp
+
+Dentro de get_person_relative_position(), en la rama if (simulated), justo después de calcular relative_position, añade esto (necesitas #include <chrono> si no está ya):
+
+relative_position = {p_pos[0] - r_pos[0], p_pos[1] - r_pos[1], p_pos[2] - r_pos[2]};
+
+// --- DEBUG: comprobar mismatch de marco de referencia ---
+auto ts_person = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now().time_since_epoch()).count();
+
+float qx = robot_pose.orientation.x, qy = robot_pose.orientation.y,
+      qz = robot_pose.orientation.z, qw = robot_pose.orientation.w;
+float robot_yaw = std::atan2(2.f * (qw*qz + qx*qy), 1.f - 2.f * (qy*qy + qz*qz));
+
+std::cout << "[" << ts_person << "] world_delta -> dx: " << relative_position[0]
+          << " | dy: " << relative_position[1]
+          << " | robot_yaw: " << robot_yaw << std::endl;
+// --- FIN DEBUG ---
+
+Esto imprime, en cada ciclo, el delta en coordenadas del mundo (lo que se manda tal cual, sin rotar, como ya vimos) junto con la orientación real del robot en ese mismo instante. Si robot_yaw se aleja de 0 mientras el robot gira, y a la vez dx,dy no reflejan ese giro (porque siguen siendo world-frame), eso confirma visualmente el mismatch.
+
+En concept_robot — specificworker_robot.cpp
+
+Dentro de follow_target(), justo donde ya está la línea:
+
+std::cout << "RT target translation -> x: " << x << " | y: " << y << std::endl;
+
+reemplázala por:
+
+auto ts_robot = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+
+std::cout << "[" << ts_robot << "] RT target translation -> x: " << x << " | y: " << y
+          << " | angle_to_target: " << angle_to_target
+          << " | linear_v: " << linear_velocity
+          << " | angular_v: " << angular_velocity << std::endl;
+
+(std::chrono ya debería estar incluido dado que ya usáis std::chrono::steady_clock para last_follow_time.)
+
+No hace falta tocar auto_localization() — con el robot_yaw que ya imprime concept_person en el mismo instante tenemos suficiente para ver el desfase, sin duplicar cálculos en el otro proceso.
+
+Qué capturar
+Deja correr la misión, deja que el robot llegue cerca de la persona y empiece a decelerar (como en tu prueba).
+Mueve a la persona lateral para forzar el giro, igual que en la captura que mandaste.
+En cuanto veas que empieza el "círculo" (unos 5-10 segundos de esa fase basta, no necesitas la sesión completa), para la misión y guarda la salida de ambas consolas — puede ser en dos ficheros separados, no hace falta combinarlos a mano; con los timestamps ya puedo cruzarlos yo.
+
+Súbeme esos dos fragmentos y confirmamos si robot_yaw efectivamente se dispara mientras dx,dy se queda "congelado" en la perspectiva original del robot — que es justo la firma que esperaría ver si la hipótesis del marco de referencia es correcta.
+
+
+---
+
+
+Confirmado al 100%, y los números son un calco perfecto de lo que predecía la hipótesis. Vamos a la evidencia concreta:
+
+La prueba irrefutable: dx,dy y x,y son literalmente el mismo número
+
+Compara ambos logs por timestamp:
+
+concept_person [6520201]: world_delta -> dx: 2.01477 | dy: -0.995078 | robot_yaw: -1.93722
+concept_robot  [~6520327]: RT target translation -> x: 2.01477 | y: -0.995078
+
+concept_person [6521350...]: world_delta -> dx: 1.93396 | dy: -0.958487 | robot_yaw: -2.28216
+concept_robot  [6521350]:    RT target translation -> x: 1.93396 | y: -0.958487
+
+No hay ninguna transformación entre lo que escribe concept_person y lo que lee concept_robot — el delta en coordenadas de mundo pasa intacto a la arista RT, tal y como sospechábamos. Esto no es una hipótesis ya, es un hecho verificado con los propios logs.
+
+La firma de la circularidad, explicada número a número
+
+Mientras tanto, robot_yaw se mueve de forma monótona y sostenida: -1.937 → -1.968 → -2.03 → ... → -3.13 → (wrap) +3.12 → +3.09 → ... → +2.95. En unos 4.7 segundos el robot gira casi 5 radianes — está dando vueltas sobre sí mismo de forma continua, a un ritmo prácticamente constante.
+
+Y sin embargo, angle_to_target en concept_robot se queda atascado en la franja -0.40 a -0.46 durante todo ese tramo, casi sin variar. Eso es exactamente lo que predice el bug: como el x,y que recibe está en coordenadas de mundo (no rotado según cómo mira el robot ahora mismo), el controlador nunca ve que el error angular se reduzca, por mucho que el robot gire de verdad — porque el número que le llega no refleja ese giro. El controlador entonces mantiene indefinidamente un angular_v de en torno a -0.40 a -0.46 rad/s combinado con un linear_v pequeño y bastante estable (~0.07–0.19 m/s). Eso es, literalmente, la fórmula de un arco de circunferencia: velocidad lineal constante + velocidad angular constante = trayectoria circular de radio v/ω — con estos valores, un radio de entre 0.15 y 0.4 m aproximadamente, un círculo pequeño, justo la descripción que diste.
+
+(Los picos puntuales como angular_v: -3.06685 o angular_v: 1.34042 que ves intercalados son ruido del término derivativo cuando dos lecturas casi idénticas llegan con un dt minúsculo entre sí — no forman parte del problema de fondo, son un efecto secundario menor de la misma causa raíz.)
+
+Conclusión
+
+El fix que propuse la vez anterior es el correcto: concept_person tiene que rotar (dx, dy) al marco local del robot usando su robot_yaw actual antes de escribirlo en la arista RT. Con el print que ya tienes, el propio robot_yaw que imprimes es exactamente el ángulo que necesitas para esa rotación — no hace falta calcular nada más.
+
+Qué haría ahora
+
+Aplica el cambio que ya te di:
+
+float local_x =  std::cos(theta) * dx + std::sin(theta) * dy;
+float local_y = -std::sin(theta) * dx + std::cos(theta) * dy;
+relative_position = {local_x, local_y, dz};
+
+usando el mismo theta (yaw) que ya calculas para el log. Repite la misma prueba (acercarse y luego mover a la persona para forzar un giro sostenido) y ahora deberías ver que, según el robot gira, angle_to_target en concept_robot converge hacia 0 en vez de quedarse fijo — y que el círculo desaparece, quedando un giro que se resuelve y termina en línea recta hacia la persona.
+
+
+---
+
+
+No, el código está bien — coincide exactamente con lo que te propuse (rotación con theta = yaw del robot, aplicada antes de guardar relative_position). Lo que estás viendo no es un efecto secundario del cambio, es la consecuencia directa y correcta de que, en esta ejecución concreta, el robot no arrancó mirando hacia la persona.
+
+Los números lo confirman
+
+Al inicio de la misión (documento 9, [7444000]), antes de que se acepte la afordancia:
+
+world_delta -> dx: -0.0375811 | dy: -8.3856 | robot_yaw: -1.57078
+
+Ojo: pese a la etiqueta world_delta (que dejé mal puesta yo al darte el snippet — es un fallo mío, no tuyo; luego te explico por qué), esos valores son ya el local_x, local_y después de la rotación, porque en tu código el print ocurre en la línea 234 leyendo relative_position[0]/[1], que ya fueron sobrescritos por {local_x, local_y, dz} en la línea 226.
+
+Con local_x ≈ -0.04 y local_y ≈ -8.4, el objetivo está, en el marco del robot, casi enteramente en el eje lateral, casi nada al frente. Es decir: atan2(y, x) ≈ -π/2 — la persona está prácticamente a 90° respecto a hacia donde mira el robot en ese instante (robot_yaw = -1.571 ≈ -90° respecto al mundo). No es que la persona esté detrás; es que el robot, tal y como ha hecho spawn esta vez, no está orientado hacia ella en absoluto.
+
+Antes del fix, ese desfase de ~90° se ignoraba por completo (se mandaba el delta de mundo tal cual, como si fuera local) — así que el robot habría arrancado moviéndose en una dirección que, aunque pareciera "recta" en tu pantalla, en realidad no apuntaba hacia la persona salvo coincidencia. Ahora, con la orientación real tenida en cuenta, el controlador detecta correctamente ese ~90° de error y hace exactamente lo que un controlador bien hecho debe hacer: girar primero para encarar al objetivo antes de avanzar en serio.
+
+Por qué el avance es tan flojo mientras gira
+
+Fíjate en esta línea de follow_target:
+
+float angle_attenuation = std::cos(std::clamp(angle_to_target, -HALF_PI, HALF_PI));
+linear_velocity *= angle_attenuation;
+
+float angle_attenuation = std::cos(std::clamp(angle_to_target, -HALF_PI, HALF_PI));
+linear_velocity *= angle_attenuation;
+
+Con angle_to_target cerca de -π/2, cos(-π/2) ≈ 0 — la velocidad lineal se atenúa casi a cero mientras el error angular es grande, y solo se libera avance de verdad conforme el ángulo se acerca a 0. Esto explica perfectamente por qué, en el tramo del log de concept_robot que me pasaste, x apenas decrece (de 7.11 a 7.39, prácticamente estable) mientras y se desploma de -2.33 a casi 0 — el robot está empleando casi todo ese tramo en girar para encararla, no en acercarse, tal y como debería.
+
+Entonces, ¿es un bug?
+
+No del sistema de control — el comportamiento es matemáticamente coherente y deseable dado el punto de partida real. Lo que sí valdría la pena confirmar es por qué el robot arrancó esta vez mirando a ~90° de la persona en vez de ya encarado, como en pruebas anteriores donde salía derecho desde el principio:
+
+¿Es así como está definida la escena en SimpleWorld_Bump.wbt (el robot spawnea mirando hacia un lado y se espera que gire al inicio)?
+¿O es un resto de una posición/orientación de una misión anterior que no se reseteó del todo (como discutimos antes con el reseteo parcial de Webots)?
+
+Si el diseño del experimento espera que el robot ya arranque mirando hacia la persona, este giro inicial sería una señal de que el reseteo de Webots no está devolviendo al robot a su orientación de partida esperada — y ahí sí merecería la pena mirar. Pero como comportamiento del controlador en sí, no hay nada mal en lo que has cambiado; al contrario, es justo la señal de que el fix está funcionando como debía.
+
+Por cierto, la etiqueta world_delta en el print la corrijo yo aquí para que no lleve a confusión en próximas capturas — si quieres, cámbiala en tu código a local_delta (o similar) para que el nombre refleje lo que realmente contiene.
+
+
+---
+
+
+Buena pregunta — aclaro primero eso, porque puede que sonara a más de lo que era, y luego te doy lo que creo que es el verdadero problema (que es distinto y más importante).
+
+Lo de world_delta: solo era un comentario cosmético
+
+No es un cambio de código, solo un texto engañoso. En tu fichero, línea 234:
+
+std::cout << "[" << ts_person << "] world_delta -> dx: " << relative_position[0]
+          << " | dy: " << relative_position[1]
+          << " | robot_yaw: " << yaw << std::endl;
+
+Esto imprime relative_position[0] y [1], que en la línea 226 ya fueron sobrescritos con {local_x, local_y, dz}. Es decir, el print dice "world_delta" pero en realidad muestra los valores ya rotados (locales), no el delta de mundo crudo. Es solo la etiqueta de texto la que está mal — no afecta a ningún cálculo, solo a lo que lees en consola. Si quieres, cambia el string a "local_delta" en esa línea y ya está; no toca nada más.
+
+El problema de verdad: creo que asumí mal qué eje es "adelante" en Shadow
+
+Con tu confirmación de que el robot y la persona están perfectamente alineados en la imagen, y aun así el código calcula un ángulo de ~90°, la explicación más probable ya no es un error de cálculo del yaw, sino que mi fórmula de rotación asumió el eje equivocado como "hacia delante".
+
+Mira esta línea que ya vimos hace tiempo en specificworker_bridge.cpp (la que procesa la velocidad real del robot en Webots):
+
+pose_data.adv  = shadow_velocity_local(1);   //y
+pose_data.side = -shadow_velocity_local(0);  //x
+
+Esto dice, en el propio código del puente, que el eje "adelante" (adv) del robot Shadow es el eje local Y, no el X, y que el lateral (side) es -X. Yo, al escribir la rotación en concept_person, asumí la convención contraria (X=adelante, Y=lateral) — la típica en robótica, pero que aquí no aplica para este robot en concreto.
+
+Ese desajuste de 90° entre "cómo gira mi fórmula" y "cómo está realmente orientado el modelo" encaja perfectamente con lo que ves: alineación real = 0°, pero mi cálculo devuelve ~90° de error, y el controlador intenta "corregir" un giro que en realidad no existe.
+
+El fix
+
+En vez de:
+
+float local_x =  std::cos(theta) * dx + std::sin(theta) * dy;
+float local_y = -std::sin(theta) * dx + std::cos(theta) * dy;
+relative_position = {local_x, local_y, dz};
+
+Prueba a intercambiar los ejes con el giro de 90° ya incorporado:
+
+float local_x = -std::sin(theta) * dx + std::cos(theta) * dy;   // antes era local_y
+float local_y = -std::cos(theta) * dx - std::sin(theta) * dy;   // -antigua local_x
+relative_position = {local_x, local_y, dz};
+
+Esto es matemáticamente equivalente a decir "el eje que hasta ahora llamábamos local_y es en realidad el adelante real (local_x nuevo), y local_x antiguo, invertido de signo, es el lateral real". La derivación sale directamente de sumar 90° al theta que ya calculas, usando que cos(θ+90°)=-sinθ y sin(θ+90°)=cosθ.
+
+Importante: no puedo garantizar el signo exacto de local_y (si "lateral positivo" es izquierda o derecha) sin verlo correr — depende de la lateralidad (mano derecha/izquierda) del sistema de Webots y de si el robot mira hacia +Y o -Y local. Si tras aplicar esto el robot va recto pero gira al revés de lo esperado cuando mueves a la persona, basta con negar local_y una vez más.
+
+Cómo confirmarlo rápido
+
+Repite la prueba que acabas de hacer (misión recién arrancada, robot y persona alineados) y mira el nuevo print: si el fix es correcto, el ángulo calculado al inicio debería salir cercano a 0 (o muy pequeño), no ~90°. Si sigue saliendo un ángulo grande, dinos el valor exacto — puede que la orientación de "adelante" en Shadow no sea +Y sino -Y, y haga falta un ajuste de signo adicional en vez del que propongo aquí.
+
+
+---
+
+
+Excelente pista — "siempre en el mismo patrón, gira mucho en muy poco margen" es la clave, y mirando el código de nuevo (el que subiste hace un par de mensajes) he encontrado algo muy concreto: hay dos yaws distintos calculados a partir del mismo quaternion, y usas uno para el log y otro para la rotación real.
+
+El bug: dos fórmulas de yaw distintas conviviendo
+
+Mira tu propio código en get_person_relative_position():
+
+Eigen::Quaternionf q(robot_pose.orientation.w, robot_pose.orientation.x,
+                     robot_pose.orientation.y, robot_pose.orientation.z);
+q.normalize();
+float theta = q.toRotationMatrix().eulerAngles(0, 1, 2)[2]; // yaw   <-- usado para rotar
+
+float local_x = std::cos(theta) * dx + std::sin(theta) * dy;
+float local_y = -std::sin(theta) * dx + std::cos(theta) * dy;
+relative_position = {local_x, local_y, dz};
+
+// debug
+...
+float yaw = std::atan2(2.f * (qw*qz + qx*qy), 1.f - 2.f * (qy*qy + qz*qz));  // <-- usado SOLO para el print
+std::cout << "... robot_yaw: " << yaw ...
+
+theta (el que de verdad rota local_x/local_y) sale de eulerAngles(0,1,2). yaw (el que imprimes en el log como robot_yaw) sale de una fórmula atan2 totalmente distinta. Son dos variables separadas, calculadas con dos métodos diferentes, a partir del mismo quaternion.
+
+Por qué esto explica exactamente lo que ves
+
+Eigen::eulerAngles() tiene un problema conocido: para representar una misma rotación existen dos ternas de ángulos de Euler matemáticamente equivalentes ((roll, pitch, yaw) y (roll+π, π−pitch, yaw+π)), y la función puede saltar de una a otra de forma discontinua entre un frame y el siguiente por ruido numérico mínimo, aunque la orientación real del robot no haya cambiado nada. Eso produce un salto instantáneo de theta de ~π radianes durante uno o dos ciclos, y luego vuelve a la solución "normal".
+
+Esto es justo lo que veo en tu log de concept_person, documento 10:
+
+[8290780] ... x: 3.36007 | y: 1.50197  (justo antes del glitch)
+[8290844] world/local_delta -> dx: -3.4209 | dy: -1.05784 | robot_yaw: 1.60987   <- un solo frame
+[8290940] world/local_delta -> dx: -3.36042 | dy: -1.17092 | robot_yaw: 1.6343
+[8291047] world/local_delta -> dx: -3.28965 | dy: -1.29464 | robot_yaw: 1.59698
+[8291108] world/local_delta -> dx: -3.25138 | dy: -1.35571 | robot_yaw: 1.57814
+[8291203] world/local_delta -> dx: 3.17094 | dy: 1.47141 | robot_yaw: 1.54144   <- vuelve a positivo
+
+Fíjate en el detalle clave: robot_yaw (el impreso, calculado con atan2) evoluciona de forma perfectamente suave y continua durante todo el episodio (1.609 → 1.634 → 1.597 → 1.578 → 1.541 — sin ningún salto). Sin embargo, dx/dy (calculados con el theta de eulerAngles, que es una variable distinta) se invierten de signo por completo y vuelven, en el mismo tramo de tiempo. Si el yaw real del robot no salta (como confirma el print), pero el resultado de la rotación sí lo hace, la única explicación es que el ángulo usado internamente para rotar (theta) no es el mismo que el que se imprime (yaw) — y por tanto theta es el que está sufriendo el salto de eulerAngles(), invisible en el log porque nunca llegamos a imprimirlo.
+
+Esto también explica por qué en concept_robot ves angular_v: 4.03 o angular_v: -4.03 en esos instantes — es justo el clamp de WEBOTS_MAX_ANGULAR_SPEED, disparado porque el controlador de repente "ve" que el objetivo está detrás suyo (angle_to_target ≈ ±2.8, casi π), pide un giro brutal para corregirlo, y al ciclo siguiente el dato vuelve a la normalidad y el giro se cancela — de ahí el efecto de "ajuste brusco en muy poco margen" que describes, sin relación con la posición u orientación real en cada caso (por eso te pasaba en distintos puntos: es ruido numérico, no geometría).
+
+El fix
+
+Usa la misma fórmula atan2 (que ya sabes que es estable, porque el log lo confirma) también para theta, en vez de eulerAngles:
+
+Eigen::Quaternionf q(robot_pose.orientation.w, robot_pose.orientation.x,
+                     robot_pose.orientation.y, robot_pose.orientation.z);
+q.normalize();
+
+float theta = std::atan2(2.f * (q.w()*q.z() + q.x()*q.y()),
+                          1.f - 2.f * (q.y()*q.y() + q.z()*q.z()));
+
+float local_x = std::cos(theta) * dx + std::sin(theta) * dy;
+float local_y = -std::sin(theta) * dx + std::cos(theta) * dy;
+relative_position = {local_x, local_y, dz};
+
+Y ya puedes borrar el cálculo duplicado de yaw en el bloque de debug (o dejarlo, ahora sería literalmente el mismo valor que theta).
+
+Esta fórmula atan2 extrae directamente el yaw a partir del quaternion asumiendo rotación pura sobre el eje Z (que es tu caso, un robot terrestre) — es matemáticamente equivalente a eulerAngles(0,1,2)[2] cuando no hay ambigüedad, pero sin el salto de continuidad, porque no pasa por la descomposición de tres ángulos independientes (que es donde vive el problema de las dos soluciones equivalentes).
+
+Repite la prueba con este cambio y los microajustes deberían desaparecer — si sigue apareciendo alguno, sería útil comparar directamente theta (el usado para rotar) en el propio print, en vez de duplicarlo con una fórmula distinta como pasaba hasta ahora, para que log y comportamiento sean siempre la misma fuente de verdad.
+
+
+---

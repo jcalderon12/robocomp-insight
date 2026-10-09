@@ -28,6 +28,7 @@ sys.path.insert(0, str(INNER / "src"))
 
 from src.episode_scene import (
     DEFAULT_TRAY_OFFSET,
+    URDF_BASE_Z,
     build_simulation_scene,
     EFFECT_HORIZON_MARGIN_S,
     episode_clock_rate,
@@ -115,16 +116,41 @@ def yaw_deg(quaternion):
 
 
 def test_heading_convention():
-    # Recorded yaw -90 deg in DSR (robot advancing along world +x) -> URDF yaw 0.
-    assert abs(yaw_deg(to_urdf_orientation([0.0, 0.0, -math.sqrt(0.5), math.sqrt(0.5)]))) < 1e-6
+    # The differential shadow URDF drives along +y, like the DSR frame: a recorded yaw of -90 deg
+    # (robot advancing along world +x) stays -90 deg. yaw_offset=pi/2 is what the four-wheel URDF needed.
+    assert abs(yaw_deg(to_urdf_orientation([0.0, 0.0, -math.sqrt(0.5), math.sqrt(0.5)])) + 90.0) < 1e-6
+    assert abs(yaw_deg(to_urdf_orientation([0.0, 0.0, -math.sqrt(0.5), math.sqrt(0.5)], math.pi / 2))) < 1e-6
 
     api = FakeMemApi(yaw_deg=-90.0, deletions_s=[])
     poses = extract_scene_poses(api, [0.0] * 3, [0.0] * 3, [0.0] * 3)
-    assert abs(yaw_deg(poses.initial_robot_orientation)) < 1e-6, poses.initial_robot_orientation
-    # The tray offset is expressed in the URDF body frame: with URDF yaw 0 it is
-    # added to the robot position as is.
-    expected = [p + o for p, o in zip([-3.7, -0.3, 0.02], DEFAULT_TRAY_OFFSET)]
+    assert abs(yaw_deg(poses.initial_robot_orientation) + 90.0) < 1e-6, poses.initial_robot_orientation
+    # The URDF base rests on the floor whatever z the Webots body was recorded at (0.02 m).
+    assert poses.initial_robot_position == [-3.7, -0.3, URDF_BASE_Z], poses.initial_robot_position
+    # The tray offset is expressed in the URDF body frame: at yaw -90 deg the bottle ends ahead
+    # (+x) and to the left (+y) of the robot, as the Webots world places it.
+    ox, oy, oz = DEFAULT_TRAY_OFFSET
+    expected = [-3.7 + oy, -0.3 - ox, URDF_BASE_Z + oz]
     assert all(abs(a - b) < 1e-9 for a, b in zip(poses.bottle_position, expected)), poses.bottle_position
+
+
+def test_swapped_axes():
+    """The UEx DSR of 08/10 hangs the robot from "root" and writes its position as (y, x) of the
+    Webots world, with the Webots orientation: the scene recovers the room axes from the motion."""
+    class RootMemApi(FakeMemApi):
+        def get_keyframe(self, index):
+            return Keyframe([{"name": "root", "id": self.ROOM}, {"name": "robot", "id": self.ROBOT},
+                             {"name": "bottle", "id": self.BOTTLE}])
+
+    plain = FakeMemApi(yaw_deg=-90.0, deletions_s=[])
+    swapped = RootMemApi(yaw_deg=-90.0, deletions_s=[])
+    for event in swapped.robot_rt:
+        x, y, z = event.attributes["rt_translation"].value
+        event.attributes["rt_translation"] = Attr([y, x, z])
+    recorded = extract_scene_poses(plain, [0.0] * 3, [0.0] * 3, [0.0] * 3)
+    corrected = extract_scene_poses(swapped, [0.0] * 3, [0.0] * 3, [0.0] * 3)
+    assert recorded.sources["axes"] == "recorded" and corrected.sources["axes"] == "swapped_xy", corrected.sources
+    for name in ("initial_robot_position", "problem_position", "bottle_position", "initial_robot_orientation"):
+        assert getattr(corrected, name) == getattr(recorded, name), name
 
 
 def test_observed_effect_and_horizon():
@@ -137,7 +163,7 @@ def test_observed_effect_and_horizon():
     assert simulation_horizon(118.0, None) == 118.0          # no observed effect: whole recording
 
     # The replay drops the stop the system issued after seeing the bottle go.
-    scene, _ = build_simulation_scene(api, [-3700.0, -300.0, 32.5], [0.0, 40.0, 1.0])
+    scene, _ = build_simulation_scene(api, [-3.7, -0.3, 0.0325], [0.0, 0.04, 0.001])
     assert scene["observed_effect_time"] == times[0]
     assert scene["list_of_target_velocities"]["adv_speed"] == [0.4], scene["list_of_target_velocities"]
     assert scene["simulation_length"] == min(19.9, times[0] + EFFECT_HORIZON_MARGIN_S)
@@ -263,9 +289,9 @@ def test_simulator_rotation_and_fall():
     workdir = Path(tempfile.mkdtemp(prefix="insight_safeguards_sim_"))
     scene = {
         "gravity": -9.81,
-        "initial_robot_position": [0.0, 0.0, 32.5], "initial_robot_orientation": [0.0, 0.0, 0.0, 1.0],
+        "initial_robot_position": [0.0, 0.0, 0.0], "initial_robot_orientation": [0.0, 0.0, 0.0, 1.0],
         "problem_position": [0.0, 0.0, 0.0], "problem_orientation": [0.0, 0.0, 0.0, 1.0],
-        "bottle_position": [50.0, 110.0, 795.0], "bottle_orientation": [0.0, 0.0, 0.0, 1.0],
+        "bottle_position": list(DEFAULT_TRAY_OFFSET), "bottle_orientation": [0.0, 0.0, 0.0, 1.0],
         "simulation_length": 2.0, "num_of_repetitions": 1,
         "list_of_target_velocities": {"timestamp": [0.0], "adv_speed": [0.0]},
         "list_of_target_rot_speeds": {"timestamp": [0.0], "rot_speed": [0.6]},
@@ -279,10 +305,10 @@ def test_simulator_rotation_and_fall():
         assert simulator.get_target_rot_speed(1.0) == 0.6
         # A 10 cm bump placed under the robot overlaps it; 2 m ahead it does not.
         bump = str(REPO / "etc/URDFs/bump/bump_100x10cm.urdf")
-        simulator.instantiate_body(bump, [0.0, 0.0, 1.0])
+        simulator.instantiate_body(bump, [0.0, 0.0, 0.001])
         assert simulator.spawned_bodies_overlap()
         simulator.clean_bodies()
-        simulator.instantiate_body(bump, [2000.0, 0.0, 1.0])
+        simulator.instantiate_body(bump, [2.0, 0.0, 0.001])
         assert not simulator.spawned_bodies_overlap()
         simulator.clean_bodies()
         simulator.doSimulations()
@@ -327,7 +353,7 @@ def test_episode_clock():
     # It covers half of it, as under the Webots clock; the scene carries the rate.
     api.robot_rt[1] = Event(9 * NS, "MEA", {"rt_translation": Attr([-3.7 + 0.5 * 0.4 * 8, -0.3, 0.04]),
                                             "rt_quaternion": Attr([0.0, 0.0, -math.sqrt(0.5), math.sqrt(0.5)])})
-    scene, info = build_simulation_scene(api, [-3700.0, -300.0, 32.5], [0.0, 40.0, 1.0])
+    scene, info = build_simulation_scene(api, [-3.7, -0.3, 0.0325], [0.0, 0.04, 0.001])
     assert abs(scene["clock_rate"] - 0.5) < 1e-6 and info["clock_rate_windows"] == 7, (scene["clock_rate"], info)
     # A robot that is never told to move gives no window: the recording's own clock.
     api.robot_node = api.robot_node[:1]
@@ -337,9 +363,11 @@ def test_episode_clock():
     # physics steps and the robot covers half the path.
     base = {
         "gravity": -9.81,
-        "initial_robot_position": [0.0, 0.0, 32.5], "initial_robot_orientation": [0.0, 0.0, 0.0, 1.0],
+        # Heading along world +x (yaw -90 deg), with the bottle on the tray ahead of the robot.
+        "initial_robot_position": [0.0, 0.0, 0.0], "initial_robot_orientation": [0.0, 0.0, -math.sqrt(0.5), math.sqrt(0.5)],
         "problem_position": [0.0, 0.0, 0.0], "problem_orientation": [0.0, 0.0, 0.0, 1.0],
-        "bottle_position": [50.0, 110.0, 795.0], "bottle_orientation": [0.0, 0.0, 0.0, 1.0],
+        "bottle_position": [DEFAULT_TRAY_OFFSET[1], -DEFAULT_TRAY_OFFSET[0], DEFAULT_TRAY_OFFSET[2]],
+        "bottle_orientation": [0.0, 0.0, 0.0, 1.0],
         "simulation_length": 4.0, "num_of_repetitions": 1,
         "list_of_target_velocities": {"timestamp": [0.0], "adv_speed": [0.4]},
     }
@@ -355,6 +383,7 @@ def test_episode_clock():
 
 def main():
     test_heading_convention()
+    test_swapped_axes()
     test_observed_effect_and_horizon()
     test_window_anchored_on_observed_effect()
     abstained = test_verdict_safeguards()

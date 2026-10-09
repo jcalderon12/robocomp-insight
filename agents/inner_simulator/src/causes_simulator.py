@@ -29,8 +29,12 @@ agent_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if agent_root not in sys.path:
     sys.path.insert(0, agent_root)
 
-MM_TO_M = 0.001
+# The scene and the physics are in metres. The recorded outputs (bottle and robot positions)
+# stay in millimetres, as the verdict and the cause selection read them.
 M_TO_MM = 1000
+# 1/120 made the nominal replay of the four-wheel URDF knock the bottle off the tray with the
+# stepwise speed profile of the PD follow controller; a scene may set another step (physics_dt).
+DEFAULT_PHYSICS_DT = 1. / 62.
 
 from src.logger import Logger
 from src.verdict import DEFAULT_EFFECT_Z_FRACTION
@@ -164,23 +168,20 @@ class CausesSimulator:
         self.spawn_overlap = False
         self.engine_wrapper = EnginePybullet(self)
         self.forwardSpeed = 0.0
-        # Small Z offset in millimeters to place robot slightly above the ground
-        # Default 0.04 mm as requested (can be adjusted later)
-        self.robot_z_offset_mm = 0.04
+        # Small Z offset in meters to place robot slightly above the ground
+        self.robot_z_offset = 0.005
 
         # Engine parameters. Headless (DIRECT) by default so many instances can run in parallel.
         self.physicsClient = p.connect(p.GUI if gui else p.DIRECT)
         if gui:
             p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
-            p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15, cameraTargetPosition=[0.8, -0.9, 0.2])
-        # 1/120 made the nominal replay knock the bottle off the tray with the stepwise
-        # speed profile of the PD follow controller, so every hypothesis matched the null one.
-        self.dt = 1./62.
-        p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1, numSolverIterations=20)
-        self.flags = p.URDF_USE_INERTIA_FROM_FILE
+            p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-50, cameraTargetPosition=[0.8, -0.9, 2.0])
 
         # Simulation scene parameters
         self.simulation_scene = self.load_simulation_scene_json(simulation_scene)
+        self.dt = self.simulation_scene.physics_dt or DEFAULT_PHYSICS_DT
+        p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1, numSolverIterations=20)
+        self.flags = p.URDF_USE_INERTIA_FROM_FILE
         self.apply_simulation_params()
 
         # LOAD PLANE IN THE SIMULATION
@@ -209,11 +210,13 @@ class CausesSimulator:
         # ================ ROBOT PARAMETERS  ===============
         # ==================================================
 
-        self.wheels_radius = 0.1
-        self.distance_between_wheels = 0.44
+        self.wheels_radius = 0.1                 # m
+        self.wheels_width = 0.05                 # m, width of each wheel
+        self.distance_between_wheels = 0.518     # m, between wheel centres (the driver's axesLength)
         self.distance_from_center_to_wheels = self.distance_between_wheels / 2
+        self.base_width = 0.44                   # m, width of the chassis box (boundingObject)
 
-        self.motors = ["frame_back_right2motor_back_right", "frame_back_left2motor_back_left", "frame_front_right2motor_front_right", "frame_front_left2motor_front_left"]
+        self.motors = ["wheel_right_joint", "wheel_left_joint"]
         self.joints_name = self.get_joints_info(self.robot)
         self.links_name = self.get_link_info(self.robot)
 
@@ -301,28 +304,21 @@ class CausesSimulator:
         """
         return SimulationScene.model_validate_json(open(simulation_scene_file, 'r').read())
 
-    def mm_to_m(self, value):
-        """Convert a scalar or sequence from millimeters to meters."""
-        if isinstance(value, (list, tuple)):
-            return [v * MM_TO_M for v in value]
-        return value * MM_TO_M
-
     def apply_simulation_params(self) -> None:
         """Apply the currently stored simulation scene parameters to the real scene.
 
-        The JSON/simulation scene stores positions in millimeters, but PyBullet
-        expects meters internally.
+        The scene stores positions in meters, as PyBullet uses them.
         """
         p.setGravity(0, 0, self.simulation_scene.gravity)
-        # Apply small Z offset (in millimeters) so robot appears slightly above the ground
-        robot_init_pos_mm = list(self.simulation_scene.initial_robot_position)
+        # Apply small Z offset so robot appears slightly above the ground
+        robot_init_pos = list(self.simulation_scene.initial_robot_position)
         # Ensure list has at least 3 elements
-        while len(robot_init_pos_mm) < 3:
-            robot_init_pos_mm.append(0.0)
-        robot_init_pos_mm[2] = robot_init_pos_mm[2] + getattr(self, 'robot_z_offset_mm', 0.04)
-        self.initial_position = self.mm_to_m(robot_init_pos_mm)
+        while len(robot_init_pos) < 3:
+            robot_init_pos.append(0.0)
+        robot_init_pos[2] = robot_init_pos[2] + getattr(self, 'robot_z_offset', 0.005)
+        self.initial_position = robot_init_pos
         self.initial_orientation = self.simulation_scene.initial_robot_orientation
-        self.bottle_position = self.mm_to_m(self.simulation_scene.bottle_position)
+        self.bottle_position = self.simulation_scene.bottle_position
         self.bottle_orientation = self.simulation_scene.bottle_orientation
         self.problem_position = self.simulation_scene.problem_position
         self.problem_orientation = self.simulation_scene.problem_orientation
@@ -413,23 +409,15 @@ class CausesSimulator:
         """Initialize the wheel movement map to track which wheels are currently moving.
         """
         self.wheel_movement = {}
-        self.wheel_movement["frame_front_right2motor_front_right"] = True
-        self.wheel_movement["frame_back_right2motor_back_right"] = True
-        self.wheel_movement["frame_front_left2motor_front_left"] = True
-        self.wheel_movement["frame_back_left2motor_back_left"] = True
+        self.wheel_movement["wheel_right_joint"] = True
+        self.wheel_movement["wheel_left_joint"] = True
     
     def initialze_wheel_simplified_names_map(self) -> None:
         """Initialize the mapping of wheel simplified names to full joint names.
         """
         self.wheel_names = {}
-        self.wheel_names["FL"] = "frame_front_left2motor_front_left"
-        self.wheel_names["FR"] = "frame_front_right2motor_front_right"
-        self.wheel_names["BL"] = "frame_back_left2motor_back_left"
-        self.wheel_names["BR"] = "frame_back_right2motor_back_right"
-        # The shadow URDF has four wheels while the real base is differential (two
-        # drive wheels and two casters): a failing drive wheel stops both wheels of
-        # its side.
-        self.wheel_sides = {"L": ["FL", "BL"], "R": ["FR", "BR"]}
+        self.wheel_names["L"] = "wheel_left_joint"
+        self.wheel_names["R"] = "wheel_right_joint"
         
     def initialize_bodies_list(self) -> None:
         """Initialize the list to track all loaded bodies in the simulation.
@@ -447,13 +435,12 @@ class CausesSimulator:
     
     def instantiate_body(self, body_file:str, body_position:tuple, identifier:str=str(uuid4())):
         """ ENGINE: Spawn body """
-        body_position_m = self.mm_to_m(body_position)
+        body_position_m = body_position
         self.loaded_bodies.append(p.loadURDF(body_file, basePosition=body_position_m))
 
     def set_robot_wheel_moving(self, simplified_wheel_name:str, moving:bool):
-        """ ENGINE: Set robot wheel moving (a single wheel, or a side: "L" / "R") """
-        for name in self.wheel_sides.get(simplified_wheel_name, [simplified_wheel_name]):
-            self.wheel_movement[self.wheel_names[name]] = moving
+        """ ENGINE: Set robot wheel moving ("L" or "R", the two drive wheels) """
+        self.wheel_movement[self.wheel_names[simplified_wheel_name]] = moving
     
     def set_gravity(self, gravity:float=-9.81):
         """ ENGINE: Set gravity """
@@ -534,48 +521,22 @@ class CausesSimulator:
         return float(self.list_of_target_rot_speeds[ROT_SPEED][index])
 
     def get_forward_velocity(self) -> float:
-        """Get the forward velocity of the robot based on current wheel velocities.
-            Returns:
-                - float: Forward velocity in m/s.
-        """
-        wheel_velocities = {}
-        for motor_name in self.motors:
-            wheel_velocities[motor_name] = p.getJointState(self.robot, self.joints_name[motor_name])[1]
-        forward_velocity = (wheel_velocities["frame_front_left2motor_front_left"] +
-                            wheel_velocities["frame_front_right2motor_front_right"] +
-                            wheel_velocities["frame_back_left2motor_back_left"] +
-                            wheel_velocities["frame_back_right2motor_back_right"]) * self.wheels_radius / 4
-        return forward_velocity
+        """Forward velocity of the robot (m/s) from its two drive wheels."""
+        w_left = p.getJointState(self.robot, self.joints_name["wheel_left_joint"])[1]
+        w_right = p.getJointState(self.robot, self.joints_name["wheel_right_joint"])[1]
+        return (w_left + w_right) * self.wheels_radius / 2
 
     def get_angular_velocity(self) -> float:
-        """Get the angular velocity of the robot based on current wheel velocities.
-            Returns:
-                - float: Angular velocity in rad/s.
-        """
-        wheel_velocities = {}
-        for motor_name in self.motors:
-            wheel_velocities[motor_name] = p.getJointState(self.robot, self.joints_name[motor_name])[1]
-        angular_velocity = ((wheel_velocities["frame_front_right2motor_front_right"] +
-                            wheel_velocities["frame_back_right2motor_back_right"] -
-                            wheel_velocities["frame_front_left2motor_front_left"] -
-                            wheel_velocities["frame_back_left2motor_back_left"]) * self.wheels_radius /
-                            (2 * self.distance_between_wheels))
-        return angular_velocity
+        """Angular velocity of the robot (rad/s, positive counterclockwise) from its two drive wheels."""
+        w_left = p.getJointState(self.robot, self.joints_name["wheel_left_joint"])[1]
+        w_right = p.getJointState(self.robot, self.joints_name["wheel_right_joint"])[1]
+        return (w_right - w_left) * self.wheels_radius / self.distance_between_wheels
 
     def get_wheels_velocity_from_forward_velocity_and_angular_velocity(self, forward_velocity: float = 0, angular_velocity: float = 0) -> dict:
-        """Calculate required wheel velocities from forward and angular velocities for a differential drive robot.
-            Parameters:
-                - forward_velocity (float): Forward velocity of the robot (default: 0).
-                - angular_velocity (float): Angular velocity of the robot (default: 0).
-            Returns:
-                - dict: Dictionary mapping motor names to their required velocities.
-        """
-        wheels_velocity = {
-            "frame_front_left2motor_front_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_front_right2motor_front_right": forward_velocity / self.wheels_radius + self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_back_left2motor_back_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_back_right2motor_back_right": forward_velocity / self.wheels_radius + self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius}
-        return wheels_velocity
+        """Velocity (rad/s) of each drive wheel for a forward (m/s) and angular (rad/s) velocity."""
+        return {
+            "wheel_left_joint": (forward_velocity - self.distance_from_center_to_wheels * angular_velocity) / self.wheels_radius,
+            "wheel_right_joint": (forward_velocity + self.distance_from_center_to_wheels * angular_velocity) / self.wheels_radius}
 
     # =============== PYBULLET MODELS INFO  ================
     # ======================================================

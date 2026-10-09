@@ -21,28 +21,23 @@
 FullPoseEstimationPubI::FullPoseEstimationPubI(GenericWorker *_worker, const size_t id): worker(_worker), id(id)
 {
 	newFullPoseHandlers = {
-		[this](auto &a) { return worker->FullPoseEstimationPub_newFullPose(a); }
+		[this](auto &a) {if (worker != nullptr) worker->FullPoseEstimationPub_newFullPose(a); else throw std::runtime_error("Worker is null");}
 	};
 
 }
-
 
 FullPoseEstimationPubI::~FullPoseEstimationPubI()
 {
 }
 
-
 void FullPoseEstimationPubI::newFullPose(RoboCompFullPoseEstimation::FullPoseEuler pose, const Ice::Current&)
 {
-
+    if (!worker)
+        throw std::runtime_error("Worker is null");
+        
     #ifdef HIBERNATION_ENABLED
 		worker->hibernationTick();
 	#endif
     
-	if (id < newFullPoseHandlers.size())
-		 newFullPoseHandlers[id](pose);
-	else
-		throw std::out_of_range("Invalid newFullPose id: " + std::to_string(id));
-
+	newFullPoseHandlers.at(id)(pose);
 }
-

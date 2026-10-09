@@ -33,17 +33,18 @@ from hypothesis_compiler import compile_hypothesis, load_catalog  # noqa: E402
 from src.logger import Logger  # noqa: E402
 
 WORKDIR = Path(tempfile.mkdtemp(prefix="insight_scaled_dome_test_"))
-# Millimeters, as the causes simulator expects (see SimulationScene); the robot drives along -300 mm.
+# Meters, as the causes simulator expects (see SimulationScene); the robot drives along y = -0.3 m
+# (yaw -90 deg heads the differential URDF along world +x), the bottle on its tray.
 SCENE = {
     "gravity": -9.81,
-    "initial_robot_position": [-3700.0, -300.0, 32.5],
-    "initial_robot_orientation": [0.0, 0.0, 0.0, 1.0],
-    "problem_position": [-1700.0, -300.0, 30.0],
+    "initial_robot_position": [-3.7, -0.3, 0.0],
+    "initial_robot_orientation": [0.0, 0.0, -0.7071067811865476, 0.7071067811865476],
+    "problem_position": [-1.7, -0.3, 0.03],
     "problem_orientation": [0.0, 0.0, 0.0, 1.0],
     "simulation_length": 1.0,
     "list_of_target_velocities": {"timestamp": [0.0], "adv_speed": [0.5]},
     "num_of_repetitions": 2,
-    "bottle_position": [-3650.0, -190.0, 795.0],
+    "bottle_position": [-3.545, -0.19, 0.846],
     "bottle_orientation": [0.0, 0.0, 0.0, 0.0],
 }
 AREA = {"x": [-3.0, -2.0], "y": [-0.65, 0.05], "z": [0.0, 0.0]}

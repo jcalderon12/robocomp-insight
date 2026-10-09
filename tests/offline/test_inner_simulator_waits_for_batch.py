@@ -76,10 +76,10 @@ class Logger:
 WORKER_METHODS = ("check_for_problems", "load_hypotheses_causes", "waiting_for_batch", "retire_batch")
 
 
-def make_worker(batch_wait_s, with_intention_node):
+def make_worker(batch_wait_s, with_intention_node, names=("Search Problem Cause_1", "Follow Person_1")):
     """The simulator's state once the follow mission has stopped and its recording is closed."""
-    episodic = FakeGraph(node("Search Problem Cause_1", 50, status="running"),
-                         node("Follow Person_1", 51, filepath=RECORDING))
+    episodic = FakeGraph(node(names[0], 50, status="running"),
+                         node(names[1], 51, filepath=RECORDING))
     work = FakeGraph(node("robot", 1), *([node(specificworker.UNEXPLAINED_NODE, 60)] if with_intention_node else []))
     worker = types.SimpleNamespace(
         graphs={"work": work, "episodic": episodic}, logger=Logger(), state="IDLE",
@@ -153,6 +153,15 @@ def check_config_default():
     print("OK check_config_default")
 
 
+def check_new_mission_names():
+    """mission_controller names its automatic missions "..._attempt_N" since 08/10."""
+    worker, rounds = make_worker(60.0, True, ("search_cause_attempt_1-20261008-1", "follow_person_attempt_1-20261008-2")), []
+    publish_batch(worker)
+    tick(worker, rounds)
+    assert rounds == ["batch"], rounds
+    print("OK check_new_mission_names")
+
+
 def main():
     if not BATCH.exists():
         print(f"SKIP: {BATCH} not found (it travels in the hand-over package)")
@@ -160,6 +169,7 @@ def main():
     # The episodic memory API is not needed to choose the causes.
     specificworker.mem = types.SimpleNamespace(EpisodicMemoryAPI=lambda path: types.SimpleNamespace(is_ready=lambda: True))
     check_batch_in_time()
+    check_new_mission_names()
     check_no_batch_then_late_batch()
     check_without_intention_node()
     check_config_default()

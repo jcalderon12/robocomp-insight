@@ -9,7 +9,7 @@
     },
     {
         "name":"wheel",
-        "wheel_wheel": "BR",
+        "wheel_wheel": "R",
         "wheel_min": 0.0,
         "wheel_max": 1.0,
         "num_of_repetitions": 40

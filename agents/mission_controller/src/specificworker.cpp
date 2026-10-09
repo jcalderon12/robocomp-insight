@@ -149,59 +149,21 @@ void SpecificWorker::initialize()
 		if (m.status == MissionStatus::RUNNING)
 		{
 			const std::string mission_type = m.type.toStdString();
-			if (mission_timing_active) {
-				auto now = std::chrono::steady_clock::now();
-				auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
-				mission_accumulated_time += elapsed;
-			}
-			mission_timing_active = false;  // Mark mission as not timing anymore
-			if (mission_type == "follow_person") {
-				follow_person_active = false;
-				last_aff_interacting_state = false;
-			}
-			if (active_mission_row == row) {
-				active_mission_row = -1;
-			}
-			
-			model->setMissionStatus(row, MissionStatus::STOPPED);
-			model->setMissionElapsedTime(row, mission_accumulated_time);
-			
-			if (mission_row_to_node_id.count(row) > 0) {
-				uint64_t mission_id = mission_row_to_node_id[row];
-				mission_scheduler.stopMission(mission_id);
-				update_mission_status_episodic(mission_id, "stopped");
-				delete_mission_target_edge(mission_id);
-				
-				try {
-					auto mission_opt = mission_graph->get_node(mission_id);
-					if (mission_opt.has_value()) {
-						auto mission = mission_opt.value();
-						DSR::Attribute elapsed_attr;
-						elapsed_attr.value(mission_accumulated_time);
-						mission.attrs()["elapsed_time"] = elapsed_attr;
-						mission_graph->update_node(mission);
-						std::cout << "  Elapsed time saved to mission node: " << mission_accumulated_time << "s" << std::endl;
-					}
-				} catch (const std::exception& e) {
-					std::cerr << "Error saving elapsed time to mission node: " << e.what() << std::endl;
-				}
+
+			if (active_mission_row == row) { 
+				stop_active_mission();
 			}
 
-			on_stopMission_clicked();
-
+			// Autopilot
 			if (autopilot_enabled && mission_type == "follow_person") {
 				if (mission_controller_ui.simulate_structural_failure_checkbox->isChecked()) {
 					std::cout << "[AUTOPILOT] follow_person is stopped and a structural failure is simulated. Creating search_cause." << std::endl;
 					create_search_problem_cause_mission();
 				}
-				else if (bottle_rt_exists()){
-					std::cout << "[AUTOPILOT] follow_person is stopped and bottle RT still exists. Disabling autopilot." << std::endl;
-					disable_autopilot_and_reset();
-				}
-				else {
-					std::cout << "[AUTOPILOT] follow_person is stopped and bottle RT does not exist. Creating search_cause." << std::endl;
-					create_search_problem_cause_mission();
-				}				
+			}
+			else if (autopilot_enabled && mission_type == "Search Problem Cause") {
+				std::cout << "[AUTOPILOT] Resetting autopilot." << std::endl;
+				disable_autopilot_and_reset();
 			}
 		}
 		// If not RUNNING, activate it (with preemption if needed)
@@ -219,79 +181,25 @@ void SpecificWorker::initialize()
 			
 			// Activate through scheduler (handles preemption automatically)
 			auto result = mission_scheduler.activateMission(new_mission_id);
-			
 			if (!result.success) {
 				std::cerr << "Failed to activate mission" << std::endl;
 				return;
 			}
 			
 			// If preemption occurred, handle the preempted mission
-			if (result.preempted_existing && active_mission_row >= 0) {
-				std::cout << "\n[PREEMPTION] Mission \"" << model->getMission(row).name.toStdString() 
-					<< "\" is PREEMPTING current mission" << std::endl;
-				
-				if (mission_timing_active) {
-					auto now = std::chrono::steady_clock::now();
-					auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
-					mission_accumulated_time += elapsed;
+			if ((result.preempted_existing || active_mission_row >= 0) && active_mission_row != row) {
+				if (result.preempted_existing){
+					std::cout << "\n[PREEMPTION] Mission \"" << model->getMission(row).name.toStdString() << "\" is PREEMPTING current mission" << std::endl;
 				}
-				
-				model->setMissionStatus(active_mission_row, MissionStatus::STOPPED);
-				model->setMissionElapsedTime(active_mission_row, mission_accumulated_time);
-				
-				update_mission_status_episodic(result.preempted_mission_id, "stopped");
-				delete_mission_target_edge(result.preempted_mission_id);
-				
-				try {
-					auto mission_opt = mission_graph->get_node(result.preempted_mission_id);
-					if (mission_opt.has_value()) {
-						auto mission = mission_opt.value();
-						DSR::Attribute elapsed_attr;
-						elapsed_attr.value(mission_accumulated_time);
-						mission.attrs()["elapsed_time"] = elapsed_attr;
-						mission_graph->update_node(mission);
-					}
-				} catch (const std::exception& e) {
-					std::cerr << "Error saving preempted mission time: " << e.what() << std::endl;
-				}
-			} else if (active_mission_row >= 0 && active_mission_row != row) {
-				// No preemption, but another mission was active - stop it gracefully
-				if (mission_timing_active) {
-					auto now = std::chrono::steady_clock::now();
-					auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
-					mission_accumulated_time += elapsed;
-				}
-				
-				model->setMissionStatus(active_mission_row, MissionStatus::STOPPED);
-				model->setMissionElapsedTime(active_mission_row, mission_accumulated_time);
-				
-				if (mission_row_to_node_id.count(active_mission_row) > 0) {
-					uint64_t prev_mission_id = mission_row_to_node_id[active_mission_row];
-					delete_mission_target_edge(prev_mission_id);
-					update_mission_status_episodic(prev_mission_id, "stopped");
-					
-					try {
-						auto mission_opt = mission_graph->get_node(prev_mission_id);
-						if (mission_opt.has_value()) {
-							auto mission = mission_opt.value();
-							DSR::Attribute elapsed_attr;
-							elapsed_attr.value(mission_accumulated_time);
-							mission.attrs()["elapsed_time"] = elapsed_attr;
-							mission_graph->update_node(mission);
-						}
-					} catch (const std::exception& e) {
-						std::cerr << "Error saving mission time: " << e.what() << std::endl;
-					}
-				}
+				stop_active_mission(); 
 			}
 			
 			// Activate new mission
 			active_mission_row = row;
 			mission_start_time = std::chrono::steady_clock::now();
 			mission_timing_active = true;  // Start timing this mission
-			
-			// Read saved elapsed_time to resume
-			mission_accumulated_time = 0.0f;
+			mission_accumulated_time = 0.0f; // Read saved elapsed_time to resume
+
 			try {
 				auto mission_opt = mission_graph->get_node(new_mission_id);
 				if (mission_opt.has_value()) {
@@ -309,94 +217,50 @@ void SpecificWorker::initialize()
 			model->setMissionStatus(row, MissionStatus::RUNNING);
 			model->setMissionElapsedTime(row, mission_accumulated_time);
 			
-			// === SYNCHRONIZATION HANDSHAKE ===
-			// 1. Create TARGET edge to signal episodic_memory
+			// Handshake with episodic_memory for recording
 			create_mission_target_edge(new_mission_id);
-			
-			// 2. Update mission status to "running" BEFORE waiting for handshake
-			//    This allows episodic_memory to detect TARGET + running and enter RECORDING
 			update_mission_status_episodic(new_mission_id, "running");
-			
-			// 3. Wait for episodic_memory to confirm via recording=true
-			//    (polling happens in compute() to avoid blocking)
 			handshake_waiting_mission_id = new_mission_id;
+
+			std::cout << "[ACTIVATION] ✓ Mission \"" << model->getMission(row).name.toStdString() << "\" awaiting episodic_memory handshake..." << std::endl;
 			
-			std::cout << "[ACTIVATION] ✓ Mission \"" << model->getMission(row).name.toStdString() 
-				<< "\" awaiting episodic_memory handshake..." << std::endl;
-			
-			// NOTE: on_startMission_clicked() is called by check_recording_handshake() 
-			//       in compute() after handshake succeeds (recording=true detected)
 			mission_scheduler.setCurrentMission(new_mission_id);
 		}
 	});
 
+	// UI COMPLETE button
 	connect(delegate, &MissionDelegate::missionCompletedClicked, this, [this](int row)
 	{
 		// Skip if already completed
-		if (model->getMission(row).status == MissionStatus::COMPLETED)
-		{
-			std::cout << "Mission already completed, skipping..." << std::endl;
-			return;
-		}
+		if (model->getMission(row).status == MissionStatus::COMPLETED) return;
 		
-		float total_time = mission_accumulated_time;
-		
-		if (model->getMission(row).status == MissionStatus::RUNNING && mission_timing_active)
-		{
-			auto now = std::chrono::steady_clock::now();
-			auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
-			total_time += elapsed;
-		}
-		
-		model->setMissionElapsedTime(row, total_time);
-		model->setMissionStatus(row, MissionStatus::COMPLETED);
-		
-		if (active_mission_row == row)
-		{
-			active_mission_row = -1;
-			mission_accumulated_time = 0;
-		}
-		
-		// Update mission status to "completed" in episodic graph
+		// Stop mission if it's currently active
 		if (mission_row_to_node_id.count(row) > 0) {
 			uint64_t mission_id = mission_row_to_node_id[row];
-			update_mission_status_episodic(mission_id, "completed");
-			delete_mission_target_edge(mission_id);  // Remove TARGET edge when mission completes
-			
-			// Properly notify scheduler (calls completeMission() instead of updateMissionStatus())
-			mission_scheduler.completeMission(mission_id);
-			
-			// Reset waiting state if this was the mission we were waiting for
-			if (mission_id == handshake_waiting_mission_id) {
-				handshake_waiting_mission_id = 0;
+
+			// If this mission is currently active, request completion through the scheduler
+			if (mission_id == mission_scheduler.getActiveMissionId()) {
+				mission_scheduler.requestMissionCompletion(mission_id);
 			}
-			if (waiting_mission_row >= 0 && mission_row_to_node_id.count(waiting_mission_row) && mission_row_to_node_id[waiting_mission_row] == mission_id) {
-				waiting_mission_row = -1;
-				waiting_mission_id = 0;
+			// If this mission is not active, just mark it as completed (scheduler will handle it)
+			else {
+				mission_scheduler.completeMission(mission_id);
+				ExecutionEventData ev{ExecutionEvent::MISSION_COMPLETED, mission_id, get_mission_type_from_id(mission_id)};
+				handle_scheduler_event(ev);
 			}
-			
-			// Optionally add elapsed_time attribute
-			try {
-				auto mission_opt = mission_graph->get_node(mission_id);
-				if (mission_opt.has_value()) {
-					auto mission = mission_opt.value();
-					DSR::Attribute elapsed_attr;
-					elapsed_attr.value(total_time);
-					mission.attrs()["elapsed_time"] = elapsed_attr;
-					mission_graph->update_node(mission);
-				}
-			} catch (const std::exception& e) {
-				std::cerr << "Could not add elapsed_time attribute: " << e.what() << std::endl;
-			}
+
 		}
 	});
 
+	// UI ADD MISSION button
 	connect(mission_controller_ui.add_mission_button, &QPushButton::clicked, this, [this]()
 	{
+		// Open a dialog to add a new mission
 		QDialog dialog(&mission_controller_widget);
 		Ui::AddMissionDialog dialog_ui;
 		dialog_ui.setupUi(&dialog);
 
+		// Populate mission types in the combo box
 		dialog_ui.mission_name->clear();
 		auto available = getAvailableMissions();
 		if (available.empty())
@@ -405,23 +269,18 @@ void SpecificWorker::initialize()
 			dialog_ui.mission_name->setEditable(true);
 		}
 		else
-		{
-			for (const auto& mission : available)
-			{
-				dialog_ui.mission_name->addItem(QString::fromStdString(mission));
-			}
+		{ 
+			for (const auto& mission : available) { dialog_ui.mission_name->addItem(QString::fromStdString(mission)); }
 		}
 
 		if (dialog.exec() == QDialog::Accepted)
 		{
+			// Retrieve mission details from the dialog
 			QString customName = dialog_ui.mission_custom_name->text();
 			QString missionType = dialog_ui.mission_name->currentText();
 			int priority = dialog_ui.mission_priority->currentIndex();  // 0=Critical, 1=High, 2=Normal, 3=Low, 4=Very Low
 			
-			if (customName.isEmpty())
-			{
-				customName = missionType;
-			}
+			if (customName.isEmpty()) { customName = missionType; }
 			
 			// Convert priority index to priority value: Critical=5, High=4, Normal=3, Low=2, VeryLow=1
 			int priority_value = 5 - priority;
@@ -436,7 +295,7 @@ void SpecificWorker::initialize()
 			on_setMission_clicked();
 		}
 	});
-	// Configurar timer para actualizar tiempo en tiempo real
+	// Create a QTimer for mission timing updates
 	mission_timer = new QTimer(this);
 
 	// Connect debugger scrollbars and search
@@ -444,7 +303,7 @@ void SpecificWorker::initialize()
 	connect(historic_debugger_ui.global_changes_scroll_bar, &QScrollBar::valueChanged, this, &SpecificWorker::global_changes_management);
 	connect(historic_debugger_ui.time_input, &QLineEdit::returnPressed, this, &SpecificWorker::on_time_search);
 	
-	// Connect load_in_debugger button if it exists
+	// UI LOAD IN DEBUGGER button 
 	if (mission_controller_ui.load_in_debugger_button)
 	{
 		// Always enabled - check mission status when clicked
@@ -464,7 +323,7 @@ void SpecificWorker::initialize()
 		});
 	}
 	
-	// Connect autopilot toggle button
+	// UI AUTOPILOT toggle button
 	connect(mission_controller_ui.autopilot_toggle_button, &QPushButton::clicked, this, [this]()
 	{
 		autopilot_enabled = !autopilot_enabled;
@@ -527,7 +386,6 @@ void SpecificWorker::compute()
 	
 	if (autopilot_enabled)
 	{
-		
 		// Execute one step of the scheduler's state machine
 		// Events are fired via callback (handle_scheduler_event)
 		mission_scheduler.executionStep();
@@ -546,101 +404,134 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 			break;
 		
 		case ExecutionEvent::MISSION_ACTIVATED:
+		{
 			std::cout << "[SCHEDULER] Mission activated: id=" << event.mission_id << std::endl;
-		
-		// Update UI: Find row for this mission and mark as RUNNING
-		for (auto& [row, mission_id] : mission_row_to_node_id) {
-			if (mission_id == event.mission_id) {
-				model->setMissionStatus(row, MissionStatus::RUNNING);
-				active_mission_row = row;
-				mission_accumulated_time = 0.0f;  // Reset for new activation
-				model->setMissionElapsedTime(row, 0.0f);
-				mission_timing_active = true;
-				break;
+
+			// Update UI: Find row for this mission and mark as RUNNING
+			for (auto& [row, mission_id] : mission_row_to_node_id) {
+				if (mission_id == event.mission_id) {
+					model->setMissionStatus(row, MissionStatus::RUNNING);
+					active_mission_row = row;
+
+					mission_accumulated_time = 0.0f;
+					try {
+						auto mission_opt = mission_graph->get_node(event.mission_id);
+						if (mission_opt.has_value()) {
+							auto mission = mission_opt.value();
+							auto elapsed_attr_iter = mission.attrs().find("elapsed_time");
+							if (elapsed_attr_iter != mission.attrs().end()) {
+								mission_accumulated_time = std::get<float>(elapsed_attr_iter->second.value());
+							}
+						}
+					} catch (const std::exception& e) {
+						std::cerr << "Error reading mission elapsed_time: " << e.what() << std::endl;
+					}
+					model->setMissionElapsedTime(row, mission_accumulated_time);
+					mission_timing_active = true;
+					break;
+				}
 			}
-		}
-		
+
 			// Create TARGET edge for EM to detect this mission
 			std::cout << "[MC→EM] Creating TARGET edge for mission " << event.mission_id << std::endl;
 			create_mission_target_edge(event.mission_id);
-			
+
+			// TARGET en el mundo para los concept_*: activar o reanudar una mision recupera su
+			// propio objetivo, en vez de quedarse con el de la ultima mision creada.
+			const std::string activated_type = get_mission_type_from_id(event.mission_id);
+			if (activated_type == "follow_person")    set_dsr_target_edge("robot", "person");
+			else if (activated_type == "Take Photos") set_dsr_target_edge("robot", "bump");
+
 			// Update DSR status
 			update_mission_status_episodic(event.mission_id, "running");
-			
+
 			// Start checking for handshake completion
 			handshake_waiting_mission_id = event.mission_id;
-			
+
 			// Mark mission start time
 			mission_start_time = std::chrono::steady_clock::now();
 			break;
+		}
 		
-		case ExecutionEvent::MISSION_RUNNING:
+		case ExecutionEvent::MISSION_RUNNING: {
 			// Handshake with episodic_memory complete, monitoring can begin
-			if (get_mission_type_from_id(event.mission_id) == "follow_person") {
-				follow_person_active = true;
+			const std::string mission_type = get_mission_type_from_id(event.mission_id);
+			follow_person_active = (mission_type == "follow_person");
+			if (mission_type == "follow_person" || mission_type == "Take Photos") {
 				last_aff_interacting_state = true;
 			}
 			check_affordance_and_complete_handshake();
 			break;
+		}
 		
 		case ExecutionEvent::MISSION_COMPLETED:
-			std::cout << "[SCHEDULER] Mission completed: id=" << event.mission_id << std::endl;
-			{
-				const std::string completed_type = get_mission_type_from_id(event.mission_id);
-				if (completed_type == "follow_person" || completed_type == "Search Problem Cause") {
-					disable_autopilot_and_reset();
-				}
-			}
-		
-		// Update UI: Find row for this mission and mark as COMPLETED
-		for (auto& [row, mission_id] : mission_row_to_node_id) {
-			if (mission_id == event.mission_id) {
-				// Calculate final elapsed time
-				float total_time = mission_accumulated_time;
-				if (mission_timing_active) {
-					auto now = std::chrono::steady_clock::now();
-					auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
-					total_time += elapsed;
-					mission_timing_active = false;
-				}
-				
-				// Update UI status and time
-				model->setMissionElapsedTime(row, total_time);
-				model->setMissionStatus(row, MissionStatus::COMPLETED);
-				active_mission_row = -1;
-				mission_accumulated_time = total_time;
-				break;
-			}
-		}
-		
-		// Calculate and save elapsed time
 		{
-			auto mission_opt = mission_graph->get_node(event.mission_id);
-			if (mission_opt.has_value()) {
-				auto mission = mission_opt.value();
-				DSR::Attribute elapsed_attr;
-				elapsed_attr.value(mission_accumulated_time);
-				mission.attrs()["elapsed_time"] = elapsed_attr;
-				mission_graph->update_node(mission);
+			std::cout << "[SCHEDULER] Mission completed: id=" << event.mission_id << std::endl;
+			const std::string completed_type = get_mission_type_from_id(event.mission_id);
+			// "bump" node lifecycle (creation/deletion) belongs to inner_simulator/semantic, not
+			// mission_controller; here we only release the TARGET edge we created for the mission.
+			if (completed_type == "Take Photos") {
+				delete_active_target_edge();
 			}
+			// Sólo "Take Photos" cierra la cadena; follow_person la continúa.
+			if (completed_type == "Take Photos") {
+				disable_autopilot_and_reset();
+			}
+
+			// Update UI: Find row for this mission and mark as COMPLETED
+			for (auto& [row, mission_id] : mission_row_to_node_id) {
+				if (mission_id == event.mission_id) {
+					// Calculate final elapsed time
+					float total_time = mission_accumulated_time;
+					if (mission_timing_active) {
+						auto now = std::chrono::steady_clock::now();
+						auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
+						total_time += elapsed;
+						mission_timing_active = false;
+					}
+
+					// Update UI status and time
+					model->setMissionElapsedTime(row, total_time);
+					model->setMissionStatus(row, MissionStatus::COMPLETED);
+					active_mission_row = -1;
+					mission_accumulated_time = total_time;
+					break;
+				}
+			}
+
+			// Calculate and save elapsed time
+			{
+				auto mission_opt = mission_graph->get_node(event.mission_id);
+				if (mission_opt.has_value()) {
+					auto mission = mission_opt.value();
+					DSR::Attribute elapsed_attr;
+					elapsed_attr.value(mission_accumulated_time);
+					mission.attrs()["elapsed_time"] = elapsed_attr;
+					mission_graph->update_node(mission);
+				}
+			}
+			// Update mission status to "completed" in episodic graph
+			update_mission_status_episodic(event.mission_id, "completed");
+			// Cleanup TARGET edge - CRITICAL: This signals EM to exit RECORDING state
+			delete_mission_target_edge(event.mission_id);
+			mission_accumulated_time = 0;
+			// Reset waiting_mission state to allow creating new missions
+			waiting_mission_row = -1;
+			waiting_mission_id = 0;
+			follow_person_active = false;
+			break;
 		}
-		// Update mission status to "completed" in episodic graph
-		update_mission_status_episodic(event.mission_id, "completed");
-		// Cleanup TARGET edge - CRITICAL: This signals EM to exit RECORDING state
-		delete_mission_target_edge(event.mission_id);
-		mission_accumulated_time = 0;
-		// Reset waiting_mission state to allow creating new missions
-		waiting_mission_row = -1;
-		waiting_mission_id = 0;
-		follow_person_active = false;
-		break;
-		
+
 		case ExecutionEvent::FALLBACK_CREATED:
 			std::cout << "[SCHEDULER] Fallback disabled in one-shot autopilot mode" << std::endl;
 			break;
 		
 		case ExecutionEvent::HANDSHAKE_TIMEOUT:
 			std::cout << "[SCHEDULER] Handshake timeout for mission: id=" << event.mission_id << std::endl;
+			// Unlike MISSION_COMPLETED, the scheduler removes this mission without going
+			// through completeMission() - clean up its episodic TARGET edge here too, or
+			// episodic_memory is left thinking a previous recording session is still open.
+			delete_mission_target_edge(event.mission_id);
 			// Cleanup waiting state when handshake fails
 			if (event.mission_id == handshake_waiting_mission_id) {
 				handshake_waiting_mission_id = 0;
@@ -690,6 +581,7 @@ void SpecificWorker::on_setMission_clicked()
 	auto person_node = G->get_node("person");
 	
 	if (robot_node.has_value() && person_node.has_value()) {
+		delete_active_target_edge();
 		DSR::Edge new_target_edge;
 		new_target_edge.from(robot_node.value().id());
 		new_target_edge.to(person_node.value().id());
@@ -701,28 +593,46 @@ void SpecificWorker::on_setMission_clicked()
 	}
 }
 
-void SpecificWorker::on_startMission_clicked()
+std::optional<DSR::Node> SpecificWorker::get_active_affordance_node(const std::shared_ptr<DSR::DSRGraph>& graph) const
 {
-	if (std::optional<DSR::Node> optional_node = G->get_node("follow_me"); optional_node.has_value())
-	{	
+	auto target_edges = graph->get_edges_by_type("TARGET");
+	auto has_intention_edges = graph->get_edges_by_type("has_intention");
+	for (const auto& target_edge : target_edges)
+	{
+		for (const auto& intention_edge : has_intention_edges)
+		{
+			if (intention_edge.from() == target_edge.to())
+			{
+				auto affordance_node_opt = graph->get_node(intention_edge.to());
+				if (affordance_node_opt.has_value())
+					return affordance_node_opt.value();
+			}
+		}
+	}
+	return std::nullopt;
+}
+
+bool SpecificWorker::on_startMission_clicked()
+{
+	if (auto affordance_node_opt = get_active_affordance_node(G); affordance_node_opt.has_value())
+	{
 		mission_start_time = std::chrono::steady_clock::now();
-		DSR::Node follow_me_node = optional_node.value();
-		G->add_or_modify_attrib_local<aff_interacting_att>(follow_me_node, true);
-		G->update_node(follow_me_node);
+		DSR::Node affordance_node = affordance_node_opt.value();
+		G->add_or_modify_attrib_local<aff_interacting_att>(affordance_node, true);
+		G->update_node(affordance_node);
+		return true;
 	}
-	else{
-	}
+	// Affordance not created yet (its owning agent hasn't caught up). Caller should retry.
+	return false;
 }
 
 void SpecificWorker::on_stopMission_clicked()
 {
-	if (std::optional<DSR::Node> optional_node = G->get_node("follow_me"); optional_node.has_value())
-	{	
-		DSR::Node follow_me_node = optional_node.value();
-		G->add_or_modify_attrib_local<aff_interacting_att>(follow_me_node, false);
-		G->update_node(follow_me_node);
-	}
-	else{
+	if (auto affordance_node_opt = get_active_affordance_node(G); affordance_node_opt.has_value())
+	{
+		DSR::Node affordance_node = affordance_node_opt.value();
+		G->add_or_modify_attrib_local<aff_interacting_att>(affordance_node, false);
+		G->update_node(affordance_node);
 	}
 }
 
@@ -1270,6 +1180,42 @@ void SpecificWorker::create_mission_target_edge(uint64_t mission_id) {
 	}
 }
 
+void SpecificWorker::delete_active_target_edge() {
+	auto robot_opt = G->get_node("robot");
+	if (!robot_opt.has_value())
+		return;
+	for (const auto& target_edge : G->get_edges_by_type("TARGET"))
+	{
+		if (target_edge.from() == robot_opt.value().id())
+			G->delete_edge(target_edge.from(), target_edge.to(), "TARGET");
+	}
+}
+
+// Apunta el TARGET del mundo a un nodo por nombre; los concept_* lo leen para saber a quien
+// seguir. Nombre vacio o nodo ausente: no se toca nada.
+void SpecificWorker::set_dsr_target_edge(const std::string& from_name, const std::string& to_name)
+{
+	if (to_name.empty())
+		return;
+
+	auto from_opt = G->get_node(from_name);
+	auto to_opt   = G->get_node(to_name);
+	if (!from_opt.has_value() || !to_opt.has_value())
+	{
+		std::cerr << "[TARGET] Falta el nodo '" << (from_opt.has_value() ? to_name : from_name) << "'" << std::endl;
+		return;
+	}
+
+	// Solo un objetivo activo a la vez: se retira el anterior antes de poner el nuevo.
+	delete_active_target_edge();
+	DSR::Edge new_target_edge;
+	new_target_edge.from(from_opt.value().id());
+	new_target_edge.to(to_opt.value().id());
+	new_target_edge.type("TARGET");
+	G->insert_or_assign_edge(new_target_edge);
+	std::cout << "[TARGET] " << from_name << " -> " << to_name << std::endl;
+}
+
 void SpecificWorker::delete_mission_target_edge(uint64_t mission_id) {
 	try {
 		auto robot_opt = mission_graph->get_node("robot");
@@ -1315,57 +1261,32 @@ void SpecificWorker::create_or_check_follow_person_mission()
 	if (waiting_mission_row >= 0) {
 		return;
 	}
-	
+
 	// Check if follow_person mission already exists and is PENDING (not completed/stopped)
 	for (int i = 0; i < model->rowCount(); i++)
 	{
 		Mission m = model->getMission(i);
-		if (m.type == "follow_person")
-		{
-			// Only return if mission is PENDING (not already completed or stopped)
-			if (m.status != MissionStatus::COMPLETED && m.status != MissionStatus::STOPPED)
-			{
-				return;
-			}
-			else
-			{
-			}
-		}
+		if (m.type == "follow_person" && m.status != MissionStatus::COMPLETED)
+			return;
 	}
-	
-	// Create follow_person mission
-	
+
 	// Generate unique name for each fallback (attempt counting)
 	static int fallback_attempt_count = 1;
 	QString customName = QString("follow_person_attempt_%1").arg(fallback_attempt_count++);
 	QString missionType = "follow_person";
-	int priority_value = 3;  // Normal priority
-	
+	int priority_value = 4;  // Por debajo de la investigación de la causa, por encima de las fotos
+
 	Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};
 	int row = model->rowCount();
 	model->addMission(newMission);
-	
+
 	// Insert mission node in episodic graph
 	auto mission_id_opt = insert_mission_node_episodic(customName.toStdString(), row, priority_value, ControlType::AUTONOMOUS);
-	
+
 	if (mission_id_opt.has_value())
 	{
 		waiting_mission_row = row;
 		waiting_mission_id = mission_id_opt.value();
-		
-		// Create TARGET edge (same as on_setMission_clicked)
-		auto robot_opt = G->get_node("robot");
-		auto person_opt = G->get_node("person");
-		
-		if (robot_opt.has_value() && person_opt.has_value())
-		{
-			DSR::Edge new_target_edge;
-			new_target_edge.from(robot_opt.value().id());
-			new_target_edge.to(person_opt.value().id());
-			new_target_edge.type("TARGET");
-			G->insert_or_assign_edge(new_target_edge);
-		}
-		
 	}
 	else
 	{
@@ -1375,15 +1296,28 @@ void SpecificWorker::create_or_check_follow_person_mission()
 
 void SpecificWorker::create_search_problem_cause_mission()
 {
+	// Check if a "Search Problem Cause" mission already exists and is PENDING
+	for (int i = 0; i < model->rowCount(); i++)
+	{
+		Mission m = model->getMission(i);
+		if (m.type == "Search Problem Cause" && m.status != MissionStatus::COMPLETED) {
+			return;
+		}
+
+	}
+
+	// Create a new "Search Problem Cause" mission with unique name
 	static int search_attempt_count = 1;
 	QString customName = QString("search_cause_attempt_%1").arg(search_attempt_count++);
 	QString missionType = "Search Problem Cause";
-	int priority_value = 5;
+	int priority_value = 5; // Critical priority for this mission
 
+	// Create the mission and add it to the model
 	Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};
 	int row = model->rowCount();
 	model->addMission(newMission);
 
+	// Insert the mission node into the episodic graph
 	auto mission_id_opt = insert_mission_node_episodic(customName.toStdString(), row, priority_value, ControlType::AUTONOMOUS);
 	if (!mission_id_opt.has_value()) {
 		std::cerr << "[SEARCH_CAUSE_ERROR] Failed to insert mission node" << std::endl;
@@ -1391,6 +1325,48 @@ void SpecificWorker::create_search_problem_cause_mission()
 	}
 
 	std::cout << "[AUTOPILOT] Search Problem Cause mission created" << std::endl;
+}
+
+void SpecificWorker::create_take_photos_mission()
+{
+	// Check if a "Take Photos" mission already exists and is PENDING
+	for (int i = 0; i < model->rowCount(); i++)
+	{
+		Mission m = model->getMission(i);
+		if (m.type == "Take Photos" && m.status != MissionStatus::COMPLETED) {
+			return;
+		}
+	}
+
+	// Create a new "Take Photos" mission with unique name
+	static int take_photos_attempt_count = 1;
+	QString customName = QString("take_photos_attempt_%1").arg(take_photos_attempt_count++);
+	QString missionType = "Take Photos";
+	int priority_value = 2; // La última de la cadena: sólo cuando follow_person haya terminado
+
+	// Create the mission and add it to the model
+	Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};
+	int row = model->rowCount();
+	model->addMission(newMission);
+
+	// Insert the mission node into the episodic graph
+	auto mission_id_opt = insert_mission_node_episodic(customName.toStdString(), row, priority_value, ControlType::AUTONOMOUS);
+	if (!mission_id_opt.has_value()) {
+		std::cerr << "[TAKE_PHOTOS_ERROR] Failed to insert mission node" << std::endl;
+		return;
+	}
+
+	std::cout << "[AUTOPILOT] Take Photos mission created" << std::endl;
+}
+
+bool SpecificWorker::problem_node_exists() const
+{
+	if (!G) {
+		return false;
+	}
+
+	auto problem_opt = G->get_node("problem");
+	return problem_opt.has_value();
 }
 
 bool SpecificWorker::bottle_rt_exists() const
@@ -1500,40 +1476,102 @@ void SpecificWorker::check_affordance_and_complete_handshake()
 
 void SpecificWorker::monitor_mission_execution_state()
 {
-	// Monitor mission execution and detect when aff_interacting becomes false
-	// This signals mission completion in autopilot mode
-	
+	// Get the currently active mission ID from the scheduler
 	uint64_t active_id = mission_scheduler.getActiveMissionId();
-	if (active_id == 0 || !follow_person_active)
+	if (active_id == 0) return;
+
+	// Monitor "problem" node
+	if (follow_person_active && problem_node_exists() && !G->get_node("bump").has_value()) {
+		std::cout << "[AUTOPILOT] Problem detected during follow_person mission. Stopping mission." << std::endl;
+		stop_active_mission();
+		create_search_problem_cause_mission();
 		return;
-	
-	auto affordance_opt = mission_graph->get_node("follow_me");
-	if (!affordance_opt.has_value())
-		return;
-	
+	}
+
+	// Same pattern as follow_person: gate on the target NODE existing (structural), not on
+	// any specific attribute payload. "bump" is created by semantic once the cause is
+	// resolved and a concept is chosen (replacing "problem", which it deletes).
+	bool bump_exists = G->get_node("bump").has_value();
+
+	if (bump_exists)
+		create_take_photos_mission();  // no-op if already created (internal duplicate guard)
+
+	// "Search Problem Cause" covers the full investigation, ending once "bump" (and its
+	// generated agent) exist - not just once a position is found on "problem".
+	if (get_mission_type_from_id(active_id) == "Search Problem Cause" && bump_exists)
+		mission_scheduler.requestMissionCompletion(active_id);
+
+	// Only monitor if the active mission is of type "follow_person" or "Take Photos"
+	std::string active_type = get_mission_type_from_id(active_id);
+	if (active_type != "follow_person" && active_type != "Take Photos") return;
+
+	auto affordance_opt = get_active_affordance_node(G);
+	if (!affordance_opt.has_value()) return;
+
 	auto affordance = affordance_opt.value();
 	auto aff_iter = affordance.attrs().find("aff_interacting");
-	if (aff_iter == affordance.attrs().end())
-		return;
-	
+	if (aff_iter == affordance.attrs().end()) return;
+
 	try {
 		bool current_state = std::get<bool>(aff_iter->second.value());
-		
+
 		// Detect change from true to false - mission complete
 		if (last_aff_interacting_state && !current_state) {
-			
+
 			// Signal mission completion to scheduler
 			mission_scheduler.requestMissionCompletion(active_id);
-			follow_person_active = false;
+			if (active_type == "follow_person") follow_person_active = false;
 		}
-		
+
 		// Update tracking state
 		last_aff_interacting_state = current_state;
-		
+
 	} catch (const std::bad_variant_access& e) {
 		std::cerr << "[SCHEDULER] Error reading aff_interacting: " << e.what() << std::endl;
 	}
 }
+
+void SpecificWorker::stop_active_mission() {
+	if (active_mission_row < 0) return;
+
+	uint64_t mission_id = mission_row_to_node_id[active_mission_row];
+
+	// Update mission time status and UI
+	if (mission_timing_active) {
+		auto now = std::chrono::steady_clock::now();
+		auto elapsed = std::chrono::duration<float>(now - mission_start_time).count();
+		mission_accumulated_time += elapsed;
+		mission_timing_active = false;
+	}
+
+	model->setMissionStatus(active_mission_row, MissionStatus::STOPPED);
+	model->setMissionElapsedTime(active_mission_row, mission_accumulated_time);
+
+	// Update scheduler and graph
+	mission_scheduler.stopMission(mission_id);
+	update_mission_status_episodic(mission_id, "stopped");
+	delete_mission_target_edge(mission_id);
+
+	try {
+		auto mission_opt = mission_graph->get_node(mission_id);
+		if (mission_opt.has_value()) {
+			auto mission = mission_opt.value();
+			DSR::Attribute elapsed_attr;
+			elapsed_attr.value(mission_accumulated_time);
+			mission.attrs()["elapsed_time"] = elapsed_attr;
+			mission_graph->update_node(mission);
+		}
+	} catch (const std::exception& e) {
+		std::cerr << "[STOP_MISSION_ERROR] Error updating mission node: " << e.what() << std::endl;
+	}
+
+	// Reset active mission tracking
+	active_mission_row = -1;
+	follow_person_active = false;
+	last_aff_interacting_state = false;
+	on_stopMission_clicked();
+}
+
 
 void SpecificWorker::check_recording_handshake()
 {
@@ -1575,16 +1613,25 @@ void SpecificWorker::check_recording_handshake()
 				// ✓ Handshake successful: episodic_memory detected TARGET and completed initialization
 				std::cout << "[HANDSHAKE] ✓ Phase-1: initialization_started=true" << std::endl;
 				std::cout << "[HANDSHAKE] ✓ Phase-2: recording=true (episodic_memory ready)" << std::endl;
-				
+
+				// Only follow_person/Take Photos have a TARGET->has_intention->affordance chain to
+				// activate. Other missions (e.g. Search Problem Cause) have none - their handshake
+				// is complete as soon as episodic_memory confirms both phases.
+				std::string mission_type = get_mission_type_from_id(handshake_waiting_mission_id);
+				bool needs_affordance = (mission_type == "follow_person" || mission_type == "Take Photos");
+
+				if (needs_affordance && !on_startMission_clicked()) {
+					// Affordance not created yet by its owning agent (race with its own state
+					// machine). Don't consume the handshake: retry on the next compute cycle.
+					std::cout << "[HANDSHAKE] Waiting for affordance node to exist, will retry..." << std::endl;
+					return;
+				}
+
 				// Signal scheduler that affordance is ready (completes handshake)
-				std::cout << "[HANDSHAKE_SUCCESS] Both phases complete! Notifying scheduler that mission " 
+				std::cout << "[HANDSHAKE_SUCCESS] Both phases complete! Notifying scheduler that mission "
 				          << handshake_waiting_mission_id << " is ready." << std::endl;
-				
-				// Note: mission status was already set to "running" in the activation callback
-				// Just activate affordances here - agents will react immediately
-				on_startMission_clicked();
 				mission_scheduler.setAffordanceReady(handshake_waiting_mission_id, true);
-				
+
 				// Reset handshake state
 				handshake_waiting_mission_id = 0;
 

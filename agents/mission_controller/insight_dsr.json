@@ -21,8 +21,8 @@
                     }
                 },
                 "id": "100",
-                "name": "room",
-                "type": "room",
+                "name": "root",
+                "type": "root",
                 "links": [
                     {
                         "dst": "200",
@@ -99,8 +99,8 @@
                             "rt_translation": {
                                 "type": 3,
                                 "value": [
-                                    7,
                                     0,
+                                    7,
                                     0
                                 ]
                             }

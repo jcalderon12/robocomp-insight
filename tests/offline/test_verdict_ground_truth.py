@@ -27,17 +27,19 @@ from src.verdict import NOMINAL_HYPOTHESIS_ID, build_verdict, write_verdict
 
 WORKDIR = Path(tempfile.mkdtemp(prefix="insight_verdict_test_"))
 
-# Positions in millimeters, as the causes simulator expects (see SimulationScene).
+# Positions in meters, as the causes simulator expects (see SimulationScene). The differential
+# shadow URDF drives along its +y: yaw -90 deg heads it along world +x, as in the recordings, and
+# the bottle sits where the Webots world puts it (episode_scene.DEFAULT_TRAY_OFFSET, rotated).
 SCENE = {
     "gravity": -9.81,
-    "initial_robot_position": [-3700.0, -300.0, 32.5],
-    "initial_robot_orientation": [0.0, 0.0, 0.0, 1.0],
-    "problem_position": [-1700.0, -300.0, 30.0],
+    "initial_robot_position": [-3.7, -0.3, 0.0],
+    "initial_robot_orientation": [0.0, 0.0, -0.7071067811865476, 0.7071067811865476],
+    "problem_position": [-1.7, -0.3, 0.03],
     "problem_orientation": [0.0, 0.0, 0.0, 1.0],
     "simulation_length": 4.0,
     "list_of_target_velocities": {"timestamp": [0.0], "adv_speed": [0.5]},
     "num_of_repetitions": 4,
-    "bottle_position": [-3650.0, -190.0, 795.0],
+    "bottle_position": [-3.545, -0.19, 0.846],
     "bottle_orientation": [0.0, 0.0, 0.0, 0.0],
 }
 
@@ -56,10 +58,10 @@ ENTRIES = [
     {"hypothesis_id": "EXT_bump", "title": "Bump", "cause": {
         "name": "bump", "bump_file": str(REPO / "etc/URDFs/bump/bump_100x5cm.urdf"),
         "bump_x_range": 600.0, "bump_y_range": 200.0, "bump_z_range": 0.0,
-        "bump_x_origin": -2900.0, "bump_y_origin": -300.0, "bump_z_origin": 4.0,
+        "bump_x_origin": -2.9, "bump_y_origin": -0.3, "bump_z_origin": 0.004,
         "grid_dimensions": [2, 2]}},
     {"hypothesis_id": "INT_wheel", "title": "Wheel", "cause": {
-        "name": "wheel", "wheel_wheel": "BR", "wheel_min": 0.3, "wheel_max": 0.6}},
+        "name": "wheel", "wheel_wheel": "R", "wheel_min": 0.3, "wheel_max": 0.6}},
     {"hypothesis_id": "EXT_force", "title": "Force on bottle", "cause": dict(GROUND_TRUTH_CAUSE)},
     {"hypothesis_id": "EXT_friction", "title": "Slippery floor", "cause": {
         "name": "friction", "friction_target": "floor", "friction_min": 0.02, "friction_max": 0.2}},
@@ -99,7 +101,7 @@ def main():
         real_imu=truth["history"],
         entries=ENTRIES,
         historicals=historicals,
-        initial_bottle_z=SCENE["bottle_position"][2],
+        initial_bottle_z=SCENE["bottle_position"][2] * 1000.0,   # the verdict reads heights in mm
     )
     verdict_path = write_verdict(verdict, str(WORKDIR))
 

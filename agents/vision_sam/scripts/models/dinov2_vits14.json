@@ -1,0 +1,4 @@
+{
+  "model": "dinov2_vits14",
+  "embed_dim": 384
+}

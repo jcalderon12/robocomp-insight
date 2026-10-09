@@ -81,7 +81,6 @@ Pydantic model that holds every parameter needed to configure a simulation run.
   - `problem_position: list[float]` — position at the moment of failure.
   - `problem_orientation: list[float]` — orientation at the moment of failure.
   - `simulation_length: float` — duration of each run (seconds).
-  - `num_of_repetitions: int` — how many times the scenario is repeated.
 - **Output:** Serialisable JSON consumed by `CausesSimulator`.
 
 ### `IMU` — `src/pybullet_imu.py`
@@ -93,7 +92,7 @@ Simulates an IMU sensor attached to a PyBullet body using the model $\tilde{a} =
 
 ### `CausesSimulator` — `src/causes_simulator.py`
 
-Headless simulation runner. Initialises its own PyBullet instance, loads a `SimulationScene`, validates the cause JSON against a dynamically-built discriminated Pydantic union of all `Cause` subclasses found in `src/causes/implementations/`, and executes `num_of_repetitions` simulation runs collecting IMU traces.
+Headless simulation runner. Initialises its own PyBullet instance, loads a `SimulationScene`, validates the cause JSON against a dynamically-built discriminated Pydantic union of all `Cause` subclasses found in `src/causes/implementations/`, and executes simulation runs collecting IMU traces.
 
 - **Parameters:** `cause` (JSON string), `simulation_scene` (path to scene JSON), `pipe` (file-descriptor for IPC), `real_time` (bool, optional).
 - **Output:** JSON array of IMU histories written to the pipe via `send_history_to_parent()`.

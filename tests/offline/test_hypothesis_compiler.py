@@ -53,8 +53,7 @@ def main():
     # The wheel cause must carry the activation window
     wheel = next(e["cause"] for e in compiled["entries"] if e["cause"]["name"] == "wheel")
     assert wheel["wheel_min"] == 0.2 and wheel["wheel_max"] == 0.8, wheel
-    # A drive wheel of the differential base maps to a side of the simulated base,
-    # and stopping that side stops both of its wheels
+    # A drive wheel of the differential base maps to the same drive wheel of the simulated base
     assert wheel["wheel_wheel"] == "L", wheel
     from causes_simulator import CausesSimulator
     simulator = CausesSimulator.__new__(CausesSimulator)
@@ -62,12 +61,14 @@ def main():
     simulator.initialize_wheels_movement_map()
     simulator.set_robot_wheel_moving("L", False)
     stopped = sorted(name for name, moving in simulator.wheel_movement.items() if not moving)
-    assert stopped == ["frame_back_left2motor_back_left", "frame_front_left2motor_front_left"], stopped
+    assert stopped == ["wheel_left_joint"], stopped
     # The bump cause must resolve the asset to an absolute existing URDF
     bump = next(e["cause"] for e in compiled["entries"] if e["cause"]["name"] == "bump")
     assert Path(bump["bump_file"]).exists(), bump["bump_file"]
-    # Spawned objects rest on the floor whatever z range was proposed
-    assert bump["bump_z_origin"] == 1.0 and bump["bump_z_range"] == 0.0, bump
+    # Spawned objects rest on the floor whatever z range was proposed (meters, like the scene)
+    assert bump["bump_z_origin"] == 0.001 and bump["bump_z_range"] == 0.0, bump
+    # The origin is in meters (room coordinates); CauseBump takes the grid ranges in millimeters
+    assert all(abs(bump[f"bump_{axis}_origin"]) < 20.0 for axis in ("x", "y")), bump
 
     print("test_hypothesis_compiler OK")
 

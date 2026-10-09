@@ -18,18 +18,25 @@ from typing import Optional
 
 import numpy as np
 
-# Bottle resting on the tray, in the URDF robot frame (meters): BOTTLE_POS - ROBOT_POS
-# with the shadow URDF loaded at identity orientation.
-DEFAULT_TRAY_OFFSET = [0.05, 0.11, 0.7625]
+# Bottle resting on the tray, in the URDF robot frame (meters, +y forward). x and y are where
+# SimpleWorld_Bump.wbt places the MedicineBottle relative to the Shadow (11.0 cm to the left,
+# 15.5 cm ahead); z is where the bottle URDF comes to rest on the tray of the differential
+# shadow URDF (0.841 m above its base origin), plus the 5 mm the simulator lifts the robot by.
+DEFAULT_TRAY_OFFSET = [-0.110, 0.155, 0.846]
+
+# The base origin of the shadow URDF rests on the floor. The recorded z (~0.0185 m) is the origin
+# of the Webots body, not of the URDF: spawning the URDF there dropped it 2 cm at the start.
+URDF_BASE_Z = 0.0
 
 IDENTITY_QUATERNION = [0.0, 0.0, 0.0, 1.0]
 
 # The DSR/RoboComp robot frame is +y-forward (concept_robot integrates odometry as
 # x += v*sin(theta), y += v*cos(theta), and SimpleWorld_Bump.wbt starts the Shadow
-# rotated -90 deg about z while it advances along world +x); the shadow URDF drives
-# along +x. Loading the recorded quaternion as is made every replay drive 90 deg
-# away from the recorded path (43/43 recorded episodes).
-DSR_TO_URDF_YAW_OFFSET = math.pi / 2.0
+# rotated -90 deg about z while it advances along world +x). The four-wheel shadow URDF drove
+# along +x and needed +90 deg (without it, 43/43 replays drove 90 deg away from the recorded
+# path). The differential shadow URDF (08/10) has its drive wheels on the x axis and drives
+# along +y, like the DSR frame: no offset.
+DSR_TO_URDF_YAW_OFFSET = 0.0
 
 # Seconds simulated past the observed effect. The recording keeps going while the
 # robot waits stopped (keyframes up to ~2 min after the fall); simulating that tail
@@ -76,12 +83,10 @@ def _quat_multiply(a: list[float], b: list[float]) -> list[float]:
     ]
 
 
-def to_urdf_orientation(dsr_quaternion: list[float]) -> list[float]:
-    """Orientation of the URDF body whose +x points where the DSR body's +y points.
-
-    Composes the recorded orientation with a +90 deg rotation about the body z
-    axis (for a level robot this is yaw + 90 deg)."""
-    half = DSR_TO_URDF_YAW_OFFSET / 2.0
+def to_urdf_orientation(dsr_quaternion: list[float], yaw_offset: float = DSR_TO_URDF_YAW_OFFSET) -> list[float]:
+    """Orientation of the URDF body for a recorded DSR orientation: the recorded one composed
+    with a rotation of yaw_offset about the body z axis (for a level robot, yaw + yaw_offset)."""
+    half = yaw_offset / 2.0
     return _quat_multiply(dsr_quaternion, [0.0, 0.0, math.sin(half), math.cos(half)])
 
 
@@ -93,6 +98,19 @@ def _quat_rotate(quaternion: list[float], vector: list[float]) -> list[float]:
     t = 2.0 * np.cross(q_vec, v)
     rotated = v + qw * t + np.cross(q_vec, t)
     return rotated.tolist()
+
+
+#: The world node the robot pose hangs from: "room" in older recordings, "root" since the UEx DSR
+#: of 08/10. The semantic agent resolves it the same way (episode_memory_reader.WORLD_NODES).
+WORLD_NODES = ("room", "root")
+
+
+def _world_node_id(keyframe, name: Optional[str] = None):
+    for candidate in ((name,) if name else WORLD_NODES):
+        node_id = _find_node_id_by_name(keyframe, candidate)
+        if node_id is not None:
+            return node_id
+    return None
 
 
 def _find_node_id_by_name(keyframe, name: str):
@@ -117,6 +135,40 @@ def _rt_pose_events(mem_api, from_id: int, to_id: int) -> list:
     return with_pose
 
 
+#: Robot path (m) needed to tell from the motion which axes the recorded positions use.
+AXES_MIN_PATH_M = 0.3
+
+
+def _yaw(quaternion: list[float]) -> float:
+    x, y, z, w = (float(c) for c in quaternion)
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def recorded_axes(positions: list[list[float]], quaternions: list[list[float]]) -> str:
+    """"recorded" when the recorded positions agree with the recorded orientation, "swapped_xy"
+    when they agree with x and y exchanged, "undetermined" otherwise (the recorded axes are kept).
+
+    The UEx DSR of 08/10 writes root->robot as (y, x, z) of the Webots world and keeps the Webots
+    orientation. A following robot moves forward, along +y of its DSR frame, so the axes under
+    which the motion agrees with the heading are the right ones. The semantic agent decides the
+    same way (episode_builder.recorded_axes).
+    """
+    xy = np.array([[float(p[0]), float(p[1])] for p in positions]) if positions else np.zeros((0, 2))
+    steps = np.diff(xy, axis=0)
+    path = float(np.linalg.norm(steps, axis=1).sum()) if len(steps) else 0.0
+    if path < AXES_MIN_PATH_M:
+        return "undetermined"
+    yaw = np.array([_yaw(q) for q in quaternions[1:]])
+    forward = np.column_stack([-np.sin(yaw), np.cos(yaw)])
+    direct = float(np.sum(steps * forward)) / path
+    swapped = float(np.sum(steps[:, ::-1] * forward)) / path
+    if swapped > 0.5 and swapped - direct > 0.3:
+        return "swapped_xy"
+    if direct > 0.5 and direct - swapped > 0.3:
+        return "recorded"
+    return "undetermined"
+
+
 def _event_pose(event, scale: float) -> tuple[list[float], list[float]]:
     attributes = event.attributes
     translation = [float(v) * scale for v in attributes["rt_translation"].value]
@@ -133,7 +185,8 @@ def extract_scene_poses(
     fallback_bottle_position: list[float],
     fallback_problem_position: list[float],
     tray_offset: list[float] = DEFAULT_TRAY_OFFSET,
-    room_name: str = "room",
+    yaw_offset: float = DSR_TO_URDF_YAW_OFFSET,
+    room_name: Optional[str] = None,
     robot_name: str = "robot",
 ) -> ScenePoses:
     """Build the scene poses from the episode, falling back to the provided
@@ -156,7 +209,7 @@ def extract_scene_poses(
         return poses
 
     keyframe = mem_api.get_keyframe(0)
-    room_id = _find_node_id_by_name(keyframe, room_name)
+    room_id = _world_node_id(keyframe, room_name)
     robot_id = _find_node_id_by_name(keyframe, robot_name)
     if room_id is None or robot_id is None:
         return poses
@@ -168,19 +221,25 @@ def extract_scene_poses(
     scale = _units_scale(robot_events)
     initial_position, initial_orientation = _event_pose(robot_events[0], scale)
     final_position, final_orientation = _event_pose(robot_events[-1], scale)
+    recorded = [_event_pose(event, scale) for event in robot_events]
+    axes = recorded_axes([position for position, _ in recorded], [quaternion for _, quaternion in recorded])
+    poses.sources["axes"] = axes
+    if axes == "swapped_xy":
+        initial_position = [initial_position[1], initial_position[0], *initial_position[2:]]
+        final_position = [final_position[1], final_position[0], *final_position[2:]]
 
-    poses.initial_robot_position = initial_position
-    poses.initial_robot_orientation = to_urdf_orientation(initial_orientation)
+    poses.initial_robot_position = [initial_position[0], initial_position[1], URDF_BASE_Z]
+    poses.initial_robot_orientation = to_urdf_orientation(initial_orientation, yaw_offset)
     poses.sources["initial_robot"] = "episodic_rt_edge"
 
     poses.problem_position = final_position
-    poses.problem_orientation = to_urdf_orientation(final_orientation)
+    poses.problem_orientation = to_urdf_orientation(final_orientation, yaw_offset)
     poses.sources["problem"] = "episodic_rt_edge"
 
     # The tray offset is expressed in the URDF body frame, so it is rotated by the
     # orientation the URDF is actually loaded with.
     rotated_offset = _quat_rotate(poses.initial_robot_orientation, tray_offset)
-    poses.bottle_position = [p + o for p, o in zip(initial_position, rotated_offset)]
+    poses.bottle_position = [p + o for p, o in zip(poses.initial_robot_position, rotated_offset)]
     poses.sources["bottle"] = "robot_pose_plus_tray_offset"
 
     return poses
@@ -337,7 +396,7 @@ def episode_clock_rate(mem_api, origin_ns: Optional[int], until_s: Optional[floa
     if origin_ns is None or until_s is None or not mem_api.is_ready() or mem_api.get_keyframe_count() == 0:
         return 1.0, 0
     keyframe = mem_api.get_keyframe(0)
-    room_id = _find_node_id_by_name(keyframe, "room")
+    room_id = _world_node_id(keyframe)
     robot_id = _find_node_id_by_name(keyframe, "robot")
     if room_id is None or robot_id is None:
         return 1.0, 0
@@ -367,31 +426,34 @@ def episode_clock_rate(mem_api, origin_ns: Optional[int], until_s: Optional[floa
     return float(np.median(ratios)), int(ratios.size)
 
 
-MM_PER_M = 1000.0
 DEFAULT_REPETITIONS = 10
 
 
 def build_simulation_scene(
     mem_api,
-    fallback_robot_position_mm: list[float],
-    fallback_problem_position_mm: list[float],
+    fallback_robot_position: list[float],
+    fallback_problem_position: list[float],
     num_of_repetitions: int = DEFAULT_REPETITIONS,
     gravity: float = -9.81,
+    yaw_offset: float = DSR_TO_URDF_YAW_OFFSET,
+    physics_dt: Optional[float] = None,
 ) -> tuple[dict, dict]:
     """The scene the causes simulator replays (a SimulationScene dict, positions in
-    millimeters), plus what was learned while building it, for logging.
+    meters, like the fallbacks), plus what was learned while building
+    it, for logging. yaw_offset and physics_dt let experiments compare variants.
 
     Times stay on the recording's clock; `clock_rate` tells the simulator how fast
     the recorded physics ran against it (episode_clock_rate).
 
     The rotation profile stays empty: where omega should come from (the pose
     history or the setpoint) is still to be decided, so the replay drives straight."""
-    robot_fallback_m = [v / MM_PER_M for v in fallback_robot_position_mm]
+    robot_fallback_m = list(fallback_robot_position)
     poses = extract_scene_poses(
         mem_api,
         fallback_robot_position=robot_fallback_m,
         fallback_bottle_position=[r + o for r, o in zip(robot_fallback_m, DEFAULT_TRAY_OFFSET)],
-        fallback_problem_position=[v / MM_PER_M for v in fallback_problem_position_mm],
+        fallback_problem_position=list(fallback_problem_position),
+        yaw_offset=yaw_offset,
     )
     # First deletion of the robot->bottle RT edge; later ones come from the bottle
     # being re-attached and lost again.
@@ -410,11 +472,11 @@ def build_simulation_scene(
 
     scene = {
         "gravity": gravity,
-        "initial_robot_position": [v * MM_PER_M for v in poses.initial_robot_position],
+        "initial_robot_position": list(poses.initial_robot_position),
         "initial_robot_orientation": poses.initial_robot_orientation,
-        "problem_position": [v * MM_PER_M for v in poses.problem_position],
+        "problem_position": list(poses.problem_position),
         "problem_orientation": poses.problem_orientation,
-        "bottle_position": [v * MM_PER_M for v in poses.bottle_position],
+        "bottle_position": list(poses.bottle_position),
         "bottle_orientation": poses.bottle_orientation,
         "simulation_length": simulation_horizon(length, observed_effect_time),
         "num_of_repetitions": num_of_repetitions,
@@ -423,6 +485,7 @@ def build_simulation_scene(
         "observed_effect_time": observed_effect_time,
         "episode_length": length,
         "clock_rate": clock_rate,
+        "physics_dt": physics_dt,
     }
     info = {"pose_sources": poses.sources, "effect_times": effect_times, "episode_length": length,
             "clock_rate": clock_rate, "clock_rate_windows": clock_windows}

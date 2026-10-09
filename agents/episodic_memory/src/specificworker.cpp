@@ -20,13 +20,11 @@
 #include "specificworker.h"
 #include <clocale>
 
+#include <clocale>
+
 SpecificWorker::SpecificWorker(const ConfigLoader &configLoader, TuplePrx tprx, bool startup_check)
     : GenericWorker(configLoader, tprx) {
-	// Qt sets the C locale from the environment (e.g. es_ES uses ',' as decimal
-	// separator), which corrupts the recording format: std::to_string would write
-	// "9,809" and std::stof would truncate "9.809" to 9. The history file format
-	// requires the dot as decimal separator, so force the C numeric locale.
-	std::setlocale(LC_NUMERIC, "C");
+	std::setlocale(LC_ALL, "C");
 	std::cout << "--- SpecificWorker CONSTRUCTOR START ---" << std::endl;
 	this->startup_check_flag = startup_check;
 	if (this->startup_check_flag) {
@@ -445,13 +443,15 @@ void SpecificWorker::display_debugger_graph() {
 
 void SpecificWorker::modify_node_slot(std::uint64_t id, const std::string &type) {
 	if (current_state != EpisodicState::RECORDING) {
-		std::cout << "modify_node_slot: Not in RECORDING state, ignoring. Current state: " << static_cast<int>(current_state) << std::endl;
+		if (print_extra_info)
+			std::cout << "modify_node_slot: Not in RECORDING state, ignoring. Current state: " << static_cast<int>(current_state) << std::endl;
 		return;
 	}
 
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
-	std::cout << "modify_node_slot - id: " << id << " type: " << type << " timestamp: " << new_timestamp << std::endl;
+	if (print_extra_info)
+		std::cout << "modify_node_slot - id: " << id << " type: " << type << " timestamp: " << new_timestamp << std::endl;
 
 	auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::MN, id, type, {});
 	if (!dsr_data_optional.has_value()) {
@@ -460,7 +460,8 @@ void SpecificWorker::modify_node_slot(std::uint64_t id, const std::string &type)
 	}
 	auto dsr_data = dsr_data_optional.value();
 	changes_map[new_timestamp] = dsr_data;
-	std::cout << "modify_node_slot - Recorded: " << dsr_data << " (total changes: " << changes_map.size() << ")" << std::endl;
+	if (print_extra_info)
+		std::cout << "modify_node_slot - Recorded: " << dsr_data << " (total changes: " << changes_map.size() << ")" << std::endl;
 }
 
 void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string> &att_names) {
@@ -469,23 +470,26 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 	
-	std::cout << "[CHANGE] Node attrs modified: id=" << id << " attrs=" << att_names.size() << std::endl;
+	if (print_extra_info)
+		std::cout << "[CHANGE] Node attrs modified: id=" << id << " attrs=" << att_names.size() << std::endl;
 
 	if (!string_check_flag) {
-		std::cout << "Modify node attrs slot - id: " << id << " att_names_size: " << att_names.size() << " att_names: ";
-		for (const auto &att : att_names) {
-		std::cout << att << " ";
-		auto node_optional = G->get_node(id);
-		if (node_optional.has_value()) {
-			auto node = node_optional.value();
-			auto timestamp_optional = G->get_attrib_timestamp_by_name(node, att);
-			if (timestamp_optional.has_value()) {
-			auto timestamp = timestamp_optional.value();
-			std::cout << " time: " << timestamp << " ";
+		if (print_extra_info) {
+			std::cout << "Modify node attrs slot - id: " << id << " att_names_size: " << att_names.size() << " att_names: ";
+			for (const auto &att : att_names) {
+			std::cout << att << " ";
+			auto node_optional = G->get_node(id);
+			if (node_optional.has_value()) {
+				auto node = node_optional.value();
+				auto timestamp_optional = G->get_attrib_timestamp_by_name(node, att);
+				if (timestamp_optional.has_value()) {
+				auto timestamp = timestamp_optional.value();
+				std::cout << " time: " << timestamp << " ";
+				}
 			}
+			}
+			std::cout << std::endl;
 		}
-		}
-		std::cout << std::endl;
 	} else {
 		auto dsr_data_optional = assemble_string(
 			new_timestamp, DSRSpecialChars::MNA, id, "", att_names); // no type/tag
@@ -495,7 +499,8 @@ void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<
 		}
 		auto dsr_data = dsr_data_optional.value();
 		changes_map[new_timestamp] = dsr_data;
-		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
+		if (print_extra_info)
+			std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
 	}
 }
 
@@ -506,7 +511,8 @@ void SpecificWorker::modify_edge_slot(std::uint64_t from, std::uint64_t to, cons
 
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
-	std::cout << "modify_edge_slot - from_id: " << from << " to_id: " << to << " type: " << type << " timestamp: " << new_timestamp << std::endl;
+	if (print_extra_info)
+		std::cout << "modify_edge_slot - from_id: " << from << " to_id: " << to << " type: " << type << " timestamp: " << new_timestamp << std::endl;
 
 	auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::ME, std::make_tuple(from, to), type, {});
 	if (!dsr_data_optional.has_value()) {
@@ -515,7 +521,8 @@ void SpecificWorker::modify_edge_slot(std::uint64_t from, std::uint64_t to, cons
 	}
 	auto dsr_data = dsr_data_optional.value();
 	changes_map[new_timestamp] = dsr_data;
-	std::cout << "modify_edge_slot - Recorded: " << dsr_data << " (total changes: " << changes_map.size() << ")" << std::endl;
+	if (print_extra_info)
+		std::cout << "modify_edge_slot - Recorded: " << dsr_data << " (total changes: " << changes_map.size() << ")" << std::endl;
 }
 
 void SpecificWorker::modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to, const std::string &type, const std::vector<std::string> &att_names) {
@@ -525,10 +532,12 @@ void SpecificWorker::modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 
 	if (!string_check_flag) {
-		std::cout << "Modify edge attrs slot - from_id: " << from << " to_id: " << to << " type: " << type << "\n att_names_size: " << att_names.size() << " att_names: ";
-		for (const auto &att : att_names)
-		std::cout << att << " ";
-		std::cout << std::endl;
+		if (print_extra_info) {
+			std::cout << "Modify edge attrs slot - from_id: " << from << " to_id: " << to << " type: " << type << "\n att_names_size: " << att_names.size() << " att_names: ";
+			for (const auto &att : att_names)
+			std::cout << att << " ";
+			std::cout << std::endl;
+		}
 	} else {
 		auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::MEA, std::make_tuple(from, to), type, att_names);
 		if (!dsr_data_optional.has_value()) {
@@ -537,7 +546,8 @@ void SpecificWorker::modify_edge_attrs_slot(std::uint64_t from, std::uint64_t to
 		}
 		auto dsr_data = dsr_data_optional.value();
 		changes_map[new_timestamp] = dsr_data;
-		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
+		if (print_extra_info)
+			std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
 	}
 }
 
@@ -547,9 +557,10 @@ void SpecificWorker::del_edge_slot(std::uint64_t from, std::uint64_t to, const s
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 
-	if (!string_check_flag)
-		std::cout << "Delete edge slot" << std::endl;
-	else {
+	if (!string_check_flag) {
+		if (print_extra_info)
+			std::cout << "Delete edge slot" << std::endl;
+	} else {
 		auto dsr_data_optional = assemble_string(new_timestamp, DSRSpecialChars::DE, std::make_tuple(from, to), edge_tag, {});
 		if (!dsr_data_optional.has_value()) {
 		std::cerr << __FUNCTION__ << " - dsr_data_optional has no value" << std::endl;
@@ -557,7 +568,8 @@ void SpecificWorker::del_edge_slot(std::uint64_t from, std::uint64_t to, const s
 		}
 		auto dsr_data = dsr_data_optional.value();
 		changes_map[new_timestamp] = dsr_data;
-		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
+		if (print_extra_info)
+			std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
 	}
 }
 
@@ -567,9 +579,10 @@ void SpecificWorker::del_node_slot(std::uint64_t from) {
 	const auto time_now = std::chrono::system_clock::now();
 	auto new_timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(time_now.time_since_epoch()).count();
 
-	if (!string_check_flag)
-		std::cout << "Delete node slot" << std::endl;
-	else {
+	if (!string_check_flag) {
+		if (print_extra_info)
+			std::cout << "Delete node slot" << std::endl;
+	} else {
 		auto dsr_data_optional =
 			assemble_string(new_timestamp, DSRSpecialChars::DN, from, "", {});
 		if (!dsr_data_optional.has_value()) {
@@ -578,7 +591,8 @@ void SpecificWorker::del_node_slot(std::uint64_t from) {
 		}
 		auto dsr_data = dsr_data_optional.value();
 		changes_map[new_timestamp] = dsr_data;
-		std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
+		if (print_extra_info)
+			std::cout << __FUNCTION__ << " - " << dsr_data << std::endl;
 	}
 }
 

@@ -41,9 +41,9 @@ ADV_SPEED = "adv_speed"
 HISTORY = "history"
 
 # Positions of the bodies in the scene (millimeters)
-ROBOT_POS = [-3700.0, -300.0, 32.5]
-PROBLEM_POS = [0.0, 40.0, 1.0]
-BOTTLE_POS = [0.0, 50.0, 795.0]
+ROBOT_POS = [-3.700, -0.300, 0.0325]
+PROBLEM_POS = [0.0, 0.040, 0.001]
+BOTTLE_POS = [0.0, 0.050, 0.795]
 
 MM_TO_M = 0.001
 M_TO_MM = 1000.0
@@ -75,6 +75,12 @@ agent_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if agent_root not in sys.path:
     sys.path.insert(0, agent_root)
 
+# Get the path to 'agents' (one level up from 'inner_simulator') to reach the
+# shared agent_generation package (agent scaffolding + templates + training).
+agents_root = os.path.dirname(agent_root)
+if agents_root not in sys.path:
+    sys.path.insert(0, agents_root)
+
 from src.simulation_scene import SimulationScene
 from src.logger import Logger
 from src.episode_scene import (
@@ -91,44 +97,88 @@ import json
 import episodic_memory_api as mem
 import numpy as np
 import locale
+import math
 
 from concurrent.futures import ProcessPoolExecutor
-from .agent_generator import *
+from agent_generation.agent_generator import *
 
 from pybullet_imu import IMU
 from pydsr import *
 
 
-def extract_signals_worker(imu_history: dict) -> tuple[np.ndarray, np.ndarray]:
-    acc = np.array(imu_history[ACCELEROMETER], dtype=np.float64)
-    gyro = np.array(imu_history[GYROSCOPE], dtype=np.float64)
-    return acc, gyro
+# ===================== CAUSE-SELECTION PIPELINE (Phase 1) =====================
+# Config for the gates / ranking / confidence. Per-cause "t_abs" can be overridden
+# from causes.json (field "t_abs"). See docstring of select_best_cause().
+SELECTION_CFG = {
+    "t_abs_default": 0.6,     # normalized-DTW ceiling for "a known cause explains it"
+    "t_keep": 1.5,            # coarse per-recording prune (looser than t_abs)
+    "top_k": 3,               # robust representative score = mean of k lowest survivors
+    "k_margin": 1.0,          # runner_up/winner ratio that counts as full margin confidence
+    "scale_abs": 0.15,        # steepness of c_abs sigmoid
+    "frac_ref": 0.05,         # frac_good expected when a (spatial) cause is right
+    "w_disp_m": 1.0,          # bottle-disturbance weight: displacement (meters)
+    "w_tilt_rad": 1.0,        # bottle-disturbance weight: tilt (radians)
+    "d_max_traj_m": 1.0,      # max distance (m) from a grid cell to the robot trajectory
+    "enforce_position_gate": False,  # hard-reject grid cells far from the robot path
+    "enforce_verdict": False,        # withhold problem_position / cause_confirmed on "unknown"
+    "c_floor": 0.0,                  # inner's own min confidence to bother confirming (enforce mode)
+}
 
 
-def dtw_score_worker(a: np.ndarray, b: np.ndarray) -> float:
-    return np.mean([dtw.distance_fast(a[:, axis], b[:, axis]) for axis in range(3)])
+def _znorm(arr: np.ndarray) -> np.ndarray:
+    """Z-normalize each column (axis) independently: (x - mean) / std, std guarded."""
+    arr = np.asarray(arr, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[0] < 2:
+        return arr
+    mean = arr.mean(axis=0)
+    std = arr.std(axis=0)
+    std = np.where(std < 1e-9, 1.0, std)
+    return (arr - mean) / std
 
 
-def find_matching_imu_recordings_worker(rimu: dict, simu: list) -> list[tuple]:
-    """Module-level worker function for multiprocessing (picklable).
-    Returns top-5 matches as (simulation_id, score).
-    """
-    rimu_acc, rimu_gyro = extract_signals_worker(rimu)
+def _axis_dtw_mean(a: np.ndarray, b: np.ndarray) -> float:
+    """Mean over the 3 axes of the DTW distance, normalized by warping-path length so
+    the value is a per-step average (comparable across runs of different duration)."""
+    n = float(max(len(a), len(b))) or 1.0
+    vals = []
+    for axis in range(3):
+        d = dtw.distance_fast(np.ascontiguousarray(a[:, axis]),
+                              np.ascontiguousarray(b[:, axis]))
+        vals.append(d / n)
+    return float(np.mean(vals))
 
-    print(f"[worker] Rimu acc shape: {rimu_acc.shape}, gyro shape: {rimu_gyro.shape}")
 
-    scores = {}
-    for s, sim in enumerate(simu):
-        sim_acc, sim_gyro = extract_signals_worker(sim[HISTORY])
+def score_all_recordings_worker(rimu: dict, simu: list) -> list:
+    """Picklable pool worker. Returns the normalized DTW score of EVERY recording,
+    indexed by recording id. Non-finite / malformed recordings get float('inf')."""
+    r_acc = _znorm(np.array(rimu[ACCELEROMETER], dtype=np.float64))
+    r_gyro = _znorm(np.array(rimu[GYROSCOPE], dtype=np.float64))
+    scores = []
+    for sim in simu:
+        try:
+            s_acc = np.array(sim[HISTORY][ACCELEROMETER], dtype=np.float64)
+            s_gyro = np.array(sim[HISTORY][GYROSCOPE], dtype=np.float64)
+            if s_acc.ndim != 2 or s_acc.shape[1] != 3 or s_gyro.shape[1] != 3 or len(s_acc) < 2:
+                scores.append(float("inf"))
+                continue
+            score = 0.5 * (_axis_dtw_mean(r_acc, _znorm(s_acc)) + _axis_dtw_mean(r_gyro, _znorm(s_gyro)))
+            scores.append(score if np.isfinite(score) else float("inf"))
+        except Exception:
+            scores.append(float("inf"))
+    return scores
 
-        score_acc = dtw_score_worker(rimu_acc, sim_acc)
-        score_gyro = dtw_score_worker(rimu_gyro, sim_gyro)
-        scores[s] = (score_acc + score_gyro) / 2
 
-        print(f"[worker] Simu {s}: acc_dtw={score_acc:.4f} gyro_dtw={score_gyro:.4f} total={scores[s]:.4f}")
-
-    sorted_scores = sorted(scores.items(), key=lambda item: item[1])
-    return sorted_scores[:5]
+def _quat_tilt_rad(quat) -> float:
+    """Angle (rad) between the body's local +Z axis and world +Z, from an [x,y,z,w] quaternion.
+    0 = upright, pi/2 = lying on its side."""
+    try:
+        x, y, z, w = [float(v) for v in quat]
+    except Exception:
+        return 0.0
+    # world-Z component of the rotated local-Z axis (rotation matrix element R[2,2])
+    zz = 1.0 - 2.0 * (x * x + y * y)
+    zz = max(-1.0, min(1.0, zz))
+    return float(np.arccos(zz))
 
 
 class SpecificWorker(GenericWorker):
@@ -181,7 +231,6 @@ class SpecificWorker(GenericWorker):
         self.sim_scene = SimulationScene.model_construct()
         # Set initial pose (Debugging purposes)
         self.sim_scene.gravity = -9.81
-        self.sim_scene.initial_robot_position, self.sim_scene.initial_robot_orientation = ROBOT_POS, [0,0,0,1]
 
         # ================ EPISODIC MEMORY API =================
         # ======================================================
@@ -193,9 +242,8 @@ class SpecificWorker(GenericWorker):
         self.physicsClient = p.connect(p.GUI)
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         p.setGravity(0, 0, -9.81)
-        # p.setRealTimeSimulation(1) # Enable real-time simulation
-        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-15,
-                                     cameraTargetPosition=[0.8, -0.9, 0.2])
+        p.resetDebugVisualizerCamera(cameraDistance=2.7, cameraYaw=0, cameraPitch=-50,
+                                     cameraTargetPosition=[0.8, -0.9, 2.])
         
         self.dt = 1.0 / 240.0  # Simulation time step    
         p.setPhysicsEngineParameter(fixedTimeStep=self.dt, numSubSteps=1)
@@ -208,28 +256,38 @@ class SpecificWorker(GenericWorker):
         # LOAD PLANE IN THE SIMULATION
         self.plane = p.loadURDF("../../etc/URDFs/plane/plane.urdf", basePosition=[0, 0, 0]) 
 
-        # LOAD OBSTACLES IN THE SIMULATION
-        # self.bump_100x5cm = p.loadURDF("./URDFs/bump/bump_100x5cm.urdf", [0, -0.33, 0.001], flags=flags)
-        # self.bump_1000x10cm = p.loadURDF("./URDFs/bump/bump_100x10cm.urdf", [0, -0.33, 0.001], flags=flags)
-        # self.cylinder_bump_10m = p.loadURDF("./URDFs/bump/cylinder_bump_10m.urdf", [0, -0.8, 0.001], p.getQuaternionFromEuler([0, 0, np.pi/2]), flags=flags)
-
         # LOAD ROBOT IN THE SIMULATION
-        self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", [0, 0.0, 0.04], flags=flags)
+        self.robot_initial_position = [0, 0, 0.005]  # Small Z offset in meters to place robot slightly above the ground
+        self.robot_initial_orientation = p.getQuaternionFromEuler([0, 0, -math.pi / 2])
+        self.robot = p.loadURDF("../../etc/URDFs/shadow/shadow.urdf", self.robot_initial_position, self.robot_initial_orientation, flags=flags)
 
-        # LOAD A CYLINDER IN THE SIMULATION
-        # self.cylinder = p.loadURDF("../../etc/URDFs/cylinder/cylinder.urdf", [1.3, -0.7, 0.0], flags=flags)
+        self.bottle_position_offset = [0.15, 0.11, 0.802] # Position of the bottle relative to the robot's base_link frame (in meters)
 
-        time.sleep(0.5)
+        # LOAD BOTTLE IN THE SIMULATION
+        self.bottle = p.loadURDF("../../etc/URDFs/bottle/bottle.urdf", [self.robot_initial_position[0] + self.bottle_position_offset[0], 
+                                                                        self.robot_initial_position[1] + self.bottle_position_offset[1], 
+                                                                        self.robot_initial_position[2] + self.bottle_position_offset[2]], 
+                                 self.robot_initial_orientation, flags=flags)
 
+        time.sleep(1)  # Wait for a second to ensure the models are loaded properly
+
+        
+        # ================ START SIMULATION ================
+        # ==================================================
+
+        p.setRealTimeSimulation(1) # Enable real-time simulation
 
         # ================ ROBOT PARAMETERS  ===============
         # ==================================================
 
-        self.wheels_radius = 0.1
-        self.distance_between_wheels = 0.44
-        self.distance_from_center_to_wheels = self.distance_between_wheels / 2
+        self.wheels_radius = 0.1                 # m (igual que antes)
+        self.wheels_width = 0.05                 # m, ancho de cada rueda
+        self.distance_between_wheels = 0.518     # m, entre centros de rueda (axesLength del driver)
+        self.distance_from_center_to_wheels = self.distance_between_wheels / 2   # 0.259 m
 
-        self.motors = ["frame_back_right2motor_back_right", "frame_back_left2motor_back_left", "frame_front_right2motor_front_right", "frame_front_left2motor_front_left"]
+        self.base_width = 0.44                   # m, ancho de la caja del chasis (boundingObject)
+
+        self.motors = ["wheel_right_joint", "wheel_left_joint"]
         self.joints_name = self.get_joints_info(self.robot)
         self.links_name = self.get_link_info(self.robot)
 
@@ -250,8 +308,7 @@ class SpecificWorker(GenericWorker):
 
     def set_simulation_scene(self,
                              simulation_length, 
-                             list_of_target_velocities, 
-                             num_of_repetitions=200) -> None:
+                             list_of_target_velocities) -> None:
         """
             Set the simulation scene as the real one when the problem was detected, 
             with the same target velocities that the robot had in the real world, 
@@ -260,29 +317,39 @@ class SpecificWorker(GenericWorker):
             Args:
                 simulation_length (float): The length of the simulation in seconds.
                 list_of_target_velocities (list[tuple[float, float]]): A list of tuples with the forward and angular velocities of the robot at each timestamp in the real world.
-                num_of_repetitions (int): The number of times that each cause will be simulated to check for consistency in the results.
         """
         robot_positions = self.get_robot_positions_relative_to_problem()
         if robot_positions is not None and robot_positions.get("last_position_before_problem") is not None:
-            problem_position_fixed = [robot_positions["last_position_before_problem"][1], robot_positions["last_position_before_problem"][0], robot_positions["last_position_before_problem"][2]]
+            lpbp = robot_positions["last_position_before_problem"]
+            # lpbp comes from episodic's root->robot RT, in METERS; sim_scene wants mm.
+            problem_position_fixed = [lpbp[1] , lpbp[0] , lpbp[2]]
             self.sim_scene.problem_position = problem_position_fixed
+            self.logger.log(f"Problem position set for simulation: {problem_position_fixed} (mm)", style="green")
         else:
             self.sim_scene.problem_position = PROBLEM_POS
         self.sim_scene.problem_orientation = [0,0,0,1]
-        
+
         if robot_positions is not None and robot_positions.get("first_position") is not None:
-            robot_position_fixed = [robot_positions["first_position"][1], robot_positions["first_position"][0], robot_positions["first_position"][2]]
+            fp = robot_positions["first_position"]
+            robot_position_fixed = [fp[1] , fp[0] , fp[2]]
             self.sim_scene.initial_robot_position = robot_position_fixed
+            self.sim_scene.initial_robot_orientation = self.robot_initial_orientation
+            self.sim_scene.bottle_position = [fp[1] + self.bottle_position_offset[1], fp[0] + self.bottle_position_offset[0], fp[2] + self.bottle_position_offset[2]]
+            self.sim_scene.bottle_orientation = [self.robot_initial_orientation[0], self.robot_initial_orientation[1], self.robot_initial_orientation[2], self.robot_initial_orientation[3]]
+
+            self.logger.log(f"Initial robot position set for simulation: {robot_position_fixed} (m)", style="green")
         else:
             self.logger.log("Could not read initial robot position from episodic memory, using default ROBOT_POS", style="yellow")
             self.sim_scene.initial_robot_position = ROBOT_POS
         
-        self.sim_scene.initial_robot_orientation = [0,0,0,1]
         self.sim_scene.simulation_length = simulation_length
         self.sim_scene.list_of_target_velocities = list_of_target_velocities
-        self.sim_scene.num_of_repetitions = num_of_repetitions
-        self.sim_scene.bottle_position = BOTTLE_POS
-        self.sim_scene.bottle_orientation = [0,0,0,0]
+
+
+
+        print(type(self.sim_scene.simulation_length), repr(self.sim_scene.simulation_length))
+
+
         self.sim_scene.model_validate(self.sim_scene.__dict__)
         file = open("src/sim_scene.json", "w")
         file.write(self.sim_scene.model_dump_json(indent=4))
@@ -471,90 +538,132 @@ class SpecificWorker(GenericWorker):
                     self.convert_episodic_to_imu_history(list_of_ts)
                     print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
 
-                    plots_dir = os.path.join(
-                        "logs/plots",
-                        (self.hypotheses_compiled or {}).get("case_id") or "static_causes",
-                    )
-                    os.makedirs(plots_dir, exist_ok=True)
-                    save_real_imu_plot(self.imu_history, os.path.join(plots_dir, "real_imu_history.png"))
-
                     if self.hypotheses_compiled is None:
-                        # Legacy matching (static causes mode): top-5 DTW ranking into sim_output.json
-                        threads = []
-                        sim_out = {}
-                        sim_out["sim_scene"] = self.sim_scene.model_dump()
-                        sim_out["registers"] = []
+                        # Static causes (no batch from the semantic memory): the UEx cause
+                        # selection (scores, gates, ranking), persisted in the DSR.
+                        self.plot_imu_series(
+                            self.imu_history[TIMESTAMP],
+                            self.imu_history[ACCELEROMETER],
+                            self.imu_history[GYROSCOPE],
+                            show=True)
+
+                        # ---- score EVERY recording of EVERY cause (normalized DTW), in parallel ----
+                        cause_defs = list(self.causes_data)
+                        recordings_by_cause = [historicals[pids[i][0]] for i in range(len(pids))]
                         with ProcessPoolExecutor(max_workers=2) as executor:
-                            for h in historicals:
-                                threads.append(executor.submit(find_matching_imu_recordings_worker, self.imu_history, historicals[h]))
-                            i = 0
-                            for h in historicals:
-                                res = threads[i].result()
-                                items = []
-                                print("Top 5 best recordings for cause", self.causes_data[i]["name"], ":")
-                                for rec in res:
-                                    self.logger.log(f"\tRecording {rec[0]} with score {rec[1]}", style="blue")
-                                    items.append(historicals[h][rec[0]])
-                                row = {"cause_definition": self.causes_data[i], "top_five": items}
-                                sim_out["registers"].append(row)
-                                i += 1
+                            score_futures = [executor.submit(score_all_recordings_worker, self.imu_history, recs)
+                                             for recs in recordings_by_cause]
+                            all_scores = [f.result() for f in score_futures]
 
-                        with open("sim_output.json", "w") as output:
-                            output.write(json.dumps(sim_out, indent=4, default=lambda o: o.item() if hasattr(o, 'item') else float(o)))
-                        self.logger.log("Simulations finished. Results written to sim_output.json!", style="bold blue")
+                        sim_out = {"sim_scene": self.sim_scene.model_dump(), "registers": []}
+                        causes_for_selection = []
+                        for i, recs in enumerate(recordings_by_cause):
+                            scores = all_scores[i]
+                            order = sorted(range(len(scores)), key=lambda r: scores[r])
+                            top_ids = order[:5]
+                            top_five = [recs[r] for r in top_ids]
+                            print(f"Top 5 recordings for cause {cause_defs[i]['name']}: "
+                                  + ", ".join(f"{r}({scores[r]:.4f})" for r in top_ids))
+                            sim_out["registers"].append({
+                                "cause_definition": cause_defs[i],
+                                "scores": scores,                       # normalized DTW per recording id
+                                "top": [[r, scores[r]] for r in top_ids],
+                                "top_five": top_five,
+                            })
+                            causes_for_selection.append({"cause_definition": cause_defs[i],
+                                                         "recordings": recs, "scores": scores})
 
-                    # ============ CONTRASTIVE VERDICT ============
-                    # Nominal baseline + symbolic effect (bottle off the tray) + IMU score.
-                    if self.hypotheses_compiled is not None:
+                        # ---- gates -> ranking -> confidence -> location ----
+                        selection = self.select_best_cause(causes_for_selection, SELECTION_CFG)
+                        sim_out["selection"] = selection
+                        self.logger.log(
+                            "[selection] "
+                            + json.dumps({k: v for k, v in selection.items() if k != "per_cause"},
+                                         default=str),
+                            style="bold magenta")
+
+                        # Show a graph comparing the real IMU history with the best recording of the top for each cause (a graph per cause)
+                        for i, cause in enumerate(self.causes_data):
+                            top_five = sim_out["registers"][i]["top_five"]
+                            if not top_five:
+                                continue
+                            best_history = top_five[0][HISTORY]  # Best recording for this cause
+
+                            self.plot_imu_series(
+                                self.imu_history[TIMESTAMP],
+                                self.imu_history[ACCELEROMETER],
+                                self.imu_history[GYROSCOPE],
+                                sim_timestamps=best_history[TIMESTAMP],
+                                sim_accelerometer=best_history[ACCELEROMETER],
+                                sim_gyroscope=best_history[GYROSCOPE],
+                                title=f"Comparison of real IMU history with best recording of cause: {cause['name']}",
+                                show=True)
+
+                        # Write the full result to a timestamped file (+ refresh stable sim_output.json),
+                        # fully flushed before we touch the DSR so semantic never opens a half file.
+                        sim_output_path = self._write_sim_output_file(sim_out)
+                        self.logger.log(f"Simulations finished. Results -> {sim_output_path}", style="bold blue")
+
+                        # Persist onto 'problem': always sim_output_path (semantic's trigger; verdict +
+                        # detail live in the file). Phase-1 back-compat: also problem_position +
+                        # cause_confirmed unless enforce_verdict withholds them on an "unknown" verdict.
+                        self.persist_selection_in_dsr(selection, sim_output_path)
+
+                        self.retire_batch()
+                    else:
+                        # Hypotheses of the semantic memory: the contrastive verdict (nominal
+                        # baseline, effect at its time, IMU score), published for the memory.
+                        plots_dir = os.path.join(
+                            "logs/plots",
+                            (self.hypotheses_compiled or {}).get("case_id") or "static_causes",
+                        )
+                        os.makedirs(plots_dir, exist_ok=True)
+                        save_real_imu_plot(self.imu_history, os.path.join(plots_dir, "real_imu_history.png"))
+
+                        # ============ CONTRASTIVE VERDICT ============
+                        # Nominal baseline + symbolic effect (bottle off the tray) + IMU score.
                         entries = self.hypotheses_compiled["entries"]
                         skipped = self.hypotheses_compiled["skipped"]
                         case_id = self.hypotheses_compiled.get("case_id", "") or "hypotheses_case"
-                    else:
-                        entries = [
-                            {"hypothesis_id": f"static_{c['name']}", "title": c["name"], "cause": c}
-                            for c in self.causes_data
-                        ]
-                        skipped = []
-                        case_id = "static_causes"
 
-                    ordered_historicals = [historicals[pid[0]] for pid in pids]
-                    verdict = build_verdict(
-                        case_id=case_id,
-                        real_imu=self.imu_history,
-                        entries=entries,
-                        historicals=ordered_historicals,
-                        initial_bottle_z=self.sim_scene.bottle_position[2],
-                        skipped=skipped,
-                        observed_effect_time=self.observed_effect_time,
-                    )
-                    verdict_path = os.path.abspath(write_verdict(verdict, "logs/verdicts"))
-                    save_comparison_plots(self.imu_history, verdict["hypotheses"], ordered_historicals, plots_dir)
+                        ordered_historicals = [historicals[pid[0]] for pid in pids]
+                        verdict = build_verdict(
+                            case_id=case_id,
+                            real_imu=self.imu_history,
+                            entries=entries,
+                            historicals=ordered_historicals,
+                            # The verdict compares the recorded bottle heights (mm); the scene is in meters.
+                            initial_bottle_z=self.sim_scene.bottle_position[2] * M_TO_MM,
+                            skipped=skipped,
+                            observed_effect_time=self.observed_effect_time,
+                        )
+                        verdict_path = os.path.abspath(write_verdict(verdict, "logs/verdicts"))
+                        save_comparison_plots(self.imu_history, verdict["hypotheses"], ordered_historicals, plots_dir)
 
-                    accepted_id = verdict.get("accepted_hypothesis_id")
-                    self.logger.log(
-                        f"Verdict written to {verdict_path}. Accepted hypothesis: {accepted_id}. "
-                        f"Nominal score: {verdict.get('nominal_best_score')}. "
-                        f"Window: {verdict['anomaly_window']}.",
-                        style="bold green" if accepted_id else "bold yellow",
-                    )
-                    if verdict.get("abstention_reason"):
-                        self.logger.log(f"Verdict abstained: {verdict['abstention_reason']}.", style="bold red")
+                        accepted_id = verdict.get("accepted_hypothesis_id")
+                        self.logger.log(
+                            f"Verdict written to {verdict_path}. Accepted hypothesis: {accepted_id}. "
+                            f"Nominal score: {verdict.get('nominal_best_score')}. "
+                            f"Window: {verdict['anomaly_window']}.",
+                            style="bold green" if accepted_id else "bold yellow",
+                        )
+                        if verdict.get("abstention_reason"):
+                            self.logger.log(f"Verdict abstained: {verdict['abstention_reason']}.", style="bold red")
 
-                    # Synthesize detector agent templates only for accepted causes
-                    accepted_causes = {
-                        e["cause"]["name"] for e in verdict["hypotheses"] if e.get("accepted")
-                    }
-                    for cause_name in accepted_causes:
-                        if not generate_agent(cause_name, AGENTS_FOLDER):
-                            print("Error while generating agent template for cause", cause_name)
-                    if accepted_causes:
-                        print("Agent templates generated at folder", AGENTS_FOLDER)
+                        # Synthesize detector agent templates only for accepted causes
+                        accepted_causes = {
+                            e["cause"]["name"] for e in verdict["hypotheses"] if e.get("accepted")
+                        }
+                        for cause_name in accepted_causes:
+                            if not generate_agent(cause_name, AGENTS_FOLDER):
+                                print("Error while generating agent template for cause", cause_name)
+                        if accepted_causes:
+                            print("Agent templates generated at folder", AGENTS_FOLDER)
 
-                    if self.hypotheses_compiled is not None:
                         self.publish_verdict_filepath(verdict_path)
-                    # Back to IDLE: the processed-episode guard avoids re-simulating the same
-                    # episode, while a later hypotheses batch for it is still picked up.
-                    self.retire_batch()
+                        # Back to IDLE: the processed-episode guard avoids re-simulating the same
+                        # episode, while a later hypotheses batch for it is still picked up.
+                        self.retire_batch()
 
                 case "TERMINATED":
                     pass
@@ -585,7 +694,7 @@ class SpecificWorker(GenericWorker):
         self.actual_time = time.time()
         if time.time() - self.print_time > 5:
             self.print_time = time.time()
-            self.logger.log(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
+            # self.logger.log(f"Compute frequency: {1/time_step:.2f} Hz", style="bold blue")
             
         return time_step
     
@@ -604,14 +713,82 @@ class SpecificWorker(GenericWorker):
 
         self.forward_vel, self.angular_vel = self.get_velocities_from_dsr()
         wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.forward_vel, self.angular_vel)
+
         for motor_name in self.motors:
             p.setJointMotorControl2(bodyUniqueId=self.robot,
                                     jointIndex=self.joints_name[motor_name],
                                     controlMode=p.VELOCITY_CONTROL,
                                     targetVelocity=wheels_velocity[motor_name],
                                     force=10)
-            
-        p.stepSimulation()
+
+
+
+    # =============== PLOTTING GRAPHS  ================
+    # ==================================================
+
+    def plot_imu_series(self, timestamps, accelerometer, gyroscope,
+                        sim_timestamps=None, sim_accelerometer=None, sim_gyroscope=None,
+                        title="Real IMU history from Episodic Memory",
+                        save_path=None, show=False):
+        """
+        Plot an IMU time series (accelerometer and gyroscope), optionally overlaying a
+        simulated series (dashed lines, same color per axis).
+
+        :param timestamps: Sequence of N timestamps in seconds (real)
+        :param accelerometer: Sequence of N samples [ax, ay, az] in m/s^2 (real)
+        :param gyroscope: Sequence of N samples [gx, gy, gz] in rad/s (real)
+        :param sim_timestamps: Optional sequence of M timestamps in seconds (sim)
+        :param sim_accelerometer: Optional sequence of M samples [ax, ay, az] (sim)
+        :param sim_gyroscope: Optional sequence of M samples [gx, gy, gz] (sim)
+        :param title: Figure title
+        :param save_path: If given, save the figure to this path
+        :param show: If True, call plt.show()
+        :return: The matplotlib figure
+        """
+
+        def _check(t, acc, gyro, name):
+            t = np.asarray(t, dtype=float)
+            acc = np.asarray(acc, dtype=float)
+            gyro = np.asarray(gyro, dtype=float)
+            if acc.ndim != 2 or acc.shape[1] != 3 or gyro.ndim != 2 or gyro.shape[1] != 3:
+                raise ValueError(f"{name}: accelerometer and gyroscope must have shape (N, 3)")
+            if not (len(t) == len(acc) == len(gyro)):
+                raise ValueError(f"{name}: timestamps, accelerometer and gyroscope must have the same length")
+            return t, acc, gyro
+
+        t, acc, gyro = _check(timestamps, accelerometer, gyroscope, "real")
+
+        sim = None
+        if sim_timestamps is not None:
+            if sim_accelerometer is None or sim_gyroscope is None:
+                raise ValueError("sim_timestamps requires sim_accelerometer and sim_gyroscope")
+            sim = _check(sim_timestamps, sim_accelerometer, sim_gyroscope, "sim")
+
+        axis_labels = ["X", "Y", "Z"]
+        axis_colors = ["tab:red", "tab:blue", "tab:green"]
+
+        fig = plt.figure(figsize=(12, 5))
+        plt.suptitle(title, fontsize=16)
+
+        panels = [("Accelerometer", acc, None if sim is None else sim[1], "Acceleration (m/s^2)"),
+                  ("Gyroscope", gyro, None if sim is None else sim[2], "Angular Velocity (rad/s)")]
+        for k, (name, real_data, sim_data, ylabel) in enumerate(panels):
+            plt.subplot(1, 2, k + 1)
+            plt.title(name)
+            for j, (axis, color) in enumerate(zip(axis_labels, axis_colors)):
+                plt.plot(t, real_data[:, j], color=color, linestyle="-", label=f"Real {axis}")
+                if sim_data is not None:
+                    plt.plot(sim[0], sim_data[:, j], color=color, linestyle="--", label=f"Sim {axis}")
+            plt.xlabel("Time (s)")
+            plt.ylabel(ylabel)
+            plt.legend()
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        if save_path is not None:
+            fig.savefig(save_path, dpi=150)
+        if show:
+            plt.show()
+        return fig
 
     
     # =============== PYBULLET MODELS INFO  ================
@@ -671,46 +848,35 @@ class SpecificWorker(GenericWorker):
         """
         Get the forward velocity of the robot
 
-        :return: Forward velocity
+        :return: Forward velocity (m/s)
         """
-        wheel_velocities = {}
-        for motor_name in self.motors:
-            wheel_velocities[motor_name] = p.getJointState(self.robot, self.joints_name[motor_name])[1]
-        forward_velocity = (wheel_velocities["frame_front_left2motor_front_left"] +
-                            wheel_velocities["frame_front_right2motor_front_right"] +
-                            wheel_velocities["frame_back_left2motor_back_left"] +
-                            wheel_velocities["frame_back_right2motor_back_right"]) * self.wheels_radius / 4
+        w_left = p.getJointState(self.robot, self.joints_name["wheel_left_joint"])[1]
+        w_right = p.getJointState(self.robot, self.joints_name["wheel_right_joint"])[1]
+        forward_velocity = (w_left + w_right) * self.wheels_radius / 2
         return forward_velocity
 
     def get_angular_velocity(self):
         """
         Get the angular velocity of the robot
 
-        :return: Angular velocity
+        :return: Angular velocity (rad/s), positive = counterclockwise
         """
-        wheel_velocities = {}
-        for motor_name in self.motors:
-            wheel_velocities[motor_name] = p.getJointState(self.robot, self.joints_name[motor_name])[1]
-        angular_velocity = ((wheel_velocities["frame_front_right2motor_front_right"] +
-                            wheel_velocities["frame_back_right2motor_back_right"] -
-                            wheel_velocities["frame_front_left2motor_front_left"] -
-                            wheel_velocities["frame_back_left2motor_back_left"]) * self.wheels_radius /
-                            (2 * self.distance_between_wheels))
+        w_left = p.getJointState(self.robot, self.joints_name["wheel_left_joint"])[1]
+        w_right = p.getJointState(self.robot, self.joints_name["wheel_right_joint"])[1]
+        angular_velocity = (w_right - w_left) * self.wheels_radius / self.distance_between_wheels
         return angular_velocity
 
     def get_wheels_velocity_from_forward_velocity_and_angular_velocity(self, forward_velocity=0, angular_velocity=0):
         """
-        Get the velocity of each wheel from the forward velocity of the robot
+        Get the velocity of each wheel from the forward and angular velocity of the robot
 
-        :param forward_velocity: Forward velocity of the robot
-        :param angular_velocity: Angular velocity of the robot
-        :return: Dictionary with the velocity of each wheel
+        :param forward_velocity: Forward velocity of the robot (m/s)
+        :param angular_velocity: Angular velocity of the robot (rad/s)
+        :return: Dictionary with the velocity (rad/s) of each wheel
         """
         wheels_velocity = {
-            "frame_front_left2motor_front_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_front_right2motor_front_right": forward_velocity / self.wheels_radius + self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_back_left2motor_back_left": forward_velocity / self.wheels_radius - self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius,
-            "frame_back_right2motor_back_right": forward_velocity / self.wheels_radius + self.distance_from_center_to_wheels * angular_velocity / self.wheels_radius}
+            "wheel_left_joint": (forward_velocity - self.distance_from_center_to_wheels * angular_velocity) / self.wheels_radius,
+            "wheel_right_joint": (forward_velocity + self.distance_from_center_to_wheels * angular_velocity) / self.wheels_radius}
         return wheels_velocity
     
     # ================= DSR INTERACTION  ================
@@ -730,9 +896,14 @@ class SpecificWorker(GenericWorker):
         spc_node = None
         fp_node = None
         for node in self.graphs["episodic"].get_nodes():
-            if node.name.startswith("Search Problem Cause"):  # TODO: Should be a better way to identify the correct node.
+            # mission_controller names episodic mission nodes after the mission's customName:
+            # "Search Problem Cause" / "Follow Person" in older runs, "search_cause_attempt_N" /
+            # "follow_person_attempt_N" since 08/10. The semantic agent matches them the same way
+            # (episode_memory_reader.mission_kind), so both read the same recording.
+            normalized = node.name.strip().lower().replace(" ", "_")
+            if normalized.startswith(("search_problem_cause", "search_cause")):
                 spc_node = node
-            if node.name.startswith("Follow Person"):  # TODO: Should be a better way to identify the correct node.
+            if normalized.startswith("follow_person"):
                 fp_node = node
 
         if not (spc_node is not None
@@ -873,7 +1044,270 @@ class SpecificWorker(GenericWorker):
             imu_node.attrs["imu_gyroscope"].value = angular_vel.tolist()
         self.graphs["work"].update_node(imu_node)
 
-    
+
+    def update_problem_position_in_dsr(self, best_recording: dict, position_index: int) -> None:
+        """
+        Persist the estimated 3D position of the detected problem (e.g. a bump) onto
+        the 'problem' node, using the winning grid cell from the best-matching simulation.
+
+        :param best_recording: The best-matching simulation recording (includes 'generated_instances').
+        :param position_index: Id/repetition index of the best-matching simulation, which
+                                doubles as the index into 'distributed_positions'.
+        """
+        distributed_positions = best_recording.get("generated_instances", {}).get("distributed_positions")
+        if not distributed_positions or position_index >= len(distributed_positions):
+            return  # This cause has no spatial grid (e.g. "wheel"); nothing to store.
+
+        position = distributed_positions[position_index]
+
+        problem_node = self.graphs["work"].get_node("problem")
+        if problem_node is None:
+            self.logger.log("'problem' node not found in DSR graph, cannot store problem_position.", style="bold red")
+            return
+
+        problem_node.attrs["problem_position"] = Attribute(list(position), self.agent_id)
+        self.graphs["work"].update_node(problem_node)
+        self.logger.log(f"Stored problem_position {position} (mm) on 'problem' node.", style="bold green")
+
+
+    def mark_cause_confirmed_in_dsr(self) -> None:
+        """
+        Flag on 'problem' that the causal search concluded, for "semantic" to react to.
+        """
+        problem_node = self.graphs["work"].get_node("problem")
+        if problem_node is None:
+            self.logger.log("'problem' node not found in DSR graph, cannot set cause_confirmed.", style="bold red")
+            return
+
+        problem_node.attrs["cause_confirmed"] = Attribute(True, self.agent_id)
+        self.graphs["work"].update_node(problem_node)
+        self.logger.log("Stored cause_confirmed=True on 'problem' node.", style="bold green")
+
+
+    # ===================== CAUSE-SELECTION PIPELINE (Phase 1) =====================
+
+    def _recording_disturbance(self, recording: dict) -> float | None:
+        """How much the bottle was disturbed in a simulated recording: weighted sum of
+        its horizontal displacement (m) from the scene start and its tilt (rad)."""
+        bp = recording.get("bottle_position")
+        bo = recording.get("bottle_orientation")
+        if bp is None or len(bp) < 3:
+            return None
+        # The simulator records the bottle in millimeters; the scene starts it in meters.
+        start_mm = [v * M_TO_MM for v in self.sim_scene.bottle_position]
+        disp_mm = float(np.hypot(float(bp[0]) - start_mm[0], float(bp[1]) - start_mm[1]))
+        tilt = _quat_tilt_rad(bo) if bo is not None else 0.0
+        return SELECTION_CFG["w_disp_m"] * (disp_mm / 1000.0) + SELECTION_CFG["w_tilt_rad"] * tilt
+
+    def _real_bottle_disturbance(self) -> float | None:
+        """Real bottle disturbance at problem onset (from episodic memory). Not evaluated
+        in Phase 1 (manual knocks / weak bump) -> None keeps c_outcome neutral."""
+        return None
+
+    def _robot_trajectory(self) -> list | None:
+        """Best-effort (x, y) of the robot during follow_person, from episodic 'root->robot'
+        RT history. Units follow that edge (concept_robot writes meters). None if missing.
+        Only used by the (opt-in, default-off) position-plausibility gate."""
+        try:
+            root = self.graphs["work"].get_node("root")
+            robot = self.graphs["work"].get_node("robot")
+            if root is None or robot is None:
+                return None
+            pts = []
+            for pos in self.mem_api.get_edge_history(root.id, robot.id, "RT"):
+                if pos.modification_type != "MEA" or "rt_translation" not in pos.attributes:
+                    continue
+                t = list(pos.attributes["rt_translation"].value)
+                if len(t) >= 2:
+                    pts.append((float(t[0]), float(t[1])))
+            return pts or None
+        except Exception as e:
+            self.logger.log(f"[selection] robot trajectory unavailable: {e}", style="yellow")
+            return None
+
+    def select_best_cause(self, causes: list, cfg: dict) -> dict:
+        """Pick the winning cause from the simulation results.
+
+        causes: [{'cause_definition': {...}, 'recordings': [...], 'scores': [float per rec id]}]
+
+        Pipeline:
+          1. per-recording gates (validity, coarse score prune, opt-in position gate)
+             -> survivors per cause; a cause with 0 survivors is 'excluded'.
+          2. per-cause representative score: min (spatial) or mean of the k lowest (non-spatial).
+          3. cross-cause ranking = argmin representative score among non-excluded causes.
+          4. absolute gate: representative score > t_abs -> verdict 'unknown'.
+          5. confidence = c_abs * c_margin * c_consistency * c_outcome  (about the winner only).
+          6. location = winning grid cell (spatial winner) or None.
+        Per-cause 't_abs' can be overridden in causes.json; else cfg['t_abs_default'].
+        """
+        traj = self._robot_trajectory()
+        per_cause, candidates = {}, {}
+        for c in causes:
+            name = c["cause_definition"]["name"]
+            t_abs = float(c["cause_definition"].get("t_abs", cfg["t_abs_default"]))
+            recs, scores = c["recordings"], c["scores"]
+            grid = recs[0].get("generated_instances", {}).get("distributed_positions") if recs else None
+            spatial = bool(grid)
+
+            survivors = []
+            for rid, sc in enumerate(scores):
+                if not np.isfinite(sc) or sc > cfg["t_keep"]:          # validity + coarse prune
+                    continue
+                pos = grid[rid] if (spatial and rid < len(grid)) else None
+                d_traj = None
+                if pos is not None and traj:
+                    d_traj = min(float(np.hypot(pos[0] - tx, pos[1] - ty)) for tx, ty in traj)
+                    if cfg["enforce_position_gate"] and d_traj > cfg["d_max_traj_m"]:
+                        continue                                       # position-plausibility gate
+                survivors.append({
+                    "rec_id": rid, "score": float(sc), "d_traj": d_traj,
+                    "position": list(pos) if pos is not None else None,
+                    "disturbance": self._recording_disturbance(recs[rid] if rid < len(recs) else {}),
+                })
+
+            finite = sorted(s["score"] for s in survivors)
+            k = cfg["top_k"]
+            top = finite[:k]
+            s_repr = (finite[0] if spatial else float(np.mean(top))) if finite else float("inf")
+            spread = float(np.std(top) / np.mean(top)) if len(top) >= 2 and np.mean(top) > 0 else 0.0
+            frac_good = (sum(1 for x in scores if np.isfinite(x) and x < t_abs) / len(scores)) if scores else 0.0
+            per_cause[name] = {
+                "spatial": spatial, "n": len(scores), "n_survivors": len(survivors),
+                "s_best": finite[0] if finite else float("inf"), "s_repr": s_repr,
+                "spread": spread, "frac_good": frac_good, "t_abs": t_abs,
+                "excluded": len(survivors) == 0,
+            }
+            candidates[name] = survivors
+
+        ranked = sorted(((n, m["s_repr"]) for n, m in per_cause.items() if not m["excluded"]),
+                        key=lambda kv: kv[1])
+
+        # fallback location = best grid cell of the best-ranked spatial cause, regardless of verdict
+        fb_loc, fb_src = None, None
+        for n, _ in ranked:
+            with_pos = [s for s in candidates[n] if s["position"] is not None]
+            if with_pos:
+                fb_loc = min(with_pos, key=lambda s: s["score"])["position"]
+                fb_src = "grid_cell"
+                break
+
+        selection = {
+            "cause": "unknown", "score": None, "runner_up": None,
+            "confidence": 0.0, "confidence_breakdown": {},
+            "location": None, "location_source": None,
+            "fallback_location": fb_loc, "fallback_location_source": fb_src,
+            "enforce_verdict": bool(cfg["enforce_verdict"]),
+            "per_cause": per_cause,
+        }
+        if not ranked:
+            selection["reason"] = "all causes excluded (no surviving recordings)"
+            return selection
+
+        winner, s_win = ranked[0]
+        runner = ranked[1] if len(ranked) > 1 else None
+        selection["score"] = s_win
+        selection["runner_up"] = list(runner) if runner else None
+        wm = per_cause[winner]
+
+        if s_win > wm["t_abs"]:
+            selection["reason"] = f"best cause '{winner}' s_repr={s_win:.4f} > t_abs={wm['t_abs']:.4f}"
+            return selection                                            # verdict stays 'unknown'
+
+        c_abs = float(1.0 / (1.0 + np.exp(-(wm["t_abs"] - s_win) / cfg["scale_abs"])))
+        ratio = (runner[1] / s_win) if (runner and s_win > 0) else float("inf")
+        c_margin = float(np.clip((ratio - 1.0) / cfg["k_margin"], 0.0, 1.0)) if np.isfinite(ratio) else 1.0
+        c_consistency = (float(np.clip(wm["frac_good"] / max(cfg["frac_ref"], 1e-9), 0.0, 1.0))
+                         * (1.0 - float(np.clip(wm["spread"], 0.0, 1.0))))
+        c_outcome = 1.0
+        real_dist = self._real_bottle_disturbance()
+        if real_dist is not None and real_dist > 1e-6:
+            wsurv = candidates[winner]
+            best = min(wsurv, key=lambda s: s["score"]) if wsurv else None
+            if best and best["disturbance"] is not None:
+                c_outcome = float(np.clip(1.0 - abs(best["disturbance"] - real_dist) / real_dist, 0.0, 1.0))
+        confidence = float(c_abs * c_margin * c_consistency * c_outcome)
+
+        with_pos = [s for s in candidates[winner] if s["position"] is not None]
+        location = min(with_pos, key=lambda s: s["score"])["position"] if with_pos else None
+
+        selection.update({
+            "cause": winner, "confidence": confidence,
+            "confidence_breakdown": {"c_abs": c_abs, "c_margin": c_margin,
+                                     "c_consistency": c_consistency, "c_outcome": c_outcome},
+            "location": list(location) if location is not None else None,
+            "location_source": "grid_cell" if location is not None else None,
+        })
+        return selection
+
+    @staticmethod
+    def _json_safe(o):
+        """Recursively replace non-finite floats (inf/nan) with None so the dumped file
+        is strict, portable JSON for any consumer."""
+        if isinstance(o, float):
+            return o if np.isfinite(o) else None
+        if isinstance(o, dict):
+            return {k: SpecificWorker._json_safe(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [SpecificWorker._json_safe(v) for v in o]
+        return o
+
+    def _write_sim_output_file(self, sim_out: dict) -> str:
+        """Dump sim_out to a timestamped JSON (history) and refresh the stable
+        'sim_output.json'. Fully flushed/fsynced before returning. Returns the abs path
+        of the timestamped file."""
+        payload = json.dumps(
+            self._json_safe(sim_out), indent=4, allow_nan=False,
+            default=lambda o: (o.item() if hasattr(o, "item") else float(o)))
+        # Todas las salidas van a output/ para no llenar la raíz del agente.
+        out_dir = os.path.abspath("output")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"sim_output_{time.strftime('%Y%m%d_%H%M%S')}.json")
+        for p in (path, os.path.join(out_dir, "sim_output.json")):
+            with open(p, "w") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+        return path
+
+    def persist_selection_in_dsr(self, selection: dict, sim_output_path: str) -> None:
+        """Write the causal-search outputs onto the 'problem' node.
+
+        Always: 'sim_output_path' (its update is semantic's trigger; verdict + all detail
+        live in that file).
+        Phase-1 back-compat (current semantic still reads these): 'problem_position' +
+        'cause_confirmed'. Withheld only when cfg['enforce_verdict'] and the verdict is
+        'unknown' (or confidence < cfg['c_floor']).
+
+        selection['location']/['fallback_location'] come straight from CauseBump's grid,
+        which is PyBullet-native METERS; 'problem_position' on the DSR is contracted in
+        MILLIMETERS (same as ROBOT_POS/PROBLEM_POS/BOTTLE_POS) and concept_robot divides
+        it by 1000 on read -> convert m -> mm here, at the DSR-writing boundary.
+        """
+        problem_node = self.graphs["work"].get_node("problem")
+        if problem_node is None:
+            self.logger.log("'problem' node not found; cannot persist selection.", style="bold red")
+            return
+
+        problem_node.attrs["sim_output_path"] = Attribute(str(sim_output_path), self.agent_id)
+
+        cfg = SELECTION_CFG
+        withhold = cfg["enforce_verdict"] and (
+            selection["cause"] == "unknown" or selection["confidence"] < cfg["c_floor"]
+        )
+        if not withhold:
+            loc = selection.get("location") or selection.get("fallback_location")
+            if loc is not None:
+                problem_node.attrs["problem_position"] = Attribute([float(v)  for v in loc], self.agent_id)
+            problem_node.attrs["cause_confirmed"] = Attribute(True, self.agent_id)
+
+        self.graphs["work"].update_node(problem_node)
+        self.logger.log(
+            f"[selection] cause={selection['cause']} conf={selection['confidence']:.3f} "
+            f"loc={selection.get('location') or selection.get('fallback_location')} "
+            f"withhold={withhold} sim_output_path={sim_output_path}",
+            style="bold green")
+
+
     def create_edge_in_dsr(self, fr_node, to_node, edge_type):
         """
         Create an edge in the DSR graph
@@ -969,16 +1403,16 @@ class SpecificWorker(GenericWorker):
             Get robot position data from episodic memory.
             Returns both:
                 - the first robot position recorded in the history,
-                - the last robot position before the first problem appearance.
+                - the last robot position before the first problget_robot_positions_relative_to_problemem appearance.
         """
         if self.mem_api.is_ready():
-            room_node = self.graphs["work"].get_node("room")
+            root_node = self.graphs["work"].get_node("root")
             robot_node = self.graphs["work"].get_node("robot")
-            if room_node is None or robot_node is None:
-                self.logger.log("Room or robot node not found in work graph!", style="bold red")
+            if root_node is None or robot_node is None:
+                self.logger.log("Root or robot node not found in work graph!", style="bold red")
                 return None
 
-            robot_positions = [pos for pos in self.mem_api.get_edge_history(room_node.id, robot_node.id, "RT") if pos.modification_type == "MEA"]
+            robot_positions = [pos for pos in self.mem_api.get_edge_history(root_node.id, robot_node.id, "RT") if pos.modification_type == "MEA"]
             if not robot_positions:
                 self.logger.log("No robot position measurements found in episodic memory!", style="bold red")
                 return None
@@ -993,6 +1427,8 @@ class SpecificWorker(GenericWorker):
                     return None
                 
             first_position = list(first_position_data.attributes["rt_translation"].value)
+            self.logger.log(f"[DEBUG] RAW first rt_translation (room->robot) before conversion: {first_position}", style="bold yellow")
+
 
             problem_events = self.mem_api.get_node_history_by_name("problem")
             if not problem_events:
@@ -1007,6 +1443,7 @@ class SpecificWorker(GenericWorker):
 
             last_position_before_problem_data = positions_before_problem[-1]
             last_position_before_problem = list(last_position_before_problem_data.attributes["rt_translation"].value)
+            self.logger.log(f"[DEBUG] RAW last rt_translation (room->robot) before conversion: {last_position_before_problem}", style="bold yellow")
 
             self.logger.log("Robot positions loaded from episodic memory", style="bold blue")
             return {
