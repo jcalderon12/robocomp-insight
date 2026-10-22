@@ -303,6 +303,7 @@ agents/vision_sam/segmented_objects/
 # Concept robot
 agents/concept_robot/photos/
 agents/concept_robot/logs/
+agents/concept_*/logs/
 
 # Pesos de modelos
 *.pt
