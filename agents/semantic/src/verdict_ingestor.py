@@ -90,16 +90,16 @@ def ingest_verdict(verdict_path: str | Path) -> VerdictIngestion:
 
     case_id = str(verdict.get("case_id", ""))
     accepted_id = verdict.get("accepted_hypothesis_id")
-    # When the nominal run already reproduces the effect, no hypothesis was told
-    # apart from "nothing happened"; verdicts written before the simulator
-    # abstained on its own still carry an accepted id, so check the flag here too.
+    # The simulator abstained (since verdict 2.0: no hypothesis reached its probability threshold, the
+    # nominal was the most probable, or the simulation was not faithful to the episode). Verdicts
+    # written before the simulator abstained on its own carry the flag and still an accepted id.
     if verdict.get("nominal_effect_warning") or verdict.get("abstention_reason"):
         return VerdictIngestion(
             ok=True,
             case_id=case_id,
             reason=(
-                "Verdict abstained: the nominal run reproduces the effect "
-                f"({verdict.get('abstention_reason') or 'nominal_effect_warning'}); anomaly remains unexplained."
+                f"Verdict abstained ({verdict.get('abstention_reason') or 'nominal_effect_warning: the nominal run reproduces the effect'}); "
+                "anomaly remains unexplained."
             ),
         )
     if not accepted_id:
