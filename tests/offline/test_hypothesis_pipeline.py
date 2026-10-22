@@ -245,24 +245,24 @@ def check_window_and_forces():
     episode = synthetic_episode(heading_deg=0.0)
     push = single(episode, idea("bottle_push", interval="Interval_fall", direction="any"))
     assert push["simulation_blueprint"]["activation_window"] == {"start_fraction": 0.7, "end_fraction": 0.82}
-    # The whole range of a push on the bottle, from light to strong: 3-30 N.
+    # The whole range of a push on the bottle, from light to strong: 0.5-5 N.
     assert push["simulation_blueprint"]["parameters"] == {
-        "target": "bottle", "force_range": {"x": [-30.0, 30.0], "y": [-30.0, 30.0], "z": [0.0, 0.0]}}
+        "target": "bottle", "force_range": {"x": [-5.0, 5.0], "y": [-5.0, 5.0], "z": [0.0, 0.0]}}
     assert push["title"] == "Push on the bottle during the last 2 s before the fall"
 
     def force(ep, mechanism, direction):
         hypothesis = single(ep, idea(mechanism, interval="Interval_fall", direction=direction))
         return hypothesis["simulation_blueprint"]["parameters"]["force_range"]
 
-    # Robot heading +x: 3-30 N, widened by 0.2 x 30 N.
-    assert force(episode, "bottle_push", "forward") == {"x": [-3.0, 36.0], "y": [-6.0, 6.0], "z": [0.0, 0.0]}
-    assert force(episode, "bottle_push", "backward")["x"] == [-36.0, 3.0]
-    assert force(episode, "bottle_push", "left") == {"x": [-6.0, 6.0], "y": [-3.0, 36.0], "z": [0.0, 0.0]}
-    assert force(episode, "bottle_push", "right")["y"] == [-36.0, 3.0]
+    # Robot heading +x: 0.5-5 N, widened by 0.2 x 5 N.
+    assert force(episode, "bottle_push", "forward") == {"x": [-0.5, 6.0], "y": [-1.0, 1.0], "z": [0.0, 0.0]}
+    assert force(episode, "bottle_push", "backward")["x"] == [-6.0, 0.5]
+    assert force(episode, "bottle_push", "left") == {"x": [-1.0, 1.0], "y": [-0.5, 6.0], "z": [0.0, 0.0]}
+    assert force(episode, "bottle_push", "right")["y"] == [-6.0, 0.5]
     # Robot heading +y: forward is +y in the room.
-    assert force(synthetic_episode(heading_deg=90.0), "bottle_push", "forward")["y"] == [-3.0, 36.0]
-    # On the robot, 150-500 N, clipped to the catalog (500 N).
-    assert force(episode, "robot_push", "forward")["x"] == [50.0, 500.0]
+    assert force(synthetic_episode(heading_deg=90.0), "bottle_push", "forward")["y"] == [-0.5, 6.0]
+    # On the robot, 20-300 N, widened by 0.2 x 300 N.
+    assert force(episode, "robot_push", "forward")["x"] == [-40.0, 360.0]
     # The heading of an interval is the overlap-weighted mean of the segments it covers.
     halves = synthetic_episode(heading_deg=0.0)
     halves["segments"][1]["heading_deg"] = 90.0
@@ -390,7 +390,7 @@ def check_six_ideas_1229(episodes):
     h02 = by_id["H02"]
     assert h02["simulation_blueprint"]["activation_window"] == {"start_fraction": 0.7, "end_fraction": 0.82}
     assert h02["simulation_blueprint"]["parameters"]["force_range"] == {
-        "x": [-30.0, 30.0], "y": [-30.0, 30.0], "z": [0.0, 0.0]}
+        "x": [-5.0, 5.0], "y": [-5.0, 5.0], "z": [0.0, 0.0]}
     assert h02["title"] == "Push on the bottle during the last 2 s before the fall"
     assert h02["llm_title"] == "External Physical Contact"
     assert batch["budget"]["used"] == 1                     # H02, plus the nominal run

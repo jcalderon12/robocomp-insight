@@ -88,12 +88,16 @@ PARAMETER_VALUES: dict[str, dict[str, tuple[str, ...]]] = {
 SCALED_DOME = "spawn_scaled_dome"
 BUMP_ASSET_PREFIX = "bump_"
 CABLE_ASSET = "cylinder_bump_10m"
-#: Force (N), one range the simulator samples: from a light to a strong push (study 2: the effect
-#: appears from about 5 N on the bottle and from about 500 N on the robot). It depends on the bodies
-#: pushed, not on the scenario.
-PUSH_FORCE_N = {"bottle_push": (3.0, 30.0), "robot_push": (150.0, 500.0)}
+#: Force (N), one range the simulator samples, of a push that lasts 0.1-0.3 s (the simulator's
+#: cause_external_force; docs_output/diseno/veredicto.md, 3.3). It depends on the bodies pushed, not
+#: on the scenario. On the robot (54 kg, pushed at a standing person's hand height): from a moderate
+#: push, like the 20-100 N hand pushes of standing-balance studies, to a strong shove of more than half
+#: its weight. On the bottle (0.183 kg, 1.8 N of weight; with friction 1 it slides on the tray from
+#: 1.8 N and tips from about 1 N at its centre): from below to well above what moves it. The 3-30 N and
+#: 150-500 N before 19/10 were held for the whole window in the broken simulator.
+PUSH_FORCE_N = {"bottle_push": (0.5, 5.0), "robot_push": (20.0, 300.0)}
 PUSH_TARGET = {"bottle_push": "bottle", "robot_push": "robot"}
-#: Floor friction, from very slippery to slippery (the PyBullet floor is about 1.0).
+#: Floor friction, from very slippery to slippery (the floor's is 1, Webots' default).
 FRICTION_RANGE = (0.01, 0.3)
 #: `unknown` simulates each drive wheel: two compiled causes, published as two hypotheses.
 WHEEL_SIDES = {"left": ("left",), "right": ("right",), "unknown": ("left", "right")}
