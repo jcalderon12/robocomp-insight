@@ -40,6 +40,13 @@ Photo_save_dir = "photos"
 Expected_size_m = 0.25
 Label_margin_factor = 1.0
 
+# Verificacion con SAM antes de hacer las fotos: pesos del modelo y los tres criterios sobre la
+# mascara (tamaño fisico, dispersion de la profundidad y coherencia con la distancia esperada).
+Sam_weights = "/home/robolab/robocomp/components/robocomp-insight/agents/vision_sam/sam2.1_l.pt"
+Verify_size_tolerance = 0.5
+Verify_depth_sigma_max = 0.15
+Verify_distance_tolerance = 0.3
+
 # Clasificador del concepto: backbone DINOv3 y cada cuántos ciclos se clasifica la vista
 # actual una vez entrenado. Entrena con las fotos que él mismo ha tomado en esta ejecución.
 Dinov3_repo = "/home/robolab/software/dinov3"

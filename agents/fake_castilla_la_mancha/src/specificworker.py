@@ -20,6 +20,7 @@
 #
 
 import subprocess
+import time
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
@@ -161,6 +162,10 @@ class SpecificWorker(GenericWorker):
         bump_node.attrs["pos_x"] = Attribute(problem_node.attrs["pos_x"].value, self.agent_id)
         bump_node.attrs["pos_y"] = Attribute(problem_node.attrs["pos_y"].value, self.agent_id)
         bump_node.attrs["world_position"] = Attribute([float(v) for v in problem_node.attrs["problem_position"].value], self.agent_id)
+        # Medidas del concepto, tal como las midio la simulacion del modelo que instancia la causa.
+        if "concept_size" in problem_node.attrs:
+            bump_node.attrs["concept_size"] = Attribute(
+                [float(v) for v in problem_node.attrs["concept_size"].value], self.agent_id)
         self.g.insert_node(bump_node)
         bump_node = self.g.get_node("bump")
 
@@ -188,7 +193,11 @@ class SpecificWorker(GenericWorker):
             return False
 
         agent_dir = os.path.join(agents_root, agent_name)
-        log_path = os.path.join(agent_dir, f"{agent_name}.log")
+        # Un log por ejecucion en logs/, en vez de uno que se sobreescribe: el agente se regenera
+        # en cada flujo y perder la salida anterior deja sin rastro lo que acaba de pasar.
+        log_dir = os.path.join(agent_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f"{time.strftime('%Y%m%d_%H%M%S')}.log")
         log_file = open(log_path, "w")
         subprocess.Popen(["bin/" + agent_name, "etc/config"], cwd=agent_dir, stdout=log_file, stderr=subprocess.STDOUT)
         console.print(f"{agent_name} generado y lanzado desde {agent_dir} (log: {log_path}).", style='bold green')

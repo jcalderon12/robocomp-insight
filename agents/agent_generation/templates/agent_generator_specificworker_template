@@ -51,6 +51,7 @@ class Stage:
     IDLE = "idle"              # concept exists, no mission yet
     SHOOTING = "shooting"      # mission started, shot when mission is running: triggered at each robot stop
     TRAINING = "training"      # photos taken, training classifier
+    VERIFYING = "verifying"    # checking with SAM that the concept is where the simulation says
     INFERRING = "inferring"    # classifier ready: classifier view every N cycles
 
 
@@ -104,18 +105,22 @@ class SpecificWorker(GenericWorker):
 
         self.print_extra_info = False
         self.last_relative_pose = [0.0, 0.0, 0.0]
-        self.pending_relative_position = [0.0, 0.0, 0.0]
         self.has_published_once = False  # force the very first RT write, don't rely on read noise
-        self.consecutive_large_jump_confirmations = 0
-        self.required_large_jump_confirmations = 3
-        self.large_jump_threshold = 1.0             # meters (static concept: a jump this big means bad data, not motion)
-        self.large_jump_candidate_tolerance = 0.2    # meters
 
         # photos mission, concept_robot stops, this agent captures and labels
         self.camera_name = configData["Camera_name"]
         self.expected_size_m = configData["Expected_size_m"]
         self.label_margin_factor = configData["Label_margin_factor"]
         self.stage = Stage.IDLE
+        self.sam = None
+        self.sam_weights = configData["Sam_weights"]
+        self.verify_size_tolerance = configData["Verify_size_tolerance"]
+        self.verify_depth_sigma_max = configData["Verify_depth_sigma_max"]
+        self.verify_distance_tolerance = configData["Verify_distance_tolerance"]
+        self.verify_answered = False
+        self.verify_waiting_logged = False
+        self.last_bearing_check_ms = 0    # limita el diagnostico de rumbo a 2 Hz
+        self.device_name = "cuda" if self.cuda_available() else "cpu"
         self.mission_was_active = False
         self.shot_at_this_stop = False
         self.photo_counter = 0
@@ -167,7 +172,8 @@ class SpecificWorker(GenericWorker):
                 self.has_published_once = True
                 self.publish_real_position()
 
-        if self.stage in (Stage.IDLE, Stage.SHOOTING):
+        if self.stage in (Stage.IDLE, Stage.SHOOTING, Stage.VERIFYING):
+            self.log_bearing_check(concept_node, relative_position, now_ms)
             self.serve_photo_mission(concept_node)
         elif self.stage == Stage.TRAINING:
             self.run_training()
@@ -217,7 +223,13 @@ class SpecificWorker(GenericWorker):
             local_x = -math.sin(theta) * dx + math.cos(theta) * dy
             local_y = -math.cos(theta) * dx - math.sin(theta) * dy
 
-            relative_position = [local_y, local_x, dz]
+            # Convencion de RoboComp: el avance va en la coordenada y, que es lo que asume
+            # follow_target al medir el rumbo como atan2(x, y). Mismo orden que concept_person.
+            # La primera componente va negada porque el rumbo publicado respondia al giro con el
+            # signo contrario al que espera la ley de control (medido en lazo abierto, 209
+            # muestras, 96% consistente). atan2(-x, y) = -atan2(x, y): refleja el sentido de giro
+            # y deja el cero donde estaba, o sea que de frente sigue siendo rumbo 0.
+            relative_position = [-local_y, local_x, dz]
         else:
             # TODO: no trained detector for CONCEPT_NAME yet. Wire this up once a real detector
             # exists; until then this branch returns [0,0,0] and never publishes on the real robot.
@@ -253,14 +265,17 @@ class SpecificWorker(GenericWorker):
         node = self.g.get_node(CONCEPT_NAME)
         if node is None:
             return
-        node.attrs["real_position"] = Attribute([float(local_y), float(local_x), float(dz)], self.agent_id)
+        # Mismo orden que la RT, para poder comparar las dos directamente.
+        node.attrs["real_position"] = Attribute([float(-local_y), float(local_x), float(dz)], self.agent_id)
         self.g.update_node(node)
 
     def update_relative_position(self, relative_position):
-        """Update the robot->CONCEPT_NAME RT edge in the DSR. Debounces large single-sample
-        jumps the same way concept_person does, requiring several consecutive confirmations
-        before accepting a big position change (protects against a single noisy reading).
-        Returns True if the position was actually written to the DSR."""
+        """Update the robot->CONCEPT_NAME RT edge in the DSR. Returns True if it was written.
+
+        Sin rechazo de valores atipicos a proposito: el que habia medía el salto en el marco del
+        robot, donde un objeto quieto se desplaza mucho solo porque el robot gira, y bloqueaba la
+        RT justo cuando mas falta hace. Cuando haya detector real hara falta uno de verdad, con el
+        criterio en el marco del mundo o por velocidad plausible del objetivo."""
         robot_node = self.g.get_node("robot")
         concept_node = self.g.get_node(CONCEPT_NAME)
 
@@ -272,35 +287,37 @@ class SpecificWorker(GenericWorker):
             console.print("Invalid relative position size.", style="bold red")
             return False
 
-        if self.has_published_once:
-            dx = relative_position[0] - self.last_relative_pose[0]
-            dy = relative_position[1] - self.last_relative_pose[1]
-            dz = relative_position[2] - self.last_relative_pose[2]
-            jump_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
-
-            if jump_distance > self.large_jump_threshold:
-                pdx = relative_position[0] - self.pending_relative_position[0]
-                pdy = relative_position[1] - self.pending_relative_position[1]
-                pdz = relative_position[2] - self.pending_relative_position[2]
-                pending_distance = math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz)
-
-                if pending_distance > self.large_jump_candidate_tolerance:
-                    self.pending_relative_position = relative_position
-                    self.consecutive_large_jump_confirmations = 1
-                    if self.print_extra_info:
-                        console.print(f"Large jump detected, waiting for confirmation (1/{self.required_large_jump_confirmations})", style="yellow")
-                    return False
-                else:
-                    self.consecutive_large_jump_confirmations += 1
-                    if self.consecutive_large_jump_confirmations < self.required_large_jump_confirmations:
-                        return False
-
         self.rt_api.insert_or_assign_edge_RT(robot_node, concept_node.id, relative_position, [0.0, 0.0, 0.0])
-        self.consecutive_large_jump_confirmations = 0
-        self.pending_relative_position = relative_position
         return True
 
     # ================ Misión de fotos ================
+
+    def log_bearing_check(self, concept_node, relative_position, now_ms):
+        """Compara el rumbo de la RT con el que implica la proyeccion a la camara. Son dos
+        caminos independientes: si discrepan en signo, la lateralidad de la RT esta mal."""
+        if not self.photo_mission_active():
+            return
+        if now_ms - self.last_bearing_check_ms < 500:   # 2 Hz, no hace falta mas
+            return
+        self.last_bearing_check_ms = now_ms
+
+        rt_deg = math.degrees(math.atan2(relative_position[0], relative_position[1]))
+        try:
+            rgb, depth_m, image = self.get_current_rgbd()
+            projection = self.project_world_position(concept_node, image)
+        except Exception as e:
+            console.print(f"[rumbo] RT {rt_deg:+7.1f} | sin proyeccion ({e})", style="yellow")
+            return
+        # "behind" trae u/v a None: el concepto esta detras de la camara y no hay pixel que medir,
+        # que es justo lo que pasa mientras el robot se aleja de espaldas en BACKOFF.
+        if projection is None or projection.get("u") is None:
+            console.print(f"[rumbo] RT {rt_deg:+7.1f} | sin pixel (concepto fuera del campo)", style="yellow")
+            return
+
+        proj_deg = math.degrees(math.atan((projection["u"] - image.width / 2.0) / image.focalx))
+        console.print(f"[rumbo] RT {rt_deg:+7.1f} | proyeccion {proj_deg:+7.1f} | "
+                      f"dif {((rt_deg - proj_deg + 180) % 360) - 180:+7.1f} | "
+                      f"d {math.hypot(relative_position[0], relative_position[1]):.2f} m", style="magenta")
 
     def photo_mission_active(self):
         """La misión de fotos está en marcha si el TARGET apunta a este concepto y su afordance,
@@ -334,12 +351,29 @@ class SpecificWorker(GenericWorker):
                 return False
         return True
 
+    def cuda_available(self):
+        """True si torch ve una GPU. Se importa aqui para no pagar la carga si no hace falta."""
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except Exception:
+            return False
+
     def serve_photo_mission(self, concept_node):
-        """Dispara una vez por parada mientras la misión está activa, y cierra la tanda cuando la
-        afordance se apaga."""
+        """Atiende la verificación que pide concept_robot, dispara una vez por parada mientras la
+        misión está activa, y cierra la tanda cuando la afordance se apaga."""
         active = self.photo_mission_active()
 
-        if active:
+        # La verificacion se contesta una sola vez por mision, antes de que empiece el giro.
+        if active and not self.verify_answered and self.read_bool_attr(concept_node, "verify_request"):
+            self.stage = Stage.VERIFYING
+            # Si todavia no lo tiene en cuadro no contesta: concept_robot sigue girando.
+            self.verify_answered = self.verify_concept(concept_node)
+            return
+
+        # Solo se dispara despues de que la verificacion haya contestado: antes del APPROACH el
+        # robot esta parado un instante y se colaba una foto con el concepto fuera de cuadro.
+        if active and self.verify_answered:
             self.stage = Stage.SHOOTING
             # one photo per stop, even if the stop lasts several cycles
             if self.robot_is_stopped():
@@ -349,10 +383,151 @@ class SpecificWorker(GenericWorker):
             else:
                 self.shot_at_this_stop = False
 
+        if not active:
+            self.verify_answered = False
+            self.verify_waiting_logged = False
+
         if self.mission_was_active and not active and not self.session_trained:
             console.print(f"Tanda cerrada con {self.photo_counter} fotos guardadas.", style="bold cyan")
             self.stage = Stage.TRAINING
         self.mission_was_active = active
+
+    def expected_size(self, concept_node):
+        """Dimension mayor de la huella del concepto, en metros. Se prefiere la medida que publica
+        la simulacion sobre el modelo real; Expected_size_m queda como reserva para cuando no
+        llegue (causa no espacial, o un inner que no la publique)."""
+        if "concept_size" in concept_node.attrs:
+            size = [float(v) for v in concept_node.attrs["concept_size"].value]
+            if len(size) == 3 and max(size[0], size[1]) > 1e-3:
+                return max(size[0], size[1])
+        return self.expected_size_m
+
+    def read_bool_attr(self, node, name):
+        """Booleano de un atributo del nodo, False si no esta."""
+        if name not in node.attrs:
+            return False
+        return bool(node.attrs[name].value)
+
+    def publish_concept_attrs(self, values):
+        """Escribe atributos en el nodo del concepto: es el canal de vuelta a concept_robot."""
+        node = self.g.get_node(CONCEPT_NAME)
+        if node is None:
+            return
+        for name, value in values.items():
+            node.attrs[name] = Attribute(value, self.agent_id)
+        self.g.update_node(node)
+
+    def verify_concept(self, concept_node):
+        """Comprueba que el concepto esta de verdad donde dice world_position: proyecta el punto,
+        segmenta con SAM en ese pixel y mide la mascara.
+
+        Devuelve True solo si ha podido mirar y ha contestado. Si el punto todavia no esta en
+        cuadro NO contesta y devuelve False: concept_robot sigue girando y se vuelve a intentar al
+        ciclo siguiente. Asi un "fail" significa siempre "lo he visto y no cuadra", nunca "no
+        estaba mirando"."""
+        rgb, depth_m, image = self.get_current_rgbd()
+        if rgb is None or depth_m is None:
+            return False
+
+        projection = self.project_world_position(concept_node, image)
+        if projection is None or projection["behind"] or projection["u"] is None:
+            return False
+
+        # Dentro del encuadre con margen, no solo dentro: contestando en cuanto el punto asoma por
+        # el borde la mascara sale cortada y la medida no vale. El margen es el radio aparente del
+        # concepto, el mismo que usa el etiquetado.
+        u, v = int(round(projection["u"])), int(round(projection["v"]))
+        r_px = (self.expected_size(concept_node) / 2.0) * image.focalx / max(projection["depth_m"], 1e-3)
+        margin = r_px * self.label_margin_factor
+        if not (margin <= u <= image.width - margin and margin <= v <= image.height - margin):
+            return False
+
+        # Y centrado en horizontal, no solo dentro: entrando por el lateral el punto cae en la
+        # esquina de abajo, el suelo se ve rasante y SAM se traga el plano entero en vez del
+        # concepto. Centrado, la componente de avance es casi la distancia real y se ve de frente.
+        if abs(u - image.width / 2) > image.width / 8:
+            return False
+
+        if not self.verify_waiting_logged:
+            console.print(f"Concepto en cuadro en ({u}, {v}) a {projection['depth_m']:.2f} m; verificando.", style="cyan")
+            self.verify_waiting_logged = True
+
+        diag = {"verify_pixel": [float(u), float(v)]}
+        best = self.best_mask_for_point(concept_node, rgb, depth_m, image, u, v, projection["depth_m"])
+        if best is None:
+            diag["verify_result"] = "fail"
+            console.print("Verificacion NEGATIVA: ninguna mascara de SAM encaja con el concepto.", style="bold red")
+        else:
+            diag["verify_result"] = "ok"
+            diag["verify_size_m"] = best["size_m"]
+            diag["verify_depth_m"] = best["z_med"]
+            diag["verify_depth_sigma"] = best["sigma"]
+            console.print(f"Verificacion OK: tamaño {best['size_m']:.3f} m, profundidad "
+                          f"{best['z_med']:.2f} m, sigma {best['sigma']:.3f}", style="bold green")
+
+        self.publish_concept_attrs(diag)
+        return True
+
+    def best_mask_for_point(self, concept_node, rgb, depth_m, image, u, v, z_expected):
+        """Segmenta con SAM en (u, v) y devuelve la candidata que mejor encaja con el concepto, o
+        None si ninguna pasa los tres criterios. Con multimask_output SAM da hasta tres mascaras
+        del mismo punto (parte / objeto / grupo) y el criterio es quien elige entre ellas."""
+        try:
+            if self.sam is None:
+                from ultralytics import SAM   # import aqui: tarda y solo hace falta al verificar
+                console.print(f"Cargando SAM desde {self.sam_weights}...", style="yellow")
+                self.sam = SAM(self.sam_weights)
+            # multimask_output no se puede pasar por la llamada publica: Model.predict valida los
+            # kwargs contra el esquema de YOLO y lo rechaza. Se queda en una sola mascara, asi que
+            # los criterios de abajo la aceptan o la rechazan en vez de elegir entre varias.
+            results = self.sam(rgb, points=[[u, v]], labels=[1],
+                               device=self.device_name, verbose=False)
+        except Exception as e:
+            console.print(f"Fallo ejecutando SAM: {e}", style="bold red")
+            return None
+
+        if not results or results[0].masks is None:
+            return None
+
+        expected = self.expected_size(concept_node)
+        accepted = []
+        for mask in results[0].masks.data.cpu().numpy():
+            mask_uint8 = (mask > 0).astype(np.uint8)
+            if mask_uint8.shape != depth_m.shape:
+                mask_uint8 = cv2.resize(mask_uint8, (depth_m.shape[1], depth_m.shape[0]),
+                                        interpolation=cv2.INTER_NEAREST)
+            inside = depth_m[mask_uint8 > 0]
+            inside = inside[np.isfinite(inside) & (inside > 0)]
+            if inside.size < 20:
+                continue
+
+            # Mediana y no media: la profundidad trae ceros y valores sueltos muy lejanos.
+            z_med = float(np.median(inside))
+            sigma = float(np.std(inside))
+            # Caja de area minima, no la alineada con los ejes: la proyeccion de un objeto en el
+            # suelo visto de lado aparece girada en la imagen, y la caja vertical que la envuelve
+            # llega a ser raiz(2) veces mas ancha que el objeto.
+            points = cv2.findNonZero(mask_uint8)
+            if points is None:
+                continue
+            (_, (w_px, h_px), _) = cv2.minAreaRect(points)
+            size_m = max(w_px, h_px) * z_med / float(image.focalx)
+
+            size_off = abs(size_m - expected) / expected
+            dist_off = abs(z_med - z_expected) / max(z_expected, 1e-3)
+            ok = (size_off <= self.verify_size_tolerance
+                  and sigma <= self.verify_depth_sigma_max
+                  and dist_off <= self.verify_distance_tolerance)
+
+            console.print(f"  candidata: tamaño {size_m:.3f} m (desvio {size_off:.0%}), "
+                          f"z {z_med:.2f} m (desvio {dist_off:.0%}), sigma {sigma:.3f} -> "
+                          f"{'aceptada' if ok else 'descartada'}", style="cyan")
+            if ok:
+                accepted.append({"size_m": size_m, "z_med": z_med, "sigma": sigma, "size_off": size_off})
+
+        if not accepted:
+            return None
+        return min(accepted, key=lambda c: c["size_off"])
 
     def get_current_rgbd(self):
         """Frame RGB y profundidad en metros del mismo instante, más el struct de imagen con las

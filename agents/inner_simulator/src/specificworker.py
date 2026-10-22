@@ -449,7 +449,7 @@ class SpecificWorker(GenericWorker):
                         self.imu_history[TIMESTAMP],
                         self.imu_history[ACCELEROMETER],
                         self.imu_history[GYROSCOPE],
-                        show=True)
+                        show=False)
 
                     # ---- score EVERY recording of EVERY cause (normalized DTW), in parallel ----
                     cause_defs = list(self.causes_data)
@@ -479,6 +479,9 @@ class SpecificWorker(GenericWorker):
 
                     # ---- gates -> ranking -> confidence -> location ----
                     selection = self.select_best_cause(causes_for_selection, SELECTION_CFG)
+                    # Medidas reales del cuerpo que instancia la causa ganadora, tal como las midio
+                    # el simulador del propio modelo. None si esa causa no instancia nada (wheel).
+                    selection["concept_size"] = self._concept_size_of(sim_out["registers"], selection.get("cause"))
                     sim_out["selection"] = selection
                     self.logger.log(
                         "[selection] "
@@ -501,7 +504,7 @@ class SpecificWorker(GenericWorker):
                             sim_accelerometer=best_history[ACCELEROMETER],
                             sim_gyroscope=best_history[GYROSCOPE],
                             title=f"Comparison of real IMU history with best recording of cause: {cause['name']}",
-                            show=True)
+                            show=False)
 
                     # Write the full result to a timestamped file (+ refresh stable sim_output.json),
                     # fully flushed before we touch the DSR so semantic never opens a half file.
@@ -1052,6 +1055,21 @@ class SpecificWorker(GenericWorker):
             return [SpecificWorker._json_safe(v) for v in o]
         return o
 
+    def _concept_size_of(self, registers: list, cause_name: str | None) -> list | None:
+        """Dimensiones [ancho, largo, alto] en metros del cuerpo que instancia una causa, medidas
+        por causes_simulator con getAABB sobre el modelo cargado. None si la causa no instancia
+        ningun cuerpo o si las grabaciones no las traen."""
+        if not cause_name:
+            return None
+        for reg in registers:
+            if reg.get("cause_definition", {}).get("name") != cause_name:
+                continue
+            for rec in reg.get("top_five") or []:
+                size = rec.get("concept_size")
+                if size and len(size) == 3:
+                    return [float(v) for v in size]
+        return None
+
     def _write_sim_output_file(self, sim_out: dict) -> str:
         """Dump sim_out to a timestamped JSON (history) and refresh the stable
         'sim_output.json'. Fully flushed/fsynced before returning. Returns the abs path
@@ -1099,6 +1117,9 @@ class SpecificWorker(GenericWorker):
             loc = selection.get("location") or selection.get("fallback_location")
             if loc is not None:
                 problem_node.attrs["problem_position"] = Attribute([float(v)  for v in loc], self.agent_id)
+            size = selection.get("concept_size")
+            if size is not None:
+                problem_node.attrs["concept_size"] = Attribute([float(v) for v in size], self.agent_id)
             problem_node.attrs["cause_confirmed"] = Attribute(True, self.agent_id)
 
         self.graphs["work"].update_node(problem_node)

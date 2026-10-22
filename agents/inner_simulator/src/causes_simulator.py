@@ -44,6 +44,7 @@ HISTORY = "history"
 GENERATED_INSTANCES = "generated_instances"
 BOTTLE_POSITION = "bottle_position"
 BOTTLE_ORIENTATION = "bottle_orientation"
+CONCEPT_SIZE = "concept_size"
 
 # Constants for cause loading logic
 # Ajustamos para que busque desde la carpeta actual del script
@@ -228,6 +229,8 @@ class CausesSimulator:
         bottle_pos_m, bottle_orn = p.getBasePositionAndOrientation(self.bottle)
         obj[BOTTLE_POSITION] = [coord for coord in bottle_pos_m]
         obj[BOTTLE_ORIENTATION] = bottle_orn
+        # Medidas del cuerpo que instancia esta causa, si instancia alguno (wheel no).
+        obj[CONCEPT_SIZE] = getattr(self, "body_size", None)
         self.historical.append(obj)
 
     def send_history_to_parent(self) -> None:
@@ -365,7 +368,12 @@ class CausesSimulator:
     def instantiate_body(self, body_file:str, body_position:tuple, identifier:str=str(uuid4())):
         """ ENGINE: Spawn body """
         body_position_m = body_position
-        self.loaded_bodies.append(p.loadURDF(body_file, basePosition=body_position_m))
+        body = p.loadURDF(body_file, basePosition=body_position_m)
+        self.loaded_bodies.append(body)
+        # El modelo ya sabe cuanto mide: se lee del cuerpo recien cargado y sin rotar, asi que su
+        # AABB coincide con las dimensiones reales. Evita tener el tamaño escrito a mano.
+        lo, hi = p.getAABB(body)
+        self.body_size = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]
 
     def set_robot_wheel_moving(self, simplified_wheel_name:str, moving:bool):
         """ ENGINE: Set robot wheel moving """

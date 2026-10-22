@@ -162,9 +162,31 @@ public slots:
 	void spin_in_place(float angular_speed);
 
 	/**
-	 * \brief Drives straight ahead at a constant speed (angular speed 0, no closed loop).
+	 * \brief Drives straight at a constant speed, forwards or backwards by the sign of speed
+	 * (angular speed 0, no closed loop).
 	 */
 	void drive_forward(float speed);
+
+	/**
+	 * \brief Distance from the robot to the current TARGET, or -1 if it cannot be read.
+	 */
+	float target_distance();
+
+	/**
+	 * \brief Node the current TARGET points at, i.e. the concept this mission is about.
+	 */
+	std::optional<DSR::Node> get_target_concept_node();
+
+	/**
+	 * \brief Asks the concept's agent to verify that the concept is really there, by setting
+	 * verify_request on its node.
+	 */
+	void request_verification();
+
+	/**
+	 * \brief Reads verify_result from the concept node: "ok", "fail", or empty if not answered.
+	 */
+	std::string read_verify_result();
 
 	/**
 	 * \brief Clears aff_interacting on the affordance reached via TARGET->has_intention, which is
@@ -182,6 +204,8 @@ public slots:
 	 * \brief Resets photo_spin() progress so the next photo mission starts from scratch.
 	 */
 	void reset_photo_spin();
+	void turn_in_place(float rot_speed);
+	bool target_measure(float &distance, float &angle);   // distancia y rumbo leidos de la RT
 
 	void modify_node_slot(std::uint64_t, const std::string &type){};
 	void modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names){};
@@ -198,6 +222,7 @@ private:
 
 	std::vector<float> last_acceleration_measurement;
 	std::vector<float> last_angular_velocity_measurement;
+	bool imu_nan_warned = false;  // el aviso de lectura no finita se da una sola vez
 
 	std::vector<float> last_velocities_readed;
 	std::vector<float> last_robot_pose;
@@ -220,7 +245,15 @@ private:
 	// Deriva de la distancia durante la espera que se interpreta como que la persona se ha movido.
 	static constexpr float FOLLOW_HOLD_DRIFT     = 0.25f;  // metros
 	float follow_hold_seconds;           // segundos que hay que aguantar a la distancia deseada
+	// Un vector nulo no es una posicion, es ausencia de dato: el puente de Webots devuelve la pose
+	// a ceros cuando no resuelve el DEF, y asi el objetivo parece estar encima y centrado.
+	static constexpr float TARGET_NULL_DISTANCE = 1e-3f;  // metros
+	// Edad maxima de la medida para darla por valida al decidir que la mision esta cumplida.
+	static constexpr float TARGET_MAX_AGE = 0.5f;         // segundos
 	float last_target_distance = -1.f;   // distancia medida en el ultimo follow_target()
+	float last_target_angle = 0.f;       // rumbo al objetivo medido en el ultimo follow_target()
+	std::chrono::steady_clock::time_point last_target_stamp;  // cuando se midio
+	bool  target_null_warned = false;    // el aviso de objetivo nulo se da una sola vez
 	bool  follow_holding = false;        // ya a la distancia deseada, contando
 	float follow_hold_distance = 0.f;    // distancia al empezar la espera, para medir la deriva
 	std::chrono::steady_clock::time_point follow_hold_start;
@@ -238,14 +271,42 @@ private:
 	std::unique_ptr<DSR::RT_API> rt;
 
 	// ---- Misión de fotos (photo_spin()) ----
-	enum class SpinStage { TURNING, SETTLING, DONE };
-	SpinStage spin_stage = SpinStage::TURNING;
+	enum class SpinStage { APPROACH, BACKOFF, VERIFY, TURNING, SETTLING, DONE, ABORTED };
+	SpinStage spin_stage = SpinStage::APPROACH;
 	float spin_accumulated = 0.f;       // radianes girados en total en esta vuelta
 	float spin_since_shot = 0.f;        // radianes girados desde la última parada de disparo
 	float spin_last_heading = 0.f;      // rumbo del ciclo anterior, para acumular el giro
 	bool spin_heading_valid = false;
 	std::chrono::steady_clock::time_point spin_settle_start;
 
+	// Aproximacion previa al giro: follow_target coloca al robot a la distancia pedida y mirando
+	// al concepto, que es lo que la verificacion necesita. El factor angular va limitado: el
+	// concepto empieza a ~180 grados y a velocidad maxima el robot gira 23 grados entre dos
+	// lecturas de la RT, con lo que cruza el punto antipodal y se queda oscilando en el.
+	static constexpr float PHOTO_APPROACH_MARGIN = 0.2f;            // metros de holgura en la distancia
+	static constexpr float PHOTO_APPROACH_ANGLE_TOLERANCE = 0.26f;  // radianes (~15 grados) para darlo por encarado
+	static constexpr float PHOTO_APPROACH_SPEED_FACTOR = 0.3f;      // factor lineal
+	static constexpr float PHOTO_APPROACH_ANGULAR_FACTOR = 0.15f;   // factor angular -> 3.5 grados por lectura
+	float photo_approach_distance; // metros a los que se coloca antes de girar
+	// Alejarse cuando se llega demasiado cerca. El controlador solo avanza, asi que la maniobra es
+	// girar hasta quedar de espaldas al concepto y avanzar por la recta que une a los dos: alejarse
+	// por ella es lo unico que cambia la distancia sin mover el resto, y al girar de nuevo en el
+	// sitio para encarar, la distancia ganada se conserva.
+	static constexpr float PHOTO_BACKOFF_ANGLE_TOLERANCE = 0.17f;  // radianes (~10 grados) para darlo por de espaldas
+	static constexpr float PHOTO_BACKOFF_TURN_SPEED = 0.6f;        // rad/s del giro en el sitio
+	static constexpr float PHOTO_BACKOFF_SPEED = 0.25f;            // m/s del avance de huida
+	// Topes de tiempo: sin ellos una etapa que no converge deja la mision colgada para siempre.
+	static constexpr float PHOTO_APPROACH_TIMEOUT = 60.f;          // segundos
+	static constexpr float PHOTO_BACKOFF_TIMEOUT  = 20.f;          // segundos
+	bool  backoff_started = false;
+	std::chrono::steady_clock::time_point backoff_start;
+	std::chrono::steady_clock::time_point approach_start;          // para el tope de tiempo
+	// Verificacion: se pide al agente del concepto y se espera su veredicto, con tope de tiempo
+	// porque la primera vez tiene que cargar el modelo.
+	float verify_timeout_seconds;
+	std::chrono::steady_clock::time_point verify_wait_start;
+	bool  approach_started = false;
+	std::chrono::steady_clock::time_point approach_check_start;  // ventana de la traza de diagnostico
 	float photo_angular_step;     // radianes entre disparos
 	float photo_settle_seconds;   // parada en cada paso: es cuando dispara el agente del concepto
 	float photo_spin_speed;       // rad/s del giro

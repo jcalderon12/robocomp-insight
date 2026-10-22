@@ -55,6 +55,8 @@ Follow_hold_seconds = 3.0
 
 # Misión de fotos (concept_robot::photo_spin()): el giro y las paradas. La captura y el
 # etiquetado los hace el agente del concepto, que dispara en cada parada.
+Photo_approach_distance = 2200.0
+Verify_timeout_seconds = 30.0
 Photo_angular_step = 5.0
 Photo_settle_seconds = 0.7
 Photo_spin_speed_factor = 0.1
