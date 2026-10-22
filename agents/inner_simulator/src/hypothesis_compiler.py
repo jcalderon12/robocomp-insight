@@ -25,8 +25,9 @@ NOMINAL_HYPOTHESIS_ID = "__nominal__"
 # grid in millimeters, as causes.json writes them.
 M_TO_MM = 1000.0
 
-# CauseBump sweeps a grid over the proposed range (one repetition per cell).
-BUMP_GRID_DIMENSIONS = [3, 3]
+# CauseBump sweeps a grid over the proposed range (one repetition per cell): 144 cells. Only a catalog of
+# fixed bumps uses it; production's catalog has the dome of unknown size, with episode_scene.DEFAULT_REPETITIONS.
+BUMP_GRID_DIMENSIONS = [12, 12]
 
 # Spawned objects rest on the floor. The asset meshes start at z = 0, and the
 # middle of the proposed z range (e.g. 25 mm for [0, 0.05]) left every bump
@@ -199,11 +200,13 @@ def compile_batch(batch: dict[str, Any], catalog_path: Optional[Path] = None) ->
     in 'skipped', never silently dropped.
     """
     catalog = load_catalog(catalog_path)
+    # The nominal replay is deterministic: one repetition is its exact likelihood.
     entries: list[dict[str, Any]] = [
         {
             "hypothesis_id": NOMINAL_HYPOTHESIS_ID,
             "title": "Nominal run (null hypothesis)",
-            "cause": {"name": "none"},
+            "mechanism": "nominal",
+            "cause": {"name": "none", "num_of_repetitions": 1},
         }
     ]
     skipped: list[dict[str, Any]] = []
@@ -227,6 +230,8 @@ def compile_batch(batch: dict[str, Any], catalog_path: Optional[Path] = None) ->
             {
                 "hypothesis_id": hypothesis_id,
                 "title": str(hypothesis.get("title", "")),
+                # The verdict gives every mechanism the same prior (docs_output/diseno/veredicto.md).
+                "mechanism": str(hypothesis.get("mechanism") or cause_payload["name"]),
                 "cause": cause_payload,
             }
         )
@@ -236,6 +241,47 @@ def compile_batch(batch: dict[str, Any], catalog_path: Optional[Path] = None) ->
         "entries": entries,
         "skipped": skipped,
     }
+
+
+def _intersect(span: list[float], bounds: list[float]) -> Optional[list[float]]:
+    low, high = max(float(span[0]), float(bounds[0])), min(float(span[1]), float(bounds[1]))
+    return [low, high] if low <= high else None
+
+
+def anchor_to_footprint(compiled: dict[str, Any], footprint: Optional[dict]) -> dict[str, Any]:
+    """Keep the obstacles of the batch where they can touch the robot during the anomaly interval:
+    their area intersected with the footprint the robot covered then (episode_scene.anomaly_footprint).
+    The semantic memory grounded the area in the path segment the hypothesis anchors to, which reaches
+    seconds before the interval; an obstacle the robot only met before it cannot have acted in it. An
+    obstacle whose area does not reach the footprint goes to 'skipped'. Without a footprint, nothing
+    changes. docs_output/diseno/veredicto.md, 3.3."""
+    if not footprint:
+        return compiled
+    entries, skipped = [], list(compiled.get("skipped", []))
+    for entry in compiled["entries"]:
+        cause = dict(entry["cause"])
+        reason = None
+        if cause.get("name") == "bump_scaled":
+            x, y = _intersect(cause["area_x"], footprint["x"]), _intersect(cause["area_y"], footprint["y"])
+            if x is None or y is None:
+                reason = "Its area does not reach where the robot was during the anomaly interval."
+            else:
+                cause["area_x"], cause["area_y"] = x, y
+        elif cause.get("name") == "bump":
+            spans = {}
+            for axis in ("x", "y"):
+                origin, width = cause[f"bump_{axis}_origin"], cause[f"bump_{axis}_range"] / M_TO_MM
+                spans[axis] = _intersect([origin - width / 2.0, origin + width / 2.0], footprint[axis])
+            if spans["x"] is None or spans["y"] is None:
+                reason = "Its position range does not reach where the robot was during the anomaly interval."
+            else:
+                for axis, (low, high) in spans.items():
+                    cause[f"bump_{axis}_origin"], cause[f"bump_{axis}_range"] = (low + high) / 2.0, (high - low) * M_TO_MM
+        if reason:
+            skipped.append({"hypothesis_id": entry["hypothesis_id"], "reason": reason})
+            continue
+        entries.append({**entry, "cause": cause})
+    return {**compiled, "entries": entries, "skipped": skipped}
 
 
 def main():

@@ -61,6 +61,8 @@ import matplotlib
 import pandas as pd
 import time
 import subprocess
+import hashlib
+import zlib
 from dtaidistance import dtw
 
 sys.path.append('/opt/robocomp/lib')
@@ -88,9 +90,12 @@ from src.episode_scene import (
     commanded_speed_history,
     episode_length_s,
     real_imu_history,
+    real_record,
 )
-from src.hypothesis_compiler import compile_batch
-from src.verdict import build_verdict, write_verdict, save_comparison_plots, save_real_imu_plot
+from src.hypothesis_compiler import anchor_to_footprint, compile_batch
+from src.verdict import (build_verdict, channels_to_json, save_comparison_plots, save_real_imu_plot,
+                         scene_channels, write_verdict)
+from src import search_rounds
 
 import pybullet as p
 import json
@@ -99,7 +104,7 @@ import numpy as np
 import locale
 import math
 
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from agent_generation.agent_generator import *
 
 from pybullet_imu import IMU
@@ -207,12 +212,14 @@ class SpecificWorker(GenericWorker):
         sim_cfg = configData.get("Simulation", {})
         self.sim_gui = bool(sim_cfg.get("Gui", False))
         self.sim_real_time = bool(sim_cfg.get("RealTime", False))
+        self.sim_processes = int(sim_cfg.get("Processes", 0)) or os.cpu_count() or 1
         # How long to wait for the semantic agent's batch before the static causes (see waiting_for_batch).
         self.batch_wait_s = float(sim_cfg.get("BatchWaitSeconds", BATCH_WAIT_DEFAULT_S))
         self.batch_wait_started = {}
 
         # Hypothesis-driven mode state (set when the semantic agent publishes a batch)
         self.hypotheses_compiled = None
+        self.hypotheses_batch = None
         self.hypotheses_path = None
         self.processed_hypotheses_paths = set()
         self.processed_episode_paths = set()
@@ -359,7 +366,16 @@ class SpecificWorker(GenericWorker):
     def writeSimulationScene(self) -> None:
        # Build the scene from the episodic recording; scene constants remain as fallback.
        self.logger.log("Writing simulation scene to sim_scene.json...", style="bold purple")
-       scene, info = build_simulation_scene(self.mem_api, ROBOT_POS, PROBLEM_POS)
+       # The anomaly interval comes from the episode the semantic memory built (the batch links it
+       # with its sha256); without a batch the scene applies the same rule to the recording.
+       scene, info = build_simulation_scene(self.mem_api, ROBOT_POS, PROBLEM_POS,
+                                            episode_intervals=self.episode_intervals())
+       self.logger.log(f"Simulation seeded at {scene['start_time_s']:.2f} s, anomaly interval "
+                       f"{scene['anomaly_interval']} ({info['anomaly_interval_source']}).", style="purple")
+       if self.hypotheses_compiled is not None:
+           # Obstacles only where they can touch the robot during the anomaly interval.
+           self.hypotheses_compiled = anchor_to_footprint(self.hypotheses_compiled, scene.get("anomaly_footprint"))
+           self.causes_data = [entry["cause"] for entry in self.hypotheses_compiled["entries"]]
        self.logger.log(f"Scene poses reconstructed from episode: {info['pose_sources']}", style="purple")
        if len(info["effect_times"]) > 1:
            self.logger.log(
@@ -377,6 +393,23 @@ class SpecificWorker(GenericWorker):
        file.close()
 
 
+    def episode_intervals(self) -> list | None:
+        """The intervals of the episode the current batch was generated from (contract 1), read from
+        the episode file the batch links, if its sha256 matches; None otherwise."""
+        episode = (getattr(self, "hypotheses_batch", None) or {}).get("episode") or {}
+        path = episode.get("path")
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            content = open(path, "rb").read()
+            if episode.get("sha256") and hashlib.sha256(content).hexdigest() != episode["sha256"]:
+                self.logger.log(f"Episode file {path} does not match the batch's sha256; not used.", style="yellow")
+                return None
+            return json.loads(content).get("intervals")
+        except Exception as e:
+            self.logger.log(f"Cannot read the episode file {path}: {e}", style="yellow")
+            return None
+
     def loadCausesJson(self) -> None:
         """Load the causes JSON file and store it in self.causes_data."""
         try:
@@ -392,6 +425,7 @@ class SpecificWorker(GenericWorker):
         """Compile the hypotheses batch published on the intention node of the work
         graph. False means there is nothing new: fall back to the static causes.json."""
         self.hypotheses_compiled = None
+        self.hypotheses_batch = None
         try:
             unexplained_node = self.graphs["work"].get_node(UNEXPLAINED_NODE)
         except Exception as e:
@@ -417,6 +451,7 @@ class SpecificWorker(GenericWorker):
 
         self.hypotheses_compiled = compiled
         self.hypotheses_path = hypotheses_path
+        self.hypotheses_batch = batch
         self.causes_data = [entry["cause"] for entry in compiled["entries"]]
         self.logger.log(
             f"Hypotheses batch '{compiled.get('case_id', '')}' compiled: "
@@ -446,6 +481,7 @@ class SpecificWorker(GenericWorker):
         if self.hypotheses_path:
             self.processed_hypotheses_paths.add(self.hypotheses_path)
         self.hypotheses_compiled = None
+        self.hypotheses_batch = None
         self.hypotheses_path = None
         self.state = "IDLE"
 
@@ -487,54 +523,19 @@ class SpecificWorker(GenericWorker):
                     if self.hypotheses_compiled is None:
                         self.loadCausesJson()
 
-                    # Launch subprocesses for simulation
-                    self.logger.log("Launching subprocesses...", style="bold blue")                
-                    pids = []
-                    historicals = {}
-                    # Watch the simulations in the PyBullet GUI (one window per cause)
-                    # when enabled in etc/config; headless otherwise (see __init__).
-                    gui_flags = []
-                    if self.sim_gui:
-                        gui_flags = ["--gui"]
-                        if self.sim_real_time:
-                            gui_flags.append("--real_time")
-                    for cause in self.causes_data:
-                        rpipe, wpipe = os.pipe()
-                        json_data = {"cause": cause}
-                        json_data = json.dumps(json_data)
-                        pids.append([subprocess.Popen([str(sys.executable), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe), *gui_flags], pass_fds=(wpipe,)), rpipe])
-                        # Close wpipe descriptor to prevent deadlocks
-                        os.close(wpipe)
-                    
-                    # Wait for subprocesses and collect pipe data
-                    self.logger.log("Waiting for subprocesses...", style="blue")
-                    while (True):
-                        # pid[0] is the Popen class itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
-                        for pid in pids:
-                            if pid[0] not in historicals:
-                                pipe = os.fdopen(pid[1])
-                                self.logger.log(f"Now reading pipe of process {pid[0]}...", style="blue")
-                                historicals[pid[0]] = pipe.read()
-                                pipe.close()
-                                self.logger.log(f"Pipe for {pid[0]} has been read!")
-                                
-                        if len(historicals) == len(pids): break
-
-                    # Transform pipe data from JSON string to dictionary
-                    for pid in pids:
-                        if pid[0] in historicals and historicals[pid[0]] is not None and historicals[pid[0]] != "":
-                            historicals[pid[0]] = json.loads(historicals[pid[0]])
-                        else:
-                            raise ValueError(f"There was no data received from finalized process {pid[0]} or data was empty! Did the process crash?")
-        
-                    self.logger.log(f"Received historicals from {len(historicals)} simulations.", style="bold blue")
-                    i = 0
-                    for h in historicals:
-                        self.logger.log(f"    Historical {i} recordings: {len(historicals[h])}", style=" blue")
-                        i += 1
+                    # A batch of the semantic memory, headless, on a seeded episode scene: the fast
+                    # repetitions, scored in the simulator processes (docs_output/resultados/41).
+                    scene_data = self.sim_scene.model_dump()
+                    fast = (self.hypotheses_compiled is not None and not self.sim_gui
+                            and scene_data.get("observed_effect_time") is not None and scene_data.get("anomaly_interval"))
+                    record = real_record(self.mem_api) if self.hypotheses_compiled is not None else None
+                    if fast:
+                        ordered_historicals = self.run_fast_simulations(record, scene_data)
+                    else:
+                        ordered_historicals = self.run_simulations()
 
                     # Convert episodic memory history to IMU history given one of the historicals ts list as an example.
-                    list_of_ts = historicals[pids[0][0]][0][HISTORY][TIMESTAMP]
+                    list_of_ts = ordered_historicals[0][0][HISTORY][TIMESTAMP]
                     self.convert_episodic_to_imu_history(list_of_ts)
                     print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
 
@@ -549,7 +550,7 @@ class SpecificWorker(GenericWorker):
 
                         # ---- score EVERY recording of EVERY cause (normalized DTW), in parallel ----
                         cause_defs = list(self.causes_data)
-                        recordings_by_cause = [historicals[pids[i][0]] for i in range(len(pids))]
+                        recordings_by_cause = ordered_historicals
                         with ProcessPoolExecutor(max_workers=2) as executor:
                             score_futures = [executor.submit(score_all_recordings_worker, self.imu_history, recs)
                                              for recs in recordings_by_cause]
@@ -626,25 +627,26 @@ class SpecificWorker(GenericWorker):
                         skipped = self.hypotheses_compiled["skipped"]
                         case_id = self.hypotheses_compiled.get("case_id", "") or "hypotheses_case"
 
-                        ordered_historicals = [historicals[pid[0]] for pid in pids]
                         verdict = build_verdict(
                             case_id=case_id,
-                            real_imu=self.imu_history,
+                            record=record,
                             entries=entries,
                             historicals=ordered_historicals,
-                            # The verdict compares the recorded bottle heights (mm); the scene is in meters.
-                            initial_bottle_z=self.sim_scene.bottle_position[2] * M_TO_MM,
+                            scene=self.sim_scene.model_dump(),
                             skipped=skipped,
-                            observed_effect_time=self.observed_effect_time,
                         )
                         verdict_path = os.path.abspath(write_verdict(verdict, "logs/verdicts"))
                         save_comparison_plots(self.imu_history, verdict["hypotheses"], ordered_historicals, plots_dir)
 
                         accepted_id = verdict.get("accepted_hypothesis_id")
+                        top_id = verdict.get("most_probable_hypothesis_id")
+                        top = next((h for h in verdict["hypotheses"] if h["hypothesis_id"] == top_id), {})
                         self.logger.log(
                             f"Verdict written to {verdict_path}. Accepted hypothesis: {accepted_id}. "
-                            f"Nominal score: {verdict.get('nominal_best_score')}. "
-                            f"Window: {verdict['anomaly_window']}.",
+                            f"Most probable: {top_id} (posterior {top.get('posterior')}). "
+                            f"Robust to the Monte Carlo error: {verdict.get('acceptance_robust')}. "
+                            f"90 % set: {[m['mechanism'] for m in verdict['credible_set']['mechanisms']]}. "
+                            f"Anomaly interval: {verdict.get('anomaly_interval')}.",
                             style="bold green" if accepted_id else "bold yellow",
                         )
                         if verdict.get("abstention_reason"):
@@ -677,6 +679,106 @@ class SpecificWorker(GenericWorker):
         return True
     
         
+
+    def run_simulations(self) -> list:
+        """One causes_simulator process per cause, every repetition with its history: the static causes,
+        and a batch watched in the PyBullet GUI. Returns the repetitions of every cause, in order."""
+        self.logger.log("Launching subprocesses...", style="bold blue")
+        pids = []
+        historicals = {}
+        # Watch the simulations in the PyBullet GUI (one window per cause)
+        # when enabled in etc/config; headless otherwise (see __init__).
+        gui_flags = []
+        if self.sim_gui:
+            gui_flags = ["--gui"]
+            if self.sim_real_time:
+                gui_flags.append("--real_time")
+        for cause in self.causes_data:
+            rpipe, wpipe = os.pipe()
+            json_data = {"cause": cause}
+            json_data = json.dumps(json_data)
+            pids.append([subprocess.Popen([str(sys.executable), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe), *gui_flags], pass_fds=(wpipe,)), rpipe])
+            # Close wpipe descriptor to prevent deadlocks
+            os.close(wpipe)
+
+        # Wait for subprocesses and collect pipe data
+        self.logger.log("Waiting for subprocesses...", style="blue")
+        while (True):
+            # pid[0] is the Popen class itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
+            for pid in pids:
+                if pid[0] not in historicals:
+                    pipe = os.fdopen(pid[1])
+                    self.logger.log(f"Now reading pipe of process {pid[0]}...", style="blue")
+                    historicals[pid[0]] = pipe.read()
+                    pipe.close()
+                    self.logger.log(f"Pipe for {pid[0]} has been read!")
+
+            if len(historicals) == len(pids): break
+
+        # Transform pipe data from JSON string to dictionary
+        for pid in pids:
+            if pid[0] in historicals and historicals[pid[0]] is not None and historicals[pid[0]] != "":
+                historicals[pid[0]] = json.loads(historicals[pid[0]])
+            else:
+                raise ValueError(f"There was no data received from finalized process {pid[0]} or data was empty! Did the process crash?")
+
+        self.logger.log(f"Received historicals from {len(historicals)} simulations.", style="bold blue")
+        i = 0
+        for h in historicals:
+            self.logger.log(f"    Historical {i} recordings: {len(historicals[h])}", style=" blue")
+            i += 1
+        return [historicals[pid[0]] for pid in pids]
+
+    def run_fast_simulations(self, record: dict, scene: dict) -> list:
+        """The batch's causes searched in rounds (search_rounds.search: draws from each cause's prior, then rounds
+        around the best ones, with importance weights), every repetition through causes_simulator --channels
+        (doFastSimulations), Simulation.Processes processes at a time, each scoring its repetitions against the
+        real channels of the verdict. Returns the repetitions of every cause, in order: the nominal and each
+        chunk's best keep their history (docs_output/resultados/41, 46)."""
+        work = os.path.abspath("logs/search")
+        os.makedirs(work, exist_ok=True)
+        channels_path = os.path.abspath("src/sim_channels.json")
+        with open(channels_path, "w") as f:
+            json.dump(channels_to_json(scene_channels(record, scene)), f)
+        case_id = (self.hypotheses_compiled or {}).get("case_id") or "case"
+        seed = zlib.crc32(case_id.encode()) % (2 ** 31)
+
+        def run(spec):
+            rpipe, wpipe = os.pipe()
+            command = [str(sys.executable), "src/causes_simulator.py", "-c", json.dumps({"cause": spec["cause"]}),
+                       "-s", "src/sim_scene.json", "-p", str(wpipe), "--channels", channels_path,
+                       "--first", str(spec["first"]), "--count", str(spec["count"])]
+            if spec.get("seed") is not None:
+                command += ["--seed", str(spec["seed"])]
+            if spec.get("draws") is not None:
+                draws_path = os.path.join(work, f"draws_{os.getpid()}_{id(spec)}.json")
+                with open(draws_path, "w") as f:
+                    json.dump(spec["draws"], f)
+                command += ["--draws", draws_path]
+            process = subprocess.Popen(command, pass_fds=(wpipe,))
+            os.close(wpipe)
+            with os.fdopen(rpipe) as pipe:
+                data = pipe.read()
+            process.wait()
+            if spec.get("draws") is not None:
+                os.remove(draws_path)
+            if not data:
+                raise ValueError(f"No data from cause {spec['index']}, repetitions {spec['first']}-"
+                                 f"{spec['first'] + spec['count'] - 1}: did the process crash?")
+            return json.loads(data)
+
+        def launch(specs):
+            with ThreadPoolExecutor(max_workers=self.sim_processes) as pool:
+                return list(pool.map(run, specs))
+
+        started = time.time()
+        ordered = search_rounds.search(
+            self.causes_data,
+            lambda cause: int(cause.get("num_of_repetitions") or scene["num_of_repetitions"]),
+            launch, self.sim_processes, seed, log=lambda line: self.logger.log(line, style="blue"))
+        self.logger.log(f"{sum(len(r) for r in ordered)} repetitions of {len(ordered)} causes in "
+                        f"{time.time() - started:.1f} s ({self.sim_processes} processes).", style="bold blue")
+        return ordered
 
     def startup_check(self) -> None:
         """Perform startup checks and quit the application after a short delay."""

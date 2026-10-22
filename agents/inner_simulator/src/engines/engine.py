@@ -23,8 +23,8 @@ class Engine(ABC):
         pass
 
     @abstractmethod
-    def apply_external_force(self, target_name, force_vector):
-        "Apply an external force vector (world frame, Newtons) to a named body for the next simulation step"
+    def apply_external_force(self, target_name, force_vector, height=None):
+        "Apply an external force vector (world frame, Newtons) to a named body for the next simulation step, at its centre of mass or `height` m above its base origin"
         pass
 
     @abstractmethod

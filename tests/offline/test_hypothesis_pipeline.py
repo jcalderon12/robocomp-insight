@@ -450,12 +450,13 @@ def check_scaled_dome_when_the_catalog_has_it(episodes):
     assert grounded and normalized == blueprint, reason
     assert [h["status"] for h in bump(synthetic_episode(), budget=3)["hypotheses"]] == ["over_budget"]
 
-    # The simulator's cause draws 36 domes within the ranges, each reaching the area with its edge.
+    # The simulator's cause draws as many domes as the catalog's repetitions (4,000) within the ranges,
+    # each reaching the area with its edge.
     area = blueprint["parameters"]["area"]
     payload = compile_batch(batch)["entries"][1]["cause"]
     assert payload["name"] == "bump_scaled" and Path(payload["mesh_file"]).exists(), payload
     cause = CauseBumpScaled(**payload)
-    assert cause.num_of_repetitions == 36 and len(cause.samples) == 36
+    assert cause.num_of_repetitions == 4000 and len(cause.samples) == 4000
     for sample in cause.samples:
         assert 0.1 <= sample["diameter_m"] <= 1.0 and 0.01 <= sample["height_m"] <= 0.1, sample
         half = sample["diameter_m"] / 2

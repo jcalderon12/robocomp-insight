@@ -34,8 +34,13 @@ Period.Emergency = 500
 # Gui: open one PyBullet window per cause during "Search Problem Cause" to watch
 #      the simulations. false = headless (faster, runs every cause in parallel).
 #      RealTime: slow each run down to wall-clock speed (only with Gui).
-Simulation.Gui = true
+#      With Gui every cause runs all its repetitions (4,000 since 2026-10-21) in its window, with
+#      the whole simulation each: only for a look, not for a verdict in reasonable time.
+Simulation.Gui = false
 Simulation.RealTime = false
+# Processes: simulator processes at a time for a batch of the semantic memory (its repetitions run in
+#      chunks, each scored in its process; docs_output/resultados/41). 0 = as many as cores.
+Simulation.Processes = 0
 # Seconds to wait, once the recording is closed, for the semantic agent's hypotheses batch
 # while its "unexplained" intention node exists; past them, the static causes (src/causes.json).
 Simulation.BatchWaitSeconds = 120

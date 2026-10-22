@@ -1,8 +1,10 @@
-"""Offline end-to-end test: verdict with injected ground truth (slow, ~1-2 min).
+"""Offline end-to-end test: the verdict with injected ground truth (~1 min).
 
-A repetition of the 'external_force' cause plays the role of the real episode;
-the verdict must accept the external_force hypothesis and reject the others,
-and the semantic ingestor must turn the verdict into causal triples.
+A simulated push on the robot plays the real episode: its IMU and path are the record. The hypotheses
+are the nominal, a bump, a blocked wheel, a push on the robot (from ranges around the true one, as the
+memory grounds it) and a slippery patch, all simulated by the causes simulator. The verdict
+(docs_output/diseno/veredicto.md) must give the push the highest posterior and accept it, and the
+semantic ingestor must turn the verdict into causal triples.
 
 Run from the repo root:  python3 tests/offline/test_verdict_ground_truth.py
 (requires pybullet; runs headless)
@@ -43,27 +45,32 @@ SCENE = {
     "bottle_orientation": [0.0, 0.0, 0.0, 0.0],
 }
 
-# A gentle push (~5 N for 0.2 s, ~1 N*s) that knocks the bottle off and leaves it
-# about 1 m from the robot. A stronger one (22 N for 0.4 s) flings it ~15 m, which
-# the verdict now discards as physically implausible (MAX_LANDING_DISTANCE_MM).
+# The true push: 150 N to the robot's left for 0.2 s from 1.6 s, at a person's hand height. The
+# robot drives along world +x, so its left is world +y.
 GROUND_TRUTH_CAUSE = {
-    "name": "external_force", "force_target": "bottle",
-    "force_window_start": 0.4, "force_window_end": 0.45,
-    "force_x_range": 1.0, "force_y_range": 1.0, "force_z_range": 0.0,
-    "force_x_origin": 5.0, "force_y_origin": 0.0, "force_z_origin": 0.0,
+    "name": "external_force", "force_target": "robot",
+    "force_window_start": 0.4, "force_window_end": 0.45, "force_duration_range_s": [0.2, 0.2],
+    "force_x_range": 0.0, "force_y_range": 0.0, "force_z_range": 0.0,
+    "force_x_origin": 0.0, "force_y_origin": 150.0, "force_z_origin": 0.0,
 }
+# What the verdict compares on: the anomaly interval, and the effect at its end.
+VERDICT_SCENE = {"anomaly_interval": [1.4, 3.0], "start_time_s": 0.0, "observed_effect_time": 3.0}
 
 ENTRIES = [
-    {"hypothesis_id": NOMINAL_HYPOTHESIS_ID, "title": "Nominal", "cause": {"name": "none"}},
-    {"hypothesis_id": "EXT_bump", "title": "Bump", "cause": {
+    {"hypothesis_id": NOMINAL_HYPOTHESIS_ID, "title": "Nominal", "mechanism": "nominal",
+     "cause": {"name": "none", "num_of_repetitions": 1}},
+    {"hypothesis_id": "EXT_bump", "title": "Bump", "mechanism": "obstacle_traversed", "cause": {
         "name": "bump", "bump_file": str(REPO / "etc/URDFs/bump/bump_100x5cm.urdf"),
         "bump_x_range": 600.0, "bump_y_range": 200.0, "bump_z_range": 0.0,
-        "bump_x_origin": -2.9, "bump_y_origin": -0.3, "bump_z_origin": 0.004,
+        "bump_x_origin": -2.9, "bump_y_origin": -0.3, "bump_z_origin": 0.001,
         "grid_dimensions": [2, 2]}},
-    {"hypothesis_id": "INT_wheel", "title": "Wheel", "cause": {
-        "name": "wheel", "wheel_wheel": "R", "wheel_min": 0.3, "wheel_max": 0.6}},
-    {"hypothesis_id": "EXT_force", "title": "Force on bottle", "cause": dict(GROUND_TRUTH_CAUSE)},
-    {"hypothesis_id": "EXT_friction", "title": "Slippery floor", "cause": {
+    {"hypothesis_id": "INT_wheel", "title": "Wheel", "mechanism": "wheel_failure", "cause": {
+        "name": "wheel", "wheel_wheel": "R", "wheel_min": 0.35, "wheel_max": 0.6}},
+    {"hypothesis_id": "EXT_push", "title": "Push on the robot", "mechanism": "robot_push", "cause": {
+        "name": "external_force", "force_target": "robot", "force_window_start": 0.35, "force_window_end": 0.5,
+        "force_x_range": 40.0, "force_y_range": 100.0, "force_z_range": 0.0,
+        "force_x_origin": 0.0, "force_y_origin": 150.0, "force_z_origin": 0.0}},
+    {"hypothesis_id": "EXT_friction", "title": "Slippery floor", "mechanism": "slippery_floor", "cause": {
         "name": "friction", "friction_target": "floor", "friction_min": 0.02, "friction_max": 0.2}},
 ]
 
@@ -89,27 +96,32 @@ def run_cause(payload, scene_path, logger, reps):
 
 
 def main():
+    import random
+    random.seed(0)
     logger = Logger(str(WORKDIR / "test.log"))
     scene_path = WORKDIR / "scene.json"
 
-    truth = run_cause(GROUND_TRUTH_CAUSE, scene_path, logger, reps=1)[0]
-    assert truth["bottle_position"][2] < 400.0, "ground truth should knock the bottle down"
+    truth = run_cause(GROUND_TRUTH_CAUSE, scene_path, logger, reps=1)[0]["history"]
+    record = {"accelerometer": {"timestamp": truth["timestamp"], "values": truth["accelerometer"]},
+              "gyroscope": {"timestamp": truth["timestamp"], "values": truth["gyroscope"]},
+              "path": {"timestamp": truth["timestamp"], "xy": truth["position"]}}
 
-    historicals = [run_cause(e["cause"], scene_path, logger, reps=4) for e in ENTRIES]
-    verdict = build_verdict(
-        case_id="ground_truth_test",
-        real_imu=truth["history"],
-        entries=ENTRIES,
-        historicals=historicals,
-        initial_bottle_z=SCENE["bottle_position"][2] * 1000.0,   # the verdict reads heights in mm
-    )
+    historicals = [run_cause(e["cause"], scene_path, logger, reps=36) for e in ENTRIES]
+    # The kernel width is the simulator's model error. Here the record is itself a simulation, so
+    # there is none, and the width is small; production uses the one calibrated against Webots.
+    import src.verdict as verdict_module
+    verdict_module.EPS = 0.5
+    verdict = build_verdict(case_id="ground_truth_test", record=record, entries=ENTRIES,
+                            historicals=historicals, scene={**SCENE, **VERDICT_SCENE})
     verdict_path = write_verdict(verdict, str(WORKDIR))
 
     for h in verdict["hypotheses"]:
-        best_effect = f"{h['best_effect_score']:.3f}" if h["best_effect_score"] is not None else "-"
-        print(f"  {h['hypothesis_id']:>13}: best={h['best_score']:.3f} best_effect={best_effect} "
-              f"effect_rate={h['effect_rate']:.2f} accepted={h['accepted']}")
-    assert verdict["accepted_hypothesis_id"] == "EXT_force", verdict["accepted_hypothesis_id"]
+        print(f"  {h['hypothesis_id']:>13}: posterior={h['posterior']:.3f} distance={h['distance']} "
+              f"reps={h['repetitions']} accepted={h['accepted']}")
+    assert verdict["accepted_hypothesis_id"] == "EXT_push", (verdict["accepted_hypothesis_id"], verdict["abstention_reason"])
+    push = next(h for h in verdict["hypotheses"] if h["hypothesis_id"] == "EXT_push")
+    # The weighted force points to the robot's left, as the true one.
+    assert push["parameter_estimate"]["random_range_coordinates.1"]["mean"] > 100.0, push["parameter_estimate"]
 
     # Semantic side: verdict -> causal triples
     sys.path.insert(0, str(REPO / "agents" / "semantic"))

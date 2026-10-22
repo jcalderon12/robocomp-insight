@@ -1,10 +1,13 @@
-"""Offline test: scene reconstruction and verdict safeguards (~10 s).
+"""Offline test: scene reconstruction and verdict (~15 s).
 
   * the replay heading: the DSR robot frame is +y-forward, the URDF +x-forward;
   * the observed effect (robot->bottle RT deletion) and the horizon cut after it;
-  * the anomaly window anchored on the observed effect, not on a later idle spike;
-  * the verdict: abstention when the nominal run reproduces the effect, discarded
-    blown-up repetitions and implausible landings, deterministic tie-break;
+  * the anomaly interval (the episode's, or the same rule on the recording), the simulation seeded
+    from the recorded state before it, and the footprint the robot covered in it;
+  * the verdict (docs_output/diseno/veredicto.md): one discrepancy for every hypothesis, posterior
+    with the same prior per mechanism, acceptance at P >= 0.9 or abstention (below the threshold,
+    the nominal the most probable, the simulation not faithful), invalid repetitions counted as 0,
+    the tolerated time shift, and the weighted parameters;
   * the semantic ingestor refusing to consolidate an abstained verdict;
   * the causes simulator following a rotation profile and recording the fall;
   * the episode clock: the rate fitted from the recording, and the simulator
@@ -26,8 +29,12 @@ os.chdir(INNER)
 sys.path.insert(0, str(INNER))
 sys.path.insert(0, str(INNER / "src"))
 
+import numpy as np
+
 from src.episode_scene import (
     DEFAULT_TRAY_OFFSET,
+    ROBOT_FOOTPRINT_RADIUS_M,
+    SEED_LEAD_S,
     URDF_BASE_Z,
     build_simulation_scene,
     EFFECT_HORIZON_MARGIN_S,
@@ -38,10 +45,12 @@ from src.episode_scene import (
     simulation_horizon,
     to_urdf_orientation,
 )
+import src.verdict as verdict_module
 from src.verdict import (
-    ABSTAIN_NOMINAL_REPRODUCES_EFFECT,
+    ABSTAIN_BELOW_THRESHOLD,
+    ABSTAIN_NOMINAL,
+    ABSTAIN_NOT_FAITHFUL,
     NOMINAL_HYPOTHESIS_ID,
-    anomaly_window,
     build_verdict,
     write_verdict,
 )
@@ -169,100 +178,146 @@ def test_observed_effect_and_horizon():
     assert scene["simulation_length"] == min(19.9, times[0] + EFFECT_HORIZON_MARGIN_S)
 
 
-def _imu(spikes: dict[float, float], length_s: float = 50.0, dt: float = 0.1) -> dict:
-    times = [round(i * dt, 3) for i in range(int(length_s / dt))]
-    acc = [[0.0, 0.0, 9.81 + spikes.get(t, 0.0)] for t in times]
-    return {"timestamp": times, "accelerometer": acc, "gyroscope": [[0.0, 0.0, 0.0]] * len(times)}
+def test_anomaly_interval_and_seed():
+    api = FakeMemApi(yaw_deg=-90.0, deletions_s=[14.6])
+    # The episode's interval, when the semantic memory gives it.
+    intervals = [{"id": "Interval_baseline", "start_s": 1.0, "end_s": 6.0}, {"id": "Interval_fall", "start_s": 6.0, "end_s": 14.6}]
+    scene, info = build_simulation_scene(api, [-3.7, -0.3, 0.0], [0.0, 0.0, 0.001], episode_intervals=intervals)
+    assert info["anomaly_interval_source"] == "episode" and scene["anomaly_interval"] == [6.0, 14.6]
+    # Seeded SEED_LEAD_S before it, at the start of that step of the recorded world, from the recorded
+    # robot (the pose of 0 s, the last one before 4.5 s), at the recorded speed over the clock rate; the
+    # bottle on the tray.
+    step = scene["world_time_step_s"] / scene["clock_rate"]
+    assert 6.0 - SEED_LEAD_S - step < scene["start_time_s"] <= 6.0 - SEED_LEAD_S + 1e-9, scene["start_time_s"]
+    assert abs(scene["start_time_s"] / step - round(scene["start_time_s"] / step)) < 1e-6
+    assert scene["initial_robot_position"][:2] == [-3.7, -0.3]
+    # In the interval the robot was at its pose of 8 s, (-0.4; -0.3): the footprint is that plus its reach.
+    footprint = scene["anomaly_footprint"]
+    assert all(abs(a - b) < 1e-9 for a, b in zip(footprint["x"], [-0.4 - ROBOT_FOOTPRINT_RADIUS_M, -0.4 + ROBOT_FOOTPRINT_RADIUS_M])), footprint
+    assert all(abs(a - b) < 1e-9 for a, b in zip(footprint["y"], [-0.3 - ROBOT_FOOTPRINT_RADIUS_M, -0.3 + ROBOT_FOOTPRINT_RADIUS_M])), footprint
+    # Without the episode, the same rule on the recording; without an observed effect, no seed.
+    scene, info = build_simulation_scene(api, [-3.7, -0.3, 0.0], [0.0, 0.0, 0.001])
+    assert info["anomaly_interval_source"] == "recording" and abs(scene["anomaly_interval"][1] - 14.6) < 1e-6
+    scene, _ = build_simulation_scene(FakeMemApi(yaw_deg=-90.0, deletions_s=[]), [-3.7, -0.3, 0.0], [0.0, 0.0, 0.001])
+    assert scene["start_time_s"] == 0.0 and scene["anomaly_interval"] is None
 
 
-def test_window_anchored_on_observed_effect():
-    # The fall shakes the IMU at 12 s; a bigger, unrelated spike happens at 40 s
-    # while the robot waits stopped (episode 24092026_133323).
-    imu = _imu({12.0: 3.0, 40.0: 6.0})
-    start, end, source = anomaly_window(imu, observed_effect_time=12.4)
-    assert source == "imu_peak_near_observed_effect" and abs((start + end) / 2 - 12.0) < 1e-6, (start, end)
-    start, end, source = anomaly_window(imu)
-    assert source == "imu_peak" and abs((start + end) / 2 - 40.0) < 1e-6, (start, end)
-    # No IMU activity near the effect: centred on the observed instant.
-    start, end, source = anomaly_window(_imu({40.0: 6.0}), observed_effect_time=12.4)
-    assert source == "observed_effect_time" and abs((start + end) / 2 - 12.4) < 1e-6, (start, end)
+# --------------------------------------------------------------------------- #
+# the verdict on synthetic records
+# --------------------------------------------------------------------------- #
+G = 9.81
+DT = 0.01
 
 
-def _repetition(imu, bottle_mm, fall_time=None, robot_at_fall=None, robot_final=(0.0, 0.0, 30.0)):
-    return {"history": imu, "generated_instances": {}, "bottle_position": list(bottle_mm),
-            "fall_time": fall_time, "robot_position_at_fall": list(robot_at_fall) if robot_at_fall else None,
-            "robot_final_position": list(robot_final)}
+def _signal(spike_at=None, spike=10.0, width=0.3, length=20.0, axis=1):
+    """An IMU record: gravity on z, and a forward acceleration spike."""
+    times = np.round(np.arange(0.0, length, DT), 4)
+    acc = np.tile([0.0, 0.0, G], (times.size, 1))
+    if spike_at is not None:
+        acc[(times >= spike_at) & (times < spike_at + width), axis] += spike
+    gyro = np.zeros((times.size, 3))
+    gyro[:, 2] = 0.01 * np.sin(times)
+    xy = np.column_stack([0.5 * times, np.full(times.size, -0.3)])
+    return times, acc, gyro, xy
 
 
-ENTRIES = [
-    {"hypothesis_id": NOMINAL_HYPOTHESIS_ID, "title": "Nominal", "cause": {"name": "none"}},
-    {"hypothesis_id": "B_late", "title": "", "cause": {"name": "bump"}},
-    {"hypothesis_id": "A_early", "title": "", "cause": {"name": "bump"}},
-]
-UPRIGHT = (0.0, 0.0, 780.0)
-FALLEN_NEAR = (500.0, 0.0, 25.0)
+def _record(spike_at=12.0, **kw):
+    times, acc, gyro, xy = _signal(spike_at, **kw)
+    return {"accelerometer": {"timestamp": times.tolist(), "values": acc.tolist()},
+            "gyroscope": {"timestamp": times.tolist(), "values": gyro.tolist()},
+            "path": {"timestamp": times.tolist(), "xy": xy.tolist()}}
 
 
-def test_verdict_safeguards():
-    imu = _imu({12.0: 3.0}, length_s=20.0)
-    nominal = [_repetition(imu, UPRIGHT)]
+def _repetition(spike_at=None, effect=None, **kw):
+    times, acc, gyro, xy = _signal(spike_at, **kw)
+    return {"history": {"timestamp": times.tolist(), "accelerometer": acc.tolist(), "gyroscope": gyro.tolist(),
+                        "position": xy.tolist()},
+            "generated_instances": {"sample": {"x_m": 0.0 if spike_at is None else spike_at}},
+            "bottle_position": [0.0, 0.0, 780.0], "fall_time": None, "effect_time": effect,
+            "robot_position_at_fall": None, "robot_final_position": [0.0, 0.0, 30.0]}
 
-    # 1. Tie-break: identical IMU (identical score); the fall closer to the
-    #    observed instant wins, whatever the list order (both within the span).
-    late = [_repetition(imu, FALLEN_NEAR, fall_time=12.75, robot_at_fall=(0.0, 0.0, 30.0))]
-    early = [_repetition(imu, FALLEN_NEAR, fall_time=12.5, robot_at_fall=(0.0, 0.0, 30.0))]
-    verdict = build_verdict("tie", imu, ENTRIES, [nominal, late, early], initial_bottle_z=780.0,
-                            observed_effect_time=12.3)
-    assert verdict["accepted_hypothesis_id"] == "A_early", verdict["accepted_hypothesis_id"]
-    assert verdict["abstention_reason"] is None
 
-    # 2. Blown-up and implausible repetitions reproduce no effect.
-    through_floor = [_repetition(imu, (-15301.0, 3986.0, -280494.0), fall_time=5.0, robot_at_fall=(0.0, 0.0, 30.0))]
-    flung = [_repetition(imu, (9548.0, 7591.0, 24.0), fall_time=5.0, robot_at_fall=(0.0, 0.0, 30.0))]
-    verdict = build_verdict("physics", imu, ENTRIES, [nominal, through_floor, flung], initial_bottle_z=780.0,
-                            observed_effect_time=12.3)
+SCENE = {"anomaly_interval": [11.0, 13.0], "start_time_s": 9.5, "observed_effect_time": 13.0}
+
+
+def _entries(*mechanisms):
+    entries = [{"hypothesis_id": NOMINAL_HYPOTHESIS_ID, "title": "Nominal", "mechanism": "nominal", "cause": {"name": "none"}}]
+    for i, mechanism in enumerate(mechanisms):
+        entries.append({"hypothesis_id": f"H{i}", "title": mechanism, "mechanism": mechanism, "cause": {"name": "bump_scaled"}})
+    return entries
+
+
+def test_verdict():
+    # Synthetic records have no model error: a small kernel width, so that these checks test the
+    # verdict's mechanics and not the provisional width production uses until it is calibrated.
+    previous_eps = verdict_module.EPS
+    verdict_module.EPS = 0.5
+    try:
+        return _verdict_checks()
+    finally:
+        verdict_module.EPS = previous_eps
+
+
+def _verdict_checks():
+    record = _record(12.0)
+    nominal = [_repetition(None)]
+
+    # 1. The hypothesis whose repetitions reproduce the record wins and is accepted; the posteriors
+    #    add up to 1; the parameters are weighted by how well each repetition fits.
+    match = [_repetition(12.0), _repetition(12.05), _repetition(15.0)]
+    other = [_repetition(12.0, axis=0)]
+    verdict = build_verdict("match", record, _entries("obstacle_traversed", "robot_push"), [nominal, match, other], SCENE)
     by_id = {h["hypothesis_id"]: h for h in verdict["hypotheses"]}
-    assert by_id["B_late"]["invalid_repetitions"] == 1 and by_id["B_late"]["effect_rate"] == 0.0
-    assert by_id["A_early"]["implausible_effects"] == 1 and by_id["A_early"]["effect_rate"] == 0.0
-    assert verdict["accepted_hypothesis_id"] is None
+    assert abs(sum(h["posterior"] for h in verdict["hypotheses"]) - 1.0) < 1e-9
+    assert verdict["accepted_hypothesis_id"] == "H0" and verdict["abstention_reason"] is None, verdict
+    assert by_id["H0"]["posterior"] >= 0.9 and by_id["H0"]["passes_rule"] and by_id["H0"]["accepted"]
+    assert by_id["H0"]["bayes_factor_vs_nominal"] > 10
+    assert abs(by_id["H0"]["parameter_estimate"]["sample.x_m"]["mean"] - 12.0) < 0.1, by_id["H0"]["parameter_estimate"]
+    assert verdict["schema_version"] == "2.0" and verdict["anomaly_interval"]["seed_s"] == 9.5
 
-    # 2b. An obstacle placed overlapping the robot: the repetition is discarded.
-    overlapping = [dict(_repetition(imu, FALLEN_NEAR, fall_time=1.9, robot_at_fall=(0.0, 0.0, 30.0)),
-                        spawn_overlap=True)]
-    verdict = build_verdict("overlap", imu, ENTRIES, [nominal, overlapping, early], initial_bottle_z=780.0,
-                            observed_effect_time=12.3)
+    # 2. The same prior per mechanism: two hypotheses of one mechanism share it.
+    verdict = build_verdict("priors", record, _entries("wheel_failure", "wheel_failure", "robot_push"),
+                            [nominal, match, match, other], SCENE)
+    priors = [h["prior"] for h in verdict["hypotheses"]]
+    assert abs(priors[0] - 1 / 3) < 1e-6 and abs(priors[1] - 1 / 6) < 1e-6 and abs(priors[3] - 1 / 3) < 1e-6, priors
+
+    # 3. Two hypotheses that explain the record equally well: neither reaches 0.9, the verdict abstains.
+    verdict = build_verdict("tie", record, _entries("obstacle_traversed", "robot_push"), [nominal, match, match], SCENE)
+    assert verdict["accepted_hypothesis_id"] is None and verdict["abstention_reason"] == ABSTAIN_BELOW_THRESHOLD
+
+    # 4. A record with nothing anomalous: the nominal is the most probable; nothing is accepted.
+    verdict = build_verdict("calm", _record(None), _entries("obstacle_traversed"), [nominal, [_repetition(12.0)]], SCENE)
+    assert verdict["most_probable_hypothesis_id"] == NOMINAL_HYPOTHESIS_ID and verdict["accepted_hypothesis_id"] is None
+    assert verdict["abstention_reason"] == ABSTAIN_NOMINAL
+
+    # 5. Repetitions that are not physically meaningful count as 0 (and in N).
+    overlapping = [dict(_repetition(12.0), spawn_overlap=True)]
+    verdict = build_verdict("invalid", record, _entries("obstacle_traversed"), [nominal, overlapping], SCENE)
+    hypothesis = verdict["hypotheses"][1]
+    assert hypothesis["invalid_repetitions"] == 1 and hypothesis["posterior"] < 1e-6
+
+    # 6. A clock offset of up to 0.3 s between recording and simulation (the whole simulated record
+    #    shifted) is tolerated; 0.6 s is a different record.
+    def shifted(offset):
+        repetition = _repetition(12.0)
+        repetition["history"]["timestamp"] = [s + offset for s in repetition["history"]["timestamp"]]
+        return [repetition]
+    near, far = shifted(0.2), shifted(0.6)
+    verdict = build_verdict("shift", record, _entries("a", "b"), [nominal, near, far], SCENE)
     by_id = {h["hypothesis_id"]: h for h in verdict["hypotheses"]}
-    assert by_id["B_late"]["invalid_repetitions"] == 1 and by_id["B_late"]["effect_rate"] == 0.0
-    assert verdict["accepted_hypothesis_id"] == "A_early"
+    assert by_id["H0"]["distance"]["min"] < 0.2 < by_id["H1"]["distance"]["min"], (by_id["H0"]["distance"], by_id["H1"]["distance"])
 
-    # 2c. The fall must happen when the recording says the bottle left: within
-    #     [t_obs - 3, t_obs + 0.5]. Too early or too late, it is not the observed effect.
-    too_late = [_repetition(imu, FALLEN_NEAR, fall_time=13.2, robot_at_fall=(0.0, 0.0, 30.0))]
-    too_early = [_repetition(imu, FALLEN_NEAR, fall_time=9.0, robot_at_fall=(0.0, 0.0, 30.0))]
-    verdict = build_verdict("timing", imu, ENTRIES, [nominal, too_late, too_early], initial_bottle_z=780.0,
-                            observed_effect_time=12.3)
-    by_id = {h["hypothesis_id"]: h for h in verdict["hypotheses"]}
-    assert all(by_id[h]["effect_rate"] == 0.0 and by_id[h]["mistimed_effects"] == 1 for h in ("A_early", "B_late"))
-    assert verdict["accepted_hypothesis_id"] is None
-    assert verdict["decision_rule"]["fall_span_s"] == [12.3 - 3.0, 12.3 + 0.5]
-    in_span = [_repetition(imu, FALLEN_NEAR, fall_time=9.4, robot_at_fall=(0.0, 0.0, 30.0))]
-    verdict = build_verdict("timing", imu, ENTRIES, [nominal, too_late, in_span], initial_bottle_z=780.0,
-                            observed_effect_time=12.3)
-    assert verdict["accepted_hypothesis_id"] == "A_early", verdict["accepted_hypothesis_id"]
-    # Without an observed effect there is no span.
-    verdict = build_verdict("no_time", imu, ENTRIES, [nominal, too_late, too_early], initial_bottle_z=780.0)
-    assert all(h["mistimed_effects"] == 0 for h in verdict["hypotheses"]) and verdict["decision_rule"]["fall_span_s"] is None
-
-    # 3. The nominal run reproduces the effect: abstain, but keep the per-hypothesis outcome.
-    nominal_falls = [_repetition(imu, FALLEN_NEAR, fall_time=12.0, robot_at_fall=(0.0, 0.0, 30.0))]
-    verdict = build_verdict("nominal", imu, ENTRIES, [nominal_falls, late, early], initial_bottle_z=780.0,
-                            observed_effect_time=12.3)
-    assert verdict["nominal_effect_warning"] is True
-    assert verdict["abstention_reason"] == ABSTAIN_NOMINAL_REPRODUCES_EFFECT
-    assert verdict["accepted_hypothesis_id"] is None
-    assert not any(h["accepted"] for h in verdict["hypotheses"])
-    assert any(h["passes_rule"] for h in verdict["hypotheses"])
-    return verdict
+    # 7. The nominal does not follow the record before the interval: the simulation is not faithful.
+    previous = verdict_module.ADEQUACY_MAX
+    verdict_module.ADEQUACY_MAX = 0.5
+    try:
+        drifting = [_repetition(10.2)]       # a spike in the lead-in the record does not have
+        verdict = build_verdict("faithful", record, _entries("obstacle_traversed"), [drifting, match], SCENE)
+    finally:
+        verdict_module.ADEQUACY_MAX = previous
+    assert verdict["abstention_reason"] == ABSTAIN_NOT_FAITHFUL and verdict["accepted_hypothesis_id"] is None
+    assert verdict["adequacy"]["faithful"] is False
+    return build_verdict("tie", record, _entries("obstacle_traversed", "robot_push"), [nominal, match, match], SCENE)
 
 
 def test_ingestor_refuses_abstained_verdict(abstained_verdict):
@@ -273,8 +328,14 @@ def test_ingestor_refuses_abstained_verdict(abstained_verdict):
     from src.verdict_ingestor import ingest_verdict
 
     workdir = Path(tempfile.mkdtemp(prefix="insight_safeguards_"))
+    # The verdict abstained (no hypothesis reached P >= 0.9): nothing is consolidated.
+    path = workdir / "verdict_abstained.json"
+    path.write_text(json.dumps(abstained_verdict), encoding="utf-8")
+    ingestion = ingest_verdict(path)
+    assert ingestion.ok and not ingestion.triples and ingestion.accepted_hypothesis_id is None, ingestion
+    assert abstained_verdict["abstention_reason"] in ingestion.reason, ingestion.reason
     # A verdict written before the simulator abstained on its own: flag set, id still there.
-    legacy = dict(abstained_verdict, accepted_hypothesis_id="A_early", abstention_reason=None)
+    legacy = dict(abstained_verdict, accepted_hypothesis_id="H0", abstention_reason=None, nominal_effect_warning=True)
     path = workdir / "verdict_legacy.json"
     path.write_text(json.dumps(legacy), encoding="utf-8")
     ingestion = ingest_verdict(path)
@@ -320,7 +381,8 @@ def test_simulator_rotation_and_fall():
     # Commanded to turn in place at 0.6 rad/s: the simulated gyroscope must see a
     # sustained yaw rate (doSimulations restores the initial pose afterwards, so the
     # final orientation cannot be checked).
-    yaw_rates = [abs(sample[2]) for sample in repetition["history"]["gyroscope"][-62:]]
+    history = repetition["history"]
+    yaw_rates = [abs(sample[2]) for t, sample in zip(history["timestamp"], history["gyroscope"]) if t > 1.0]
     assert sum(yaw_rates) / len(yaw_rates) > 0.2, sum(yaw_rates) / len(yaw_rates)
     assert repetition["fall_time"] is None and "robot_final_position" in repetition
 
@@ -372,11 +434,16 @@ def test_episode_clock():
         "list_of_target_velocities": {"timestamp": [0.0], "adv_speed": [0.4]},
     }
     runs = {rate: _run_scene({**base, "clock_rate": rate}) for rate in (1.0, 0.5)}
-    dt = 1.0 / 62.0
+    from causes_simulator import DEFAULT_PHYSICS_DT
+    dt = DEFAULT_PHYSICS_DT
+    # One sample per physics step of the recorded world (Webots' default 32 ms here), as the recording has.
+    stride = round(0.032 / dt)
     for rate, repetition in runs.items():
         stamps = repetition["history"]["timestamp"]
-        assert len(stamps) == math.ceil(4.0 * rate / dt), (rate, len(stamps))
-        assert 4.0 - 2 * dt / rate < stamps[-1] + dt / rate <= 4.0 + 1e-9, (rate, stamps[-1])
+        assert len(stamps) == math.ceil(4.0 * rate / dt) // stride, (rate, len(stamps))
+        # Each sample is the state after a step, stamped with the instant the step ends.
+        assert abs(stamps[0] - stride * dt / rate) < 1e-9, (rate, stamps[0])
+        assert 4.0 - stride * dt / rate - 1e-9 <= stamps[-1] < 4.0 + dt / rate, (rate, stamps[-1])
     travelled = {rate: run["robot_final_position"][0] for rate, run in runs.items()}
     assert abs(travelled[0.5] / travelled[1.0] - 0.5) < 0.1, travelled
 
@@ -385,8 +452,8 @@ def main():
     test_heading_convention()
     test_swapped_axes()
     test_observed_effect_and_horizon()
-    test_window_anchored_on_observed_effect()
-    abstained = test_verdict_safeguards()
+    test_anomaly_interval_and_seed()
+    abstained = test_verdict()
     test_simulator_rotation_and_fall()
     test_episode_clock()
     test_ingestor_refuses_abstained_verdict(abstained)   # last: it swaps `src` for the semantic agent's

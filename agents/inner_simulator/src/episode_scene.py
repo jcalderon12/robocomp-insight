@@ -45,6 +45,7 @@ EFFECT_HORIZON_MARGIN_S = 3.0
 
 TIMESTAMP = "timestamp"
 ADV_SPEED = "adv_speed"
+ROT_SPEED = "rot_speed"
 
 # Recordings may be in millimeters (DSR convention) or meters (Webots bridge);
 # coordinates beyond this magnitude mean the whole history is in millimeters.
@@ -267,56 +268,98 @@ def episode_length_s(mem_api) -> Optional[float]:
     return (imu_events[-1].timestamp - imu_events[0].timestamp) * 1e-9
 
 
-def commanded_speed_history(mem_api, until_ns: Optional[int] = None) -> Optional[dict]:
-    """The robot_ref_adv_speed setpoints (MNA events of the robot node), with their
-    time relative to the first robot event. Setpoints at or after `until_ns` are
-    left out."""
+def _setpoint_history(mem_api, attribute: str, key: str, until_ns: Optional[int],
+                      origin_ns: Optional[int]) -> Optional[dict]:
+    """The `attribute` setpoints (MNA events of the robot node) as {timestamp, key}, oldest first,
+    in seconds from `origin_ns` (the first robot event when None). Setpoints at or after
+    `until_ns` are left out."""
     if not mem_api.is_ready():
         return None
     robot_events = mem_api.get_node_history_by_name("robot")
-    history = {TIMESTAMP: [], ADV_SPEED: []}
+    history = {TIMESTAMP: [], key: []}
     if not robot_events:
         return history
-    initial_ts = robot_events[0].timestamp
-    for event in robot_events:
-        if until_ns is not None and event.timestamp >= until_ns:
-            continue
-        if event.modification_type == "MNA" and "robot_ref_adv_speed" in event.attributes:
-            history[TIMESTAMP].append((event.timestamp - initial_ts) * 1e-9)
-            history[ADV_SPEED].append(event.attributes["robot_ref_adv_speed"].value)
+    initial_ts = robot_events[0].timestamp if origin_ns is None else origin_ns
+    setpoints = sorted(
+        ((event.timestamp - initial_ts) * 1e-9, event.attributes[attribute].value)
+        for event in robot_events
+        if event.modification_type == "MNA" and attribute in event.attributes
+        and (until_ns is None or event.timestamp < until_ns)
+    )
+    for time_s, value in setpoints:
+        history[TIMESTAMP].append(time_s)
+        history[key].append(value)
     return history
+
+
+def commanded_speed_history(mem_api, until_ns: Optional[int] = None,
+                            origin_ns: Optional[int] = None) -> Optional[dict]:
+    """The robot_ref_adv_speed setpoints, in seconds from `origin_ns`. The replay passes the
+    origin of the real IMU history (episode_time_origin_ns), which the verdict compares on:
+    the first robot event comes ~80 ms later, and timing the setpoints from it ran them early."""
+    return _setpoint_history(mem_api, "robot_ref_adv_speed", ADV_SPEED, until_ns, origin_ns)
+
+
+def commanded_rot_speed_history(mem_api, until_ns: Optional[int] = None,
+                                origin_ns: Optional[int] = None) -> Optional[dict]:
+    """The robot_ref_rot_speed setpoints (rad/s), like commanded_speed_history. On the differential
+    Shadow of Webots (08-09/10) they have the sign of the yaw rate the gyroscope measures (positive
+    counterclockwise): the -1.57 and -1.16 rad/s ordered next to the bump at 09:25 and 09:48 of
+    09/10 show as -0.24 and -0.18 rad/s, while the robot is held by the bump."""
+    return _setpoint_history(mem_api, "robot_ref_rot_speed", ROT_SPEED, until_ns, origin_ns)
+
+
+def _imu_samples(mem_api) -> list[tuple[int, Optional[list], Optional[list]]]:
+    """(ns from the first IMU event, accelerometer or None, gyroscope or None) of each IMU
+    update, oldest first."""
+    imu_events = mem_api.get_node_history_by_name("imu")
+    if not imu_events:
+        return []
+    initial_ts = imu_events[0].timestamp
+    return sorted(
+        ((event.timestamp - initial_ts,
+          event.attributes["imu_accelerometer"].value if "imu_accelerometer" in event.attributes else None,
+          event.attributes["imu_gyroscope"].value if "imu_gyroscope" in event.attributes else None)
+         for event in imu_events if event.modification_type == "MNA"),
+        key=lambda sample: sample[0])
 
 
 def real_imu_history(mem_api, list_of_ts: list) -> Optional[dict]:
     """The recorded IMU resampled at the simulation timestamps (seconds from the first
-    IMU event): each sample takes the last recorded value at or before it."""
+    IMU event): each sample takes the last recorded value at or before it. Timestamps before
+    both the accelerometer and the gyroscope have a value are left out: the first updates of a
+    recording carry only the gyroscope, and filling the accelerometer with zeros there made up
+    a signal the robot never reported."""
     if not mem_api.is_ready():
         return None
-    imu_events = mem_api.get_node_history_by_name("imu")
     history = {TIMESTAMP: [], "accelerometer": [], "gyroscope": []}
-    if not imu_events:
+    samples = _imu_samples(mem_api)
+    if not samples:
         return history
-    initial_ts = imu_events[0].timestamp
-    samples = [
-        (event.timestamp - initial_ts,
-         event.attributes["imu_accelerometer"].value if "imu_accelerometer" in event.attributes else None,
-         event.attributes["imu_gyroscope"].value if "imu_gyroscope" in event.attributes else None)
-        for event in imu_events if event.modification_type == "MNA"
-    ]
-    samples.sort(key=lambda sample: sample[0])
     times = [sample[0] for sample in samples]
-    last_acc, last_gyro = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+    last_acc, last_gyro = None, None
+    consumed = 0
     for ts in list_of_ts:
         index = int(np.searchsorted(times, int(ts * 1e9), side="right")) - 1
-        if index < 0:
+        while consumed <= index:
+            _, acc, gyro = samples[consumed]
+            last_acc = acc if acc is not None else last_acc
+            last_gyro = gyro if gyro is not None else last_gyro
+            consumed += 1
+        if last_acc is None or last_gyro is None:
             continue
-        _, acc, gyro = samples[index]
-        last_acc = acc if acc is not None else last_acc
-        last_gyro = gyro if gyro is not None else last_gyro
         history[TIMESTAMP].append(int(ts * 1e9) * 1e-9)
         history["accelerometer"].append(last_acc)
         history["gyroscope"].append(last_gyro)
     return history
+
+
+#: Physics step (s) of the world the episodes are recorded in. The recording does not say it. Change it
+#: with the world: the simulator derives from it the span each accelerometer sample averages over and
+#: Webots' soft contacts. SimpleWorld_Bump.wbt has basicTimeStep 8 since 16/10/2026, as webots-bridge
+#: asks for; before, it set none and ran at Webots' default, 32 ms (the episodes of 08-09/10). The
+#: resting robot sinks 3.6 mm at 8 ms and 14.5 mm at 32 ms, as the soft contact predicts.
+RECORDED_WORLD_TIME_STEP_S = 0.008
 
 
 def _find_node_id_in_keyframes(mem_api, name: str):
@@ -426,7 +469,126 @@ def episode_clock_rate(mem_api, origin_ns: Optional[int], until_s: Optional[floa
     return float(np.median(ratios)), int(ratios.size)
 
 
-DEFAULT_REPETITIONS = 10
+#: Repetitions of every hypothesis but the nominal. The verdict rests on the simulations closest to the
+#: record: with 36 there were too few (docs_output/resultados/35_banco_de_verificacion), and with 144 none
+#: came near a small bump off the robot's path (resultados/36); with 4,000 the search reaches it
+#: (resultados/38), and the fast repetitions (causes_simulator.doFastSimulations) run them in ~40 s per case
+#: (resultados/41). Its EPS is calibrated for this number (resultados/43).
+DEFAULT_REPETITIONS = 4000
+
+
+# --------------------------------------------------------------------------- #
+# The anomaly interval and the seeded start (docs_output/diseno/veredicto.md, 3.1-3.2)
+# --------------------------------------------------------------------------- #
+#: The episode's anomaly interval, as the semantic memory writes it (contract 1, episode_builder).
+ANOMALY_INTERVAL_ID = "Interval_fall"
+#: Without the episode, the same rule: the last ANOMALY_INTERVAL_S of motion before t_obs.
+ANOMALY_INTERVAL_S = 2.0
+MOVING_SPEED_M_S = 0.05
+#: The simulation starts this long before the anomaly interval, from the recorded state: the replay
+#: from the start of the recording drifted up to 28 cm sideways on the Webots bench (resultados/32).
+SEED_LEAD_S = 1.5
+#: Reach of the robot around its centre (wheels, casters and body), as the semantic memory dilates the
+#: path segments (hypothesis_pipeline.ROBOT_FOOTPRINT_RADIUS_M).
+ROBOT_FOOTPRINT_RADIUS_M = 0.35
+
+
+def aligned_to_world_step(t: float, clock_rate: float) -> float:
+    """The start of the step of the recorded world in which `t` (recording clock) falls. Webots applies
+    the controller's commands and samples the IMU step by step, from the first IMU sample; a seeded
+    start inside a step put every simulated IMU window across two steps and split the pulse of each
+    setpoint change in half (docs_output/resultados/35_banco_de_verificacion)."""
+    step = RECORDED_WORLD_TIME_STEP_S / clock_rate
+    return math.floor(t / step + 1e-9) * step
+
+
+def anomaly_footprint(mem_api, origin_ns: int, interval: tuple[float, float]) -> Optional[dict]:
+    """{x: [min, max], y: [min, max]} (m) the robot covered during the anomaly interval: its recorded
+    path then, dilated by its reach. A cause that touches the robot in that interval (a bump, a cable)
+    lies within it, plus its own half size."""
+    path = recorded_path(mem_api, origin_ns)
+    if path is None:
+        return None
+    times, positions, _ = path
+    inside = (times >= interval[0]) & (times <= interval[1])
+    if not inside.any():
+        return None
+    xy = positions[inside, :2]
+    return {axis: [float(xy[:, k].min() - ROBOT_FOOTPRINT_RADIUS_M), float(xy[:, k].max() + ROBOT_FOOTPRINT_RADIUS_M)]
+            for k, axis in enumerate(("x", "y"))}
+
+
+def recorded_path(mem_api, origin_ns: int):
+    """(times s, positions m [N, 3], quaternions [N, 4]) of the root->robot RT history, in the room
+    axes (recorded_axes), or None without two poses."""
+    if not mem_api.is_ready() or mem_api.get_keyframe_count() == 0:
+        return None
+    keyframe = mem_api.get_keyframe(0)
+    world_id, robot_id = _world_node_id(keyframe), _find_node_id_by_name(keyframe, "robot")
+    if world_id is None or robot_id is None:
+        return None
+    events = _rt_pose_events(mem_api, world_id, robot_id)
+    if len(events) < 2:
+        return None
+    scale = _units_scale(events)
+    poses = [_event_pose(event, scale) for event in events]
+    positions = np.array([position for position, _ in poses], dtype=float)
+    if recorded_axes(list(positions), [quaternion for _, quaternion in poses]) == "swapped_xy":
+        positions = positions[:, [1, 0, 2]]
+    times = np.array([(event.timestamp - origin_ns) * 1e-9 for event in events])
+    return times, positions, np.array([quaternion for _, quaternion in poses], dtype=float)
+
+
+def anomaly_interval(mem_api, origin_ns: int, observed_effect_time: float,
+                     episode_intervals: Optional[list] = None) -> tuple[float, float, str]:
+    """(start, end, source) of the anomaly interval: the episode's Interval_fall when the semantic
+    memory gave it, else the same rule on the recorded path (the last ANOMALY_INTERVAL_S of motion
+    before t_obs, plus the final stop)."""
+    for interval in episode_intervals or []:
+        if interval.get("id") == ANOMALY_INTERVAL_ID:
+            return float(interval["start_s"]), float(interval["end_s"]), "episode"
+    path = recorded_path(mem_api, origin_ns)
+    last_motion = observed_effect_time
+    if path is not None:
+        times, positions, _ = path
+        speed = np.r_[0.0, np.linalg.norm(np.diff(positions[:, :2], axis=0), axis=1) / np.maximum(np.diff(times), 1e-6)]
+        moving = times[(times <= observed_effect_time) & (speed > MOVING_SPEED_M_S)]
+        if len(moving):
+            last_motion = float(moving[-1])
+    return max(0.0, last_motion - ANOMALY_INTERVAL_S), observed_effect_time, "recording"
+
+
+def recorded_state_at(mem_api, origin_ns: int, at_s: float, yaw_offset: float = DSR_TO_URDF_YAW_OFFSET):
+    """(position, URDF orientation, forward speed m/s) of the recorded robot at `at_s`: the last pose
+    at or before it, and the speed over the 0.25 s before. None without a path."""
+    path = recorded_path(mem_api, origin_ns)
+    if path is None:
+        return None
+    times, positions, quaternions = path
+    index = max(0, int(np.searchsorted(times, at_s, side="right")) - 1)
+    earlier = max(0, int(np.searchsorted(times, times[index] - 0.25, side="right")) - 1)
+    span = times[index] - times[earlier]
+    speed = float(np.linalg.norm(positions[index, :2] - positions[earlier, :2]) / span) if span > 0 else 0.0
+    return ([float(positions[index, 0]), float(positions[index, 1]), URDF_BASE_Z],
+            to_urdf_orientation(list(quaternions[index]), yaw_offset), speed)
+
+
+def real_record(mem_api) -> Optional[dict]:
+    """What the verdict compares against: the recorded IMU updates (accelerometer and gyroscope,
+    each with its own instants, from the first one that carries each) and the robot's planar path,
+    in seconds from the first IMU event."""
+    if not mem_api.is_ready():
+        return None
+    origin_ns = episode_time_origin_ns(mem_api)
+    record = {}
+    samples = _imu_samples(mem_api)
+    for key, column in (("accelerometer", 1), ("gyroscope", 2)):
+        rows = [(sample[0] * 1e-9, sample[column]) for sample in samples if sample[column] is not None]
+        record[key] = {TIMESTAMP: [row[0] for row in rows], "values": [list(row[1]) for row in rows]}
+    path = recorded_path(mem_api, origin_ns) if origin_ns is not None else None
+    record["path"] = ({TIMESTAMP: path[0].tolist(), "xy": path[1][:, :2].tolist()} if path is not None
+                      else {TIMESTAMP: [], "xy": []})
+    return record
 
 
 def build_simulation_scene(
@@ -437,16 +599,23 @@ def build_simulation_scene(
     gravity: float = -9.81,
     yaw_offset: float = DSR_TO_URDF_YAW_OFFSET,
     physics_dt: Optional[float] = None,
+    episode_intervals: Optional[list] = None,
+    seeded: bool = True,
 ) -> tuple[dict, dict]:
     """The scene the causes simulator replays (a SimulationScene dict, positions in
     meters, like the fallbacks), plus what was learned while building
     it, for logging. yaw_offset and physics_dt let experiments compare variants.
 
-    Times stay on the recording's clock; `clock_rate` tells the simulator how fast
-    the recorded physics ran against it (episode_clock_rate).
+    Times stay on the recording's clock, from the first IMU event; `clock_rate` tells the
+    simulator how fast the recorded physics ran against it (episode_clock_rate), and
+    `world_time_step_s` the physics step of the recorded world (RECORDED_WORLD_TIME_STEP_S).
 
-    The rotation profile stays empty: where omega should come from (the pose
-    history or the setpoint) is still to be decided, so the replay drives straight."""
+    With an observed effect and `seeded`, the simulation starts SEED_LEAD_S before the anomaly
+    interval (the episode's, from `episode_intervals`, or the same rule on the recording) from the
+    recorded state of the robot then, with the bottle on its tray; `start_time_s` says when, and the
+    setpoints, the horizon and everything simulated stay on the recording's clock.
+
+    The robot replays both setpoints: forward and rotation speed."""
     robot_fallback_m = list(fallback_robot_position)
     poses = extract_scene_poses(
         mem_api,
@@ -466,27 +635,53 @@ def build_simulation_scene(
     # anomaly (the semantic agent stops the robot ~0.1 s after the bottle is lost),
     # and replaying that hard stop can knock the bottle off by itself.
     until_ns = origin_ns + int(observed_effect_time * 1e9) if observed_effect_time is not None else None
-    speeds = commanded_speed_history(mem_api, until_ns) or {TIMESTAMP: [], ADV_SPEED: []}
+    speeds = commanded_speed_history(mem_api, until_ns, origin_ns) or {TIMESTAMP: [], ADV_SPEED: []}
+    rot_speeds = commanded_rot_speed_history(mem_api, until_ns, origin_ns) or {TIMESTAMP: [], ROT_SPEED: []}
     clock_rate, clock_windows = episode_clock_rate(
         mem_api, origin_ns, observed_effect_time if observed_effect_time is not None else length)
 
+    start_time, initial_speed, interval, interval_source, footprint = 0.0, 0.0, None, None, None
+    initial_position, initial_orientation = list(poses.initial_robot_position), poses.initial_robot_orientation
+    bottle_position, bottle_orientation = list(poses.bottle_position), poses.bottle_orientation
+    if seeded and observed_effect_time is not None and origin_ns is not None:
+        start, end, interval_source = anomaly_interval(mem_api, origin_ns, observed_effect_time, episode_intervals)
+        interval = [start, end]
+        footprint = anomaly_footprint(mem_api, origin_ns, (start, end))
+        seed = aligned_to_world_step(start - SEED_LEAD_S, clock_rate)
+        state = recorded_state_at(mem_api, origin_ns, max(0.0, seed), yaw_offset)
+        if state is not None and seed > 0.0:
+            start_time = seed
+            initial_position, initial_orientation, recorded_speed = state
+            # The path is stamped with the recording's clock; the physics runs on the episode's.
+            initial_speed = recorded_speed / clock_rate
+            # Before the anomaly the bottle stood on the tray, where it starts.
+            offset = _quat_rotate(initial_orientation, DEFAULT_TRAY_OFFSET)
+            bottle_position = [a + b for a, b in zip(initial_position, offset)]
+            bottle_orientation = initial_orientation
+
     scene = {
         "gravity": gravity,
-        "initial_robot_position": list(poses.initial_robot_position),
-        "initial_robot_orientation": poses.initial_robot_orientation,
+        "initial_robot_position": initial_position,
+        "initial_robot_orientation": initial_orientation,
         "problem_position": list(poses.problem_position),
         "problem_orientation": poses.problem_orientation,
-        "bottle_position": list(poses.bottle_position),
-        "bottle_orientation": poses.bottle_orientation,
+        "bottle_position": bottle_position,
+        "bottle_orientation": bottle_orientation,
         "simulation_length": simulation_horizon(length, observed_effect_time),
         "num_of_repetitions": num_of_repetitions,
         "list_of_target_velocities": speeds,
-        "list_of_target_rot_speeds": {},
+        "list_of_target_rot_speeds": rot_speeds,
         "observed_effect_time": observed_effect_time,
         "episode_length": length,
         "clock_rate": clock_rate,
         "physics_dt": physics_dt,
+        "world_time_step_s": RECORDED_WORLD_TIME_STEP_S,
+        "start_time_s": start_time,
+        "initial_speed": initial_speed,
+        "anomaly_interval": interval,
+        "anomaly_footprint": footprint,
     }
     info = {"pose_sources": poses.sources, "effect_times": effect_times, "episode_length": length,
-            "clock_rate": clock_rate, "clock_rate_windows": clock_windows}
+            "clock_rate": clock_rate, "clock_rate_windows": clock_windows,
+            "anomaly_interval_source": interval_source}
     return scene, info

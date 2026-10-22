@@ -3,7 +3,7 @@
 Checks:
   * the catalog entry compiles to the `bump_scaled` cause, which the simulator finds among its causes
     and validates;
-  * its 36 draws (Latin hypercube, fixed by the seed) cover the size ranges and reach the area with
+  * its draws, as many as the catalog's repetitions (4,000; Latin hypercube, fixed by the seed), cover the size ranges and reach the area with
     the dome's edge: diameter and height in their strata, centre within the area dilated by half
     the drawn diameter;
   * each repetition spawns the catalog dome scaled to the drawn size, on the floor, as a body the
@@ -62,15 +62,18 @@ def check_compiled_and_drawn():
     payload = compiled_cause()
     assert payload["name"] == "bump_scaled" and Path(payload["mesh_file"]).exists(), payload
     cause = CauseWrapper.model_validate_json(json.dumps({"cause": payload})).cause
-    assert type(cause).__name__ == "CauseBumpScaled" and cause.num_of_repetitions == 36
+    assert type(cause).__name__ == "CauseBumpScaled" and cause.num_of_repetitions == 4000
     samples = cause.samples
-    # One draw per stratum of size: the 36 draws cover the ranges evenly, with no gap wider than two
-    # strata (the draws are rounded to 0.1 mm, so one can sit on the edge of the next stratum).
+    # One draw per stratum of size: the draws cover the ranges evenly, with no gap wider than two
+    # strata. The draws are rounded to 0.1 mm, which with 4,000 is more than a stratum of height
+    # (0.0225 mm): a draw can sit up to half a rounding step outside its stratum.
+    rounding = 1e-4
     for key, (low, high) in (("diameter_m", (0.1, 1.0)), ("height_m", (0.01, 0.1))):
         values = sorted(s[key] for s in samples)
-        stratum = (high - low) / 36
-        assert low <= values[0] <= low + stratum and high - stratum <= values[-1] <= high, (key, values)
-        assert max(b - a for a, b in zip(values, values[1:])) <= 2 * stratum, (key, values)
+        stratum = (high - low) / len(samples)
+        assert low <= values[0] <= low + stratum + rounding / 2, (key, values[:3])
+        assert high - stratum - rounding / 2 <= values[-1] <= high, (key, values[-3:])
+        assert max(b - a for a, b in zip(values, values[1:])) <= 2 * stratum + rounding, (key, values)
     for s in samples:
         half = s["diameter_m"] / 2
         assert AREA["x"][0] - half <= s["x_m"] <= AREA["x"][1] + half, s

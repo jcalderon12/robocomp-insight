@@ -27,7 +27,7 @@
       "cause_name": "bump_scaled",
       "phase": "setup",
       "uses_activation_window": false,
-      "repetitions": 36,
+      "repetitions": 4000,
       "budget_cost": 4,
       "mesh": "etc/URDFs/bump/Bump_100x10cm.stl",
       "mesh_dimensions_m": [1.0, 1.0, 0.0994],

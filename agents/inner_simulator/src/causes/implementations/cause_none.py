@@ -12,6 +12,7 @@ class CauseNone(BaseModel, Cause):
     """Nominal run with no intervention. Serves as the null-hypothesis baseline for the verdict."""
 
     name:Literal["none"]
+    num_of_repetitions:int | None = None
 
     
 

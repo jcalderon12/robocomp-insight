@@ -1,62 +1,62 @@
+"""Simulated IMU, as the Accelerometer and Gyro of the Webots Shadow report it.
+
+Both devices sit at the robot origin (the `imu` link of the URDF) and report in the robot frame
+(x right, y forward, z up), as the recording does: at rest the accelerometer reads +9.81 on z, and
+the base accelerating forward reads positive on y.
+
+* Accelerometer: the specific force R^T (a - g), with a the mean acceleration of the device point
+  over the last `window_s` seconds of physics, i.e. its velocity change over that span. A device
+  read once per physics step of the recorded world reports exactly that, with the span of its step.
+* Gyroscope: the angular velocity of the robot in its own frame, R^T w.
+
+Neither signal is filtered: the recorded ones are not.
+"""
+from collections import deque
+
 import numpy as np
 import pybullet as p
 
-class IMU:
-    def __init__(self, body_id, dt):
-        self.dt = dt
-        self.body_id = body_id
-        self.prev_linear_vel, _ = p.getBaseVelocity(self.body_id)
 
-        # IMU parameters
-        self.bias_acc = np.array([0.0, 0.0, 0.0]) # Bias offset for accelerometer (set to 0)
-        self.noise_std = 0.0 # Standar deviation of the white noise w_acc (disabled)
-        self.g_world = np.array([0, 0, 9.81]) # Gravity
-        
-        # Low-pass filter for acceleration (reduces numerical differentiation noise)
-        self.alpha = 0.2  # Filter coefficient (0.0 = max filtering, 1.0 = no filtering)
-        self.prev_acc_filtered = np.array([0.0, 0.0, 0.0])  # Previous filtered acceleration
-        
-        # Low-pass filter for gyroscope (angular velocity)
-        self.prev_angular_vel_filtered = np.array([0.0, 0.0, 0.0])  # Previous filtered angular velocity
+class IMU:
+    def __init__(self, body_id, dt, link_index=-1, window_s=None, gravity=-9.81):
+        """`dt`: physics step (s). `link_index`: link the devices are mounted on (-1, the base).
+        `window_s`: span of physics the accelerometer averages over (one step by default)."""
+        self.body_id = body_id
+        self.link_index = link_index
+        self.dt = dt
+        self.window_steps = max(1, int(round((window_s or dt) / dt)))
+        self.gravity_world = np.array([0.0, 0.0, gravity])
+        self.reset()
+
+    def _state(self):
+        """(rotation world <- device, linear velocity of the device point, angular velocity), in
+        the world frame."""
+        if self.link_index < 0:
+            _, quaternion = p.getBasePositionAndOrientation(self.body_id)
+            linear, angular = p.getBaseVelocity(self.body_id)
+        else:
+            state = p.getLinkState(self.body_id, self.link_index, computeLinkVelocity=1,
+                                   computeForwardKinematics=1)
+            # The device link has its centre of mass at its origin, so the velocity PyBullet gives
+            # for the link (of its centre of mass) is the velocity of the device point.
+            quaternion, linear, angular = state[5], state[6], state[7]
+        rotation = np.array(p.getMatrixFromQuaternion(quaternion)).reshape(3, 3)
+        return rotation, np.array(linear), np.array(angular)
+
+    def reset(self):
+        """Start over from the current state, as if the device had been at rest at this velocity:
+        call it when the bodies are restored, or the first sample differences against the end of
+        the previous repetition."""
+        _, linear, _ = self._state()
+        self._velocities = deque([linear] * (self.window_steps + 1), maxlen=self.window_steps + 1)
 
     def get_measurement(self):
-        """Simulate IMU accelerometer measurement.
-            Accelerometer measurement based on the IMU model described in: ã_imu = R * (a + g) + b + w
-            R: Rotation matrix from world to IMU frame
-            a: Linear acceleration in world frame
-            g: Gravity vector in world frame
-            b: Bias offset
-            w: White noise
-
-        Returns:
-            acc_measured: Simulated accelerometer measurement (numpy array of shape (3,))
-            quat: Current orientation of the IMU in quaternion format (x, y, z, w)
-
-        """
-        # 1. Obtener estado actual de PyBullet
-        pos, quat = p.getBasePositionAndOrientation(self.body_id)
-        current_vel, current_angular_vel = p.getBaseVelocity(self.body_id)
-        
-        # 2. Calcular la derivada: a = (v_t - v_t-1) / dt
-        acc_linear_world = (np.array(current_vel) - np.array(self.prev_linear_vel)) / self.dt
-        
-        # Apply low-pass filter to reduce numerical differentiation noise
-        acc_linear_world = self.alpha * acc_linear_world + (1.0 - self.alpha) * self.prev_acc_filtered
-        self.prev_acc_filtered = acc_linear_world
-        
-        self.prev_linear_vel = current_vel # Actualizar para el próximo frame
-
-        # 3. Transformar al sistema de referencia de la IMU (R_W^IMU)
-        # getMatrixFromQuaternion devuelve R_IMU^W, usamos la transpuesta para R_W^IMU
-        rot_matrix = np.array(p.getMatrixFromQuaternion(quat)).reshape(3, 3)
-        R_W_IMU = rot_matrix.T
-
-        # 4. Aplicar la fórmula sin ruido ni bias (ya desactivados)
-        acc_measured = R_W_IMU @ (acc_linear_world) + self.g_world
-        
-        # Apply low-pass filter to gyroscope (angular velocity)
-        angular_vel = np.array(current_angular_vel)
-        angular_vel_filtered = self.alpha * angular_vel + (1.0 - self.alpha) * self.prev_angular_vel_filtered
-        self.prev_angular_vel_filtered = angular_vel_filtered
-        
-        return np.array(acc_measured), angular_vel_filtered
+        """(accelerometer, gyroscope) in the device frame, after the physics step just taken.
+        Call it once per step: the accelerometer differences the velocities of the last steps."""
+        rotation, linear, angular = self._state()
+        self._velocities.append(linear)
+        acceleration = (self._velocities[-1] - self._velocities[0]) / (self.window_steps * self.dt)
+        world_to_device = rotation.T
+        accelerometer = world_to_device @ (acceleration - self.gravity_world)
+        gyroscope = world_to_device @ angular
+        return accelerometer, gyroscope
