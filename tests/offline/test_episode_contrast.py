@@ -12,6 +12,9 @@ Checks:
     the Webots clock does not keep a wheel failure alive;
   * carrying-relation restoration, its absence within the recording and missing evidence only
     inform: perception failure remains unresolved and not simulable (contracts 1.10);
+  * the obstacle jolt needs 3 x baseline and an absolute floor (contracts 1.14): a push on the bottle
+    under a noiseless IMU leaves no trace, a noisy baseline still decides above the floor, and
+    without a baseline it stays undetermined;
   * the 12:29 recording of 2026-09-24 gives the column "12:29" of the contract's table 3.6;
   * in the five falls of that session (all with the bump), obstacle_traversed is never discarded
     nor found incoherent (criterion of A3), and the rest of the table is the one in
@@ -235,6 +238,34 @@ def check_restoration_only_informs():
     assert result["outcome"] == SURVIVES_CONTRAST, result
 
 
+def check_jolt_floor():
+    """The obstacle jolt needs its absolute floor too (contracts 1.14): with a noiseless IMU the baseline is
+    about 0, and 3 x baseline alone saw a trace in pushes on the bottle (docs_output/resultados/51)."""
+    episode = synthetic_episode()
+
+    def jolt(pitch, vertical, pitch_base=0.006, vertical_base=0.001):
+        changed = with_evidence(with_evidence(episode, "pitch_rate_peak", value=pitch, baseline=pitch_base),
+                                "vertical_accel_peak", value=vertical, baseline=vertical_base)
+        return check_of(contrast_hypothesis(changed, "obstacle_traversed"), "obstacle_jolt")
+
+    # A push on the bottle under Webots (C1 of 22/10): far above 3 x baseline, below both floors.
+    quiet = jolt(0.031, 0.275)
+    assert quiet["verdict"] == "no_trace", quiet
+    assert [c["limit"] for c in quiet["conditions"]] == [0.2, 1.0], quiet
+    assert quiet["conditions"][0]["limit_expr"] == "max(3 x baseline 0.006, floor 0.2)", quiet
+    # Either peak above its floor is a trace, as before.
+    assert jolt(0.25, 0.275)["verdict"] == "trace_seen"
+    assert jolt(0.031, 1.2)["verdict"] == "trace_seen"
+    # With a noisy IMU (a larger baseline), 3 x baseline is above the floor and still decides.
+    noisy = jolt(0.5, 0.275, pitch_base=0.2, vertical_base=0.5)
+    assert noisy["verdict"] == "no_trace" and [c["limit"] for c in noisy["conditions"]] == [0.6, 1.5], noisy
+    assert jolt(0.7, 0.275, pitch_base=0.2, vertical_base=0.5)["verdict"] == "trace_seen"
+    # Without a baseline, unknown as before: the floor alone does not decide.
+    assert jolt(0.5, 2.0, pitch_base=None, vertical_base=None)["verdict"] == "undetermined"
+    # It only informs.
+    assert jolt(0.031, 0.275)["effect"] == "inform"
+
+
 def check_reaction_is_never_read():
     episode = synthetic_episode()
     reference = contrast_episode(episode)
@@ -351,7 +382,8 @@ def check_five_falls_2409(episodes):
 
 def main():
     for check in (check_mechanisms_from_tbox, check_tbox_mismatch_is_refused, check_thresholds_on_synthetic_episode,
-                  check_missing_values_never_discard, check_restoration_only_informs, check_reaction_is_never_read,
+                  check_missing_values_never_discard, check_restoration_only_informs, check_jolt_floor,
+                  check_reaction_is_never_read,
                   check_turn_relative_to_the_episode, check_rules_only_speak_for_their_interval):
         check()
         print(f"OK {check.__name__}")

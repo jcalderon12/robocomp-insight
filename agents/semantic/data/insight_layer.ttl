@@ -569,7 +569,7 @@ insight:pre_bottle_supported a insight:Precondition ;
 insight:rule_obstacle_jolt a insight:ContrastRule ;
     insight:ruleId "obstacle_jolt" ; insight:ruleEffect "inform" ; insight:ruleStatus "to_calibrate" ;
     insight:checksProperty insight:pitch_rate_peak , insight:vertical_accel_peak ;
-    rdfs:comment "Reports whether the pitch rate or vertical acceleration peaks exceed 3 times their baseline. Never discards unless the contrast task shows it never fails on the 5 recordings with a bump."@en .
+    rdfs:comment "Reports whether the pitch rate or vertical acceleration peaks exceed 3 times their baseline and an absolute floor (0.2 rad/s, 1 m/s2: half the smallest peaks of the bump recordings before the blind evaluation, since a noiseless IMU has a baseline of about 0). Never discards unless the contrast task shows it never fails on the 5 recordings with a bump."@en .
 
 insight:rule_traction_vs_friction a insight:ContrastRule ;
     insight:ruleId "traction_vs_friction" ; insight:ruleEffect "discard" ; insight:ruleStatus "fixed" ;

@@ -77,8 +77,8 @@ def check_always_the_probabilities_and_ratios():
         outcome = outcome_of(graph, episode)
         assert (outcome, RDF.type, INSIGHT.VerificationOutcome) in graph
         assert (case_iri(batch["case_id"]), DUL.isSettingFor, outcome) in graph
-        assert str(graph.value(outcome, INSIGHT.contractsVersion)) == "1.13"
-        assert str(graph.value(outcome, INSIGHT.tboxVersion)) == "0.4"
+        assert str(graph.value(outcome, INSIGHT.contractsVersion)) == "1.14"
+        assert str(graph.value(outcome, INSIGHT.tboxVersion)) == "0.5"
         method = verdict["method"]
         assert float(graph.value(outcome, INSIGHT.acceptanceThreshold)) == method["p_min"]
         assert float(graph.value(outcome, INSIGHT.explanationRatioMax)) == method["explanation_ratio_max"]

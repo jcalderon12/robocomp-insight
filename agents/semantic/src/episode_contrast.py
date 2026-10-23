@@ -57,7 +57,10 @@ THRESHOLDS: dict[str, dict[str, float]] = {
     "moving_on_segment": {"min_speed_mps": 0.05},
     "moving_in_interval": {"min_speed_mps": 0.05},
     "bottle_supported": {},
-    "obstacle_jolt": {"times_baseline": 3.0},
+    # With a noiseless IMU (Webots) the baseline is about 0 and 3 x baseline sees a trace in anything: the
+    # floors are half the smallest peaks of the 20 bump recordings before the blind evaluation (06-20/10:
+    # 0.584 rad/s and 2.04 m/s2), rounded down (docs_output/resultados/51, contracts 1.14).
+    "obstacle_jolt": {"times_baseline": 3.0, "min_pitch_rate_rad_s": 0.2, "min_vertical_accel_m_s2": 1.0},
     # mu_max is the upper end of `slippery` (table 3.4); 1.1 is the tolerance on the IMU.
     "traction_vs_friction": {"mu_max": 0.3, "tolerance": 1.1},
     # Blocking a drive wheel of the real robot turns it 6-11 deg.
@@ -288,6 +291,13 @@ def _times_baseline(view: EpisodeView, prop: str, quantity: str, op: str, factor
                      f"{factor:g} x baseline {_fmt(base)}")
 
 
+def _times_baseline_with_floor(view: EpisodeView, prop: str, op: str, factor: float, floor: float) -> Condition:
+    """As _times_baseline, but the limit is never below an absolute floor (without a baseline, still unknown)."""
+    base = view.baseline(prop)
+    return Condition(prop, view.value(prop), op, None if base is None else _r(max(factor * base, floor)),
+                     f"max({factor:g} x baseline {_fmt(base)}, floor {_fmt(floor)})")
+
+
 def _own_clock(view: EpisodeView) -> Optional[float]:
     """What the robot travelled over what it was ordered, in free motion (own_ratio_baseline of
     speed_ratio). Under the Webots clock it is about 0.5: the robot turns, like it advances, only
@@ -347,8 +357,8 @@ def _bottle_supported(view, anchors, th):
 
 def _obstacle_jolt(view, anchors, th):
     k = th["times_baseline"]
-    return TRACE_SEEN, [_times_baseline(view, "pitch_rate_peak", "pitch_rate_peak", ">", k),
-                        _times_baseline(view, "vertical_accel_peak", "vertical_accel_peak", ">", k)]
+    return TRACE_SEEN, [_times_baseline_with_floor(view, "pitch_rate_peak", ">", k, th["min_pitch_rate_rad_s"]),
+                        _times_baseline_with_floor(view, "vertical_accel_peak", ">", k, th["min_vertical_accel_m_s2"])]
 
 
 def _traction_vs_friction(view, anchors, th):
