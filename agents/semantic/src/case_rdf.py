@@ -9,9 +9,11 @@ and which explanation the simulator supported:
     the LLM, and each hypothesis with its mechanism, anchors, kinds, status and the checks applied
     to it (with the observations they read);
   * simulation_graph(batch, verdict), when the verdict on that batch arrives: one simulation run
-    per simulated cause and one for the nominal replay, with what the verdict made of them.
+    per simulated cause and one for the nominal replay, with what the verdict made of them (since
+    contracts 1.13, also its probability and its ratio to the nominal).
 
-The supported explanation is verdict_ingestor.mechanism_graph. The vocabulary is the INSIGHT TBox;
+The supported explanation is verdict_ingestor.mechanism_graph, and what the verification knows,
+accepted or not, verdict_ingestor.verification_graph. The vocabulary is the INSIGHT TBox;
 nothing here changes the batch, the verdict or what the live graph receives.
 """
 
@@ -201,7 +203,8 @@ def simulation_graph(batch: dict, verdict: dict, verdict_path: Optional[str] = N
         for key, prop in (("repetitions", INSIGHT.repetitions), ("mistimed_effects", INSIGHT.mistimedEffects)):
             if entry.get(key) is not None:
                 graph.add((run, prop, Literal(int(entry[key]), datatype=XSD.nonNegativeInteger)))
-        for key, prop in (("effect_rate", INSIGHT.effectRate), ("median_timing_error_s", INSIGHT.medianTimingErrorS)):
+        for key, prop in (("effect_rate", INSIGHT.effectRate), ("median_timing_error_s", INSIGHT.medianTimingErrorS),
+                          ("posterior", INSIGHT.posteriorProbability), ("ratio_to_nominal", INSIGHT.ratioToNominal)):
             if entry.get(key) is not None:
                 graph.add((run, prop, _decimal(entry[key])))
         for key, prop in (("passes_rule", INSIGHT.passesRule), ("accepted", INSIGHT.acceptedBySimulation)):

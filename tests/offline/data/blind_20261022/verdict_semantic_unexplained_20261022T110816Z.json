@@ -1,0 +1,311 @@
+{
+  "schema_version": "2.0",
+  "case_id": "semantic_unexplained_20261022T110816Z",
+  "observed_effect_time": 9.988915474,
+  "anomaly_interval": {
+    "start_s": 7.983654139,
+    "end_s": 9.988915474,
+    "seed_s": 6.478108067562421
+  },
+  "method": {
+    "discrepancy": "min over |tau| <= tau_max of sum_c RMS_W(sim_c - real_c) / sigma_c, c in {accelerometer, gyroscope, planar path}",
+    "likelihood": "mean_i exp(-d_i^2 / 2 eps^2) q(E | x_i); invalid repetitions count as 0",
+    "prior": "equal per mechanism (the nominal is one), split among its hypotheses",
+    "decision": "accept the most probable hypothesis if its posterior >= 0.9 (Chow), else abstain",
+    "tau_max_s": 0.3,
+    "eps": 0.04,
+    "path_scale_m": 0.05,
+    "effect_delta_s": 0.5,
+    "effect_weights": {
+      "on_time": 1.0,
+      "off_time": 1.0,
+      "none": 1.0
+    },
+    "p_min": 0.9,
+    "adequacy_max": null,
+    "explanation_ratio_max": 0.615,
+    "importance_weights": "each repetition's log(prior / proposal mixture), when the search drew it in rounds",
+    "calibrated": true
+  },
+  "skipped": [
+    {
+      "hypothesis_id": "H01",
+      "reason": "Compatible with the recording but not simulable: The available simulator has no detection or tracking model; this hypothesis can only be compared with recorded observations."
+    },
+    {
+      "hypothesis_id": "H03",
+      "reason": "Not simulable: The PyBullet URDF has no suspension."
+    },
+    {
+      "hypothesis_id": "H05",
+      "reason": "Discarded before simulating by speed_ratio_and_jolt: |speed_ratio - 1| 0.004 <= 0.15 and longitudinal_accel_peak 3.494 <= 2 x baseline 3.522 = 7.044."
+    },
+    {
+      "hypothesis_id": "H06",
+      "reason": "Discarded before simulating by robot_jolt: lateral_accel_peak 0 <= 2 x baseline 0 = 0 and |speed_ratio - 1| 0.004 <= 0.15 and |yaw_change - r x commanded| |0 - 0.547 x 0| = 0 < 3."
+    },
+    {
+      "hypothesis_id": "H07_left",
+      "reason": "Discarded before simulating by turn_vs_command: |yaw_change - r x commanded| |0 - 0.547 x 0| = 0 < 3 and yaw_rate_peak 0.046 < 0.3."
+    },
+    {
+      "hypothesis_id": "H07_right",
+      "reason": "Discarded before simulating by turn_vs_command: |yaw_change - r x commanded| |0 - 0.547 x 0| = 0 < 3 and yaw_rate_peak 0.046 < 0.3."
+    },
+    {
+      "hypothesis_id": "H08",
+      "reason": "Discarded before simulating by setpoint_step: setpoint_step 0.019 >= 0.2 (no)."
+    },
+    {
+      "hypothesis_id": "H09",
+      "reason": "Discarded before simulating by traction_vs_friction: max_sustained_horizontal_accel 3.529 > 1.1 x 0.3 x g = 3.237."
+    },
+    {
+      "hypothesis_id": "H10",
+      "reason": "Discarded before simulating by person_within_reach: person_distance_min 4.125 > 1.5."
+    }
+  ],
+  "adequacy": {
+    "lead_in_distance": 1.8523951421180946,
+    "max": null,
+    "faithful": true
+  },
+  "hypotheses": [
+    {
+      "hypothesis_id": "__nominal__",
+      "title": "Nominal run (null hypothesis)",
+      "cause": {
+        "name": "none",
+        "num_of_repetitions": 1
+      },
+      "mechanism": "nominal",
+      "prior": 0.333333,
+      "repetitions": 1,
+      "invalid_repetitions": 0,
+      "stopped_early": 0,
+      "invalid_reasons": [],
+      "effect_rate": 0.0,
+      "mistimed_effects": 0,
+      "median_timing_error_s": null,
+      "distance": {
+        "median": 1.9423380832515573,
+        "min": 1.9423380832515573
+      },
+      "log_evidence": -1178.9616,
+      "posterior": 0.793624,
+      "posterior_bootstrap": {
+        "p10": 0.787343,
+        "p90": 0.799971,
+        "sd": 0.004796
+      },
+      "bayes_factor_vs_nominal": 1.0,
+      "parameter_estimate": {},
+      "best_repetition_index": 0,
+      "best_generated_instances": {},
+      "best_bottle_final_position": [
+        -495.9798217731535,
+        -190.01091096164578,
+        837.3060182996849
+      ],
+      "passes_rule": false,
+      "ratio_to_nominal": 1.0,
+      "accepted": false
+    },
+    {
+      "hypothesis_id": "H02",
+      "title": "Push on the bottle during the last 2 s before the fall",
+      "cause": {
+        "force_target": "bottle",
+        "force_window_start": 0.615,
+        "force_window_end": 0.769,
+        "force_x_origin": 0.0,
+        "force_x_range": 10.0,
+        "force_y_origin": 0.0,
+        "force_y_range": 10.0,
+        "force_z_origin": 0.0,
+        "force_z_range": 0.0,
+        "name": "external_force"
+      },
+      "mechanism": "bottle_push",
+      "prior": 0.333333,
+      "repetitions": 4000,
+      "invalid_repetitions": 5,
+      "stopped_early": 2062,
+      "invalid_reasons": [
+        "bottle flung beyond a plausible landing distance"
+      ],
+      "effect_rate": 0.759,
+      "mistimed_effects": 1478,
+      "median_timing_error_s": 0.48953205435207714,
+      "distance": {
+        "median": 1.9442935730307112,
+        "min": 1.9416032350251666
+      },
+      "log_evidence": -1182.1862,
+      "posterior": 0.031564,
+      "posterior_bootstrap": {
+        "p10": 0.029637,
+        "p90": 0.03368,
+        "sd": 0.001522
+      },
+      "bayes_factor_vs_nominal": 0.039772023938286064,
+      "parameter_estimate": {
+        "duration_s": {
+          "mean": 0.1782,
+          "sd": 0.0549
+        },
+        "onset_s": {
+          "mean": 9.4593,
+          "sd": 0.4853
+        },
+        "random_range_coordinates.0": {
+          "mean": -0.1883,
+          "sd": 1.8386
+        },
+        "random_range_coordinates.1": {
+          "mean": 0.2312,
+          "sd": 2.6824
+        },
+        "random_range_coordinates.2": {
+          "mean": 0.0,
+          "sd": 0.0
+        }
+      },
+      "best_repetition_index": 2185,
+      "best_generated_instances": {
+        "random_range_coordinates": [
+          [
+            1.7888277759039894,
+            3.3748192783258375,
+            0.0
+          ]
+        ],
+        "duration_s": 0.18457877493192892,
+        "onset_s": 9.784742941926881
+      },
+      "best_bottle_final_position": [
+        -268.3240393914316,
+        219.71355517573548,
+        406.47440329208223
+      ],
+      "passes_rule": false,
+      "ratio_to_nominal": 0.9996,
+      "accepted": false
+    },
+    {
+      "hypothesis_id": "H04",
+      "title": "Undetected bump on the last 1 m of the path before the fall",
+      "cause": {
+        "mesh_file": "/home/javi/robocomp/components/robocomp-insight/etc/URDFs/bump/Bump_100x10cm.stl",
+        "mesh_dimensions_m": [
+          1.0,
+          1.0,
+          0.0994
+        ],
+        "area_x": [
+          -1.692131018638611,
+          -0.4751420259475708
+        ],
+        "area_y": [
+          -0.6499880015850067,
+          0.05
+        ],
+        "diameter_range": [
+          0.1,
+          1.0
+        ],
+        "height_range": [
+          0.01,
+          0.1
+        ],
+        "bounds_x": [
+          -6.0,
+          3.0
+        ],
+        "bounds_y": [
+          -3.0,
+          3.0
+        ],
+        "num_of_repetitions": 4000,
+        "seed": 0,
+        "name": "bump_scaled"
+      },
+      "mechanism": "obstacle_traversed",
+      "prior": 0.333333,
+      "repetitions": 4000,
+      "invalid_repetitions": 991,
+      "stopped_early": 1646,
+      "invalid_reasons": [
+        "obstacle placed overlapping the robot or the bottle"
+      ],
+      "effect_rate": 0.023,
+      "mistimed_effects": 92,
+      "median_timing_error_s": 1.9092352345235888,
+      "distance": {
+        "median": 1.942333343048786,
+        "min": 1.9421758250965893
+      },
+      "log_evidence": -1180.4745,
+      "posterior": 0.174812,
+      "posterior_bootstrap": {
+        "p10": 0.16844,
+        "p90": 0.180669,
+        "sd": 0.00482
+      },
+      "bayes_factor_vs_nominal": 0.22027078034981756,
+      "parameter_estimate": {
+        "sample.diameter_m": {
+          "mean": 0.512,
+          "sd": 0.2611
+        },
+        "sample.height_m": {
+          "mean": 0.0533,
+          "sd": 0.0258
+        },
+        "sample.x_m": {
+          "mean": -0.6683,
+          "sd": 0.5105
+        },
+        "sample.y_m": {
+          "mean": -0.2988,
+          "sd": 0.4739
+        }
+      },
+      "best_repetition_index": 2713,
+      "best_generated_instances": {
+        "sample": {
+          "diameter_m": 0.8242,
+          "height_m": 0.0799,
+          "x_m": -2.0237,
+          "y_m": -1.0336
+        }
+      },
+      "best_bottle_final_position": [
+        -495.92409632191016,
+        -189.9550819967108,
+        837.3058623077353
+      ],
+      "passes_rule": false,
+      "ratio_to_nominal": 0.9999,
+      "accepted": false
+    }
+  ],
+  "most_probable_hypothesis_id": "__nominal__",
+  "explained_ratio": 1.0,
+  "accepted_hypothesis_id": null,
+  "abstention_reason": "no_hypothesis_above_threshold",
+  "acceptance_robust": false,
+  "credible_set": {
+    "mass": 0.9,
+    "mechanisms": [
+      {
+        "mechanism": "nominal",
+        "posterior": 0.793624
+      },
+      {
+        "mechanism": "obstacle_traversed",
+        "posterior": 0.174812
+      }
+    ]
+  }
+}

@@ -946,6 +946,88 @@ insight:verdictPath a owl:DatatypeProperty ;
     rdfs:comment "The inner simulator's verdict on the case."@en .
 
 
+# What the verification knows (contracts 1.13): written for every verdict, accepted or not. It
+# describes how well each simulated candidate reproduces the robot's record; it never asserts a cause,
+# and an abstention selects no explanation (contracts 1.10-1.11).
+
+insight:VerificationOutcome a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "verification outcome"@en ;
+    rdfs:comment "What the simulation-based verification concluded on a case: its decision (accepted or abstained), the thresholds it decided with, the probability of each simulated mechanism, the 90 % credible set and the ratio of each run to the nominal replay. Describes the support the robot's record gives to the candidates; does not assert that any of them occurred."@en .
+
+insight:NoSimulatedCauseExplainsBetter a owl:Class ;
+    rdfs:subClassOf insight:VerificationOutcome ;
+    rdfs:label "no simulated cause explains the record better than the nominal"@en ;
+    rdfs:comment "An abstention in which no simulated physical cause explains the robot's record clearly better than the nominal replay: every simulated cause leaves more than the verdict's limit (insight:explanationRatioMax) of the nominal's discrepancy. It does not say that nothing happened, nor that a cause that leaves no trace on the robot's record did not happen: those stay as open alternatives."@en .
+
+insight:MechanismProbability a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "mechanism probability"@en ;
+    rdfs:comment "The probability the verification gives to one simulated mechanism given the robot's record: the sum over the runs of its hypotheses. The nominal replay is a mechanism of its own. A probability among the simulated candidates, not of the mechanism having occurred."@en .
+
+insight:mostProbableRun a owl:ObjectProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:SimulationRun ; rdfs:label "most probable run"@en ;
+    rdfs:comment "The run of the most probable hypothesis, or the nominal run when the nominal is the most probable."@en .
+insight:selectsExplanation a owl:ObjectProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:SimulationSupportedExplanation ;
+    rdfs:label "selects explanation"@en ;
+    rdfs:comment "The explanation an accepted verdict selected. An abstention has none."@en .
+insight:assignsProbability a owl:ObjectProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:MechanismProbability ;
+    rdfs:label "assigns probability"@en .
+insight:forMechanism a owl:ObjectProperty ;
+    rdfs:domain insight:MechanismProbability ; rdfs:range insight:Mechanism ; rdfs:label "for mechanism"@en ;
+    rdfs:comment "The TBox mechanism the probability is about (none for the nominal replay)."@en .
+insight:aggregatesRun a owl:ObjectProperty ;
+    rdfs:domain insight:MechanismProbability ; rdfs:range insight:SimulationRun ; rdfs:label "aggregates run"@en ;
+    rdfs:comment "A run whose probability is part of the mechanism's."@en .
+insight:openAlternative a owl:ObjectProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:Hypothesis ; rdfs:label "open alternative"@en ;
+    rdfs:comment "After an abstention, a hypothesis that remains standing: neither the episode checks nor the simulation refuted it. Neither accepted nor refuted."@en .
+insight:openSimulatedAlternative a owl:ObjectProperty ;
+    rdfs:subPropertyOf insight:openAlternative ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:Hypothesis ; rdfs:label "open simulated alternative"@en ;
+    rdfs:comment "Simulated but not enough: its runs do not explain the robot's record clearly better than the nominal. Its probability is on its run."@en .
+insight:openNonSimulableAlternative a owl:ObjectProperty ;
+    rdfs:subPropertyOf insight:openAlternative ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:Hypothesis ; rdfs:label "open non-simulable alternative"@en ;
+    rdfs:comment "Compatible with the episode checks but without a simulation realization (status checked_not_simulable or not_simulable)."@en .
+insight:supportedByObservation a owl:ObjectProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range sosa:Observation ; rdfs:label "supported by observation"@en ;
+    rdfs:comment "An observation of the episode that shows the trace the hypothesis's mechanism entails (an informing contrast rule saw it, e.g. the bottle reacquired for a perception failure). Support within the available recording, not confirmation."@en .
+
+insight:verdictDecision a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:string ; rdfs:label "verdict decision"@en ;
+    rdfs:comment "accepted or abstained; the reason of an abstention is the case's insight:abstentionReason."@en .
+insight:posteriorProbability a owl:DatatypeProperty ;
+    rdfs:range xsd:decimal ; rdfs:label "posterior probability"@en ;
+    rdfs:comment "The verdict's probability of a simulation run's hypothesis, or of a mechanism, given the robot's record; relative to the candidates simulated in the case."@en .
+insight:ratioToNominal a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:decimal ; rdfs:label "ratio to nominal"@en ;
+    rdfs:comment "Discrepancy of the run's best repetition with the robot's record over the nominal's: how much of what the nominal leaves unexplained this run still leaves (1 for the nominal)."@en .
+insight:inCredibleSet a owl:DatatypeProperty ;
+    rdfs:domain insight:MechanismProbability ; rdfs:range xsd:boolean ; rdfs:label "in credible set"@en ;
+    rdfs:comment "Whether the mechanism is among the fewest that together hold insight:credibleMass of the probability."@en .
+insight:mechanismName a owl:DatatypeProperty ;
+    rdfs:domain insight:MechanismProbability ; rdfs:range xsd:string ; rdfs:label "mechanism name"@en ;
+    rdfs:comment "The mechanism as the verdict names it (nominal for the replay without any cause)."@en .
+insight:explainedRatio a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "explained ratio"@en ;
+    rdfs:comment "The ratio to the nominal of the most probable hypothesis, the one the verdict's adequacy rule reads."@en .
+insight:bestCauseRatio a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "best cause ratio"@en ;
+    rdfs:comment "The smallest ratio to the nominal among the simulated causes."@en .
+insight:acceptanceThreshold a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "acceptance threshold"@en ;
+    rdfs:comment "The probability the most probable hypothesis needs to be accepted."@en .
+insight:explanationRatioMax a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "explanation ratio limit"@en ;
+    rdfs:comment "The largest ratio to the nominal an accepted hypothesis may leave (the adequacy rule)."@en .
+insight:credibleMass a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "credible mass"@en ;
+    rdfs:comment "The probability the credible set holds."@en .
+
+
 # The memory's decisions (contract 3, section 4.3).
 
 insight:Status_to_simulate a insight:HypothesisStatus ; insight:statusId "to_simulate" ;
@@ -1104,12 +1186,15 @@ insight:travelledOverCommandedBaseline a owl:DatatypeProperty ;
     rdfs:comment "The same ratio in free motion (Interval_baseline): the episode's own clock."@en .
 
 insight:tboxVersion a owl:DatatypeProperty ;
-    rdfs:domain inst:AnomalyCase ; rdfs:range xsd:string ; rdfs:label "TBox version"@en ;
-    rdfs:comment "owl:versionInfo of the INSIGHT TBox the case was written and read with."@en .
+    rdfs:domain [ a owl:Class ; owl:unionOf ( inst:AnomalyCase insight:VerificationOutcome ) ] ;
+    rdfs:range xsd:string ; rdfs:label "TBox version"@en ;
+    rdfs:comment "owl:versionInfo of the INSIGHT TBox the case (or its verification outcome, which may be written later) was written and read with."@en .
 insight:tboxSha256 a owl:DatatypeProperty ;
     rdfs:domain inst:AnomalyCase ; rdfs:range xsd:string ; rdfs:label "TBox sha256"@en .
 insight:contractsVersion a owl:DatatypeProperty ;
-    rdfs:domain inst:AnomalyCase ; rdfs:range xsd:string ; rdfs:label "contracts version"@en .
+    rdfs:domain [ a owl:Class ; owl:unionOf ( inst:AnomalyCase insight:VerificationOutcome ) ] ;
+    rdfs:range xsd:string ; rdfs:label "contracts version"@en .
 insight:codeCommit a owl:DatatypeProperty ;
-    rdfs:domain inst:AnomalyCase ; rdfs:range xsd:string ; rdfs:label "code commit"@en ;
-    rdfs:comment "git commit of the code that wrote the case, with '+uncommitted' when the working tree had changes."@en .
+    rdfs:domain [ a owl:Class ; owl:unionOf ( inst:AnomalyCase insight:VerificationOutcome ) ] ;
+    rdfs:range xsd:string ; rdfs:label "code commit"@en ;
+    rdfs:comment "git commit of the code that wrote the case (or its verification outcome), with '+uncommitted' when the working tree had changes."@en .

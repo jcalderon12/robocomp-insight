@@ -8,7 +8,8 @@ the TBox, and offline on rdflib, which does not.
 case_dataset() rebuilds, without GraphDB, the named graphs the semantic agent leaves after a case:
 the TBox in its own graph, the live graph (the mirror of the working memory) and the case's graph
 (the episode with its trigger and provenance, the decisions, the simulation runs, the supported
-explanation and the legacy consolidation triples), from the same functions the agent calls. GraphDB
+explanation, what the verification knows and the legacy consolidation triples), from the same
+functions the agent calls. GraphDB
 keeps every case (contracts 1.12): called again on the same dataset, it adds another case, and
 every question answers with the case each row belongs to.
 """
@@ -25,7 +26,7 @@ from src.case_rdf import decision_graph, simulation_graph
 from src.episode_contrast import DEFAULT_TBOX
 from src.episode_rdf import graph_iri
 from src.semantic_memory import ONTOLOGY_GRAPH, case_graph
-from src.verdict_ingestor import build_case_triples, case_triples_graph, mechanism_graph
+from src.verdict_ingestor import build_case_triples, case_triples_graph, mechanism_graph, verification_graph
 
 QUERIES_DIR = Path(__file__).resolve().parents[1] / "data" / "queries"
 LIVE_GRAPH = "urn:insight:semantic:live"
@@ -88,7 +89,7 @@ def case_dataset(*, episode: dict, batch: dict, verdict: Optional[dict], mirror:
     pieces = [case_graph(episode, trigger if trigger is not None else batch.get("trigger"), batch["case_id"], tbox_path),
               decision_graph(batch, episode, batch_path, tbox_path)]
     if verdict is not None:
-        pieces.append(simulation_graph(batch, verdict, verdict_path))
+        pieces += [simulation_graph(batch, verdict, verdict_path), verification_graph(batch, verdict, episode)]
         if accepted and not abstained:
             cause = next(h for h in verdict["hypotheses"] if h["hypothesis_id"] == accepted)["cause"]["name"]
             pieces += [case_triples_graph(build_case_triples(cause, batch["case_id"])),

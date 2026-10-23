@@ -73,7 +73,7 @@ def answers(dataset):
 
 def check_answers(episode, batch, verdict, dataset):
     got = answers(dataset)
-    assert len(got) == 10, sorted(got)
+    assert len(got) == 11, sorted(got)
     assert all(row["case"] == batch["case_id"] for name, rows in got.items()
                if name not in ("cq4_traces_by_sensor", "cq8_not_simulable") for row in rows), got
 
@@ -147,7 +147,7 @@ def check_two_cases_kept(episode, batch, verdict, dataset):
     cases = {row["case"]: row for row in got["cq10_cases"]}
     assert set(cases) == {batch["case_id"], "second_case"}, cases
     for row in cases.values():
-        assert (row["tbox_version"], row["contracts_version"]) == ("0.3", "1.12"), row
+        assert (row["tbox_version"], row["contracts_version"]) == ("0.4", "1.13"), row
         assert len(row["tbox_sha256"]) == 64 and row["code_commit"] and row["model"] == batch["model"], row
     assert cases["second_case"]["episode_id"] == second_episode["episode_id"]
     proposals = {}

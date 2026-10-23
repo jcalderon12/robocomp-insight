@@ -430,8 +430,8 @@ def run_agent_loop(episode_from_recording):
         # The case says with which TBox, contracts and code it was written.
         stored = worker.graphdb_client.dataset.graph(episode_iri)
         case = INST[f"Case_{batch['case_id']}"]
-        assert (case, INSIGHT.tboxVersion, Literal("0.3")) in stored
-        assert (case, INSIGHT.contractsVersion, Literal("1.12")) in stored
+        assert (case, INSIGHT.tboxVersion, Literal("0.4")) in stored
+        assert (case, INSIGHT.contractsVersion, Literal("1.13")) in stored
         assert batch["mechanisms_version"] == str(stored.value(case, INSIGHT.tboxSha256))
         stored = worker.graphdb_client.dataset.graph(episode_iri)
         ep = Namespace(str(episode_iri) + "#")
@@ -501,6 +501,10 @@ def run_agent_loop(episode_from_recording):
         assert runs == {ep.Run_nominal, ep.Run_H01, ep.Run_H02}, runs
         assert (ep.Run_H01, INSIGHT.testsHypothesis, ep.Hypothesis_H01) in stored
         assert (ep.Run_nominal, INSIGHT.isNominal, Literal(True)) in stored
+        # What the verification knows goes with them (contracts 1.13): here, accepted, with its explanation.
+        assert (case, DUL.isSettingFor, ep.Verification) in stored
+        assert (ep.Verification, INSIGHT.verdictDecision, Literal("accepted")) in stored
+        assert (ep.Verification, INSIGHT.selectsExplanation, cause) in stored
         # Asked as a question, with the TBox: which mechanism explains the case, and where.
         merged = Graph().parse(TBOX)
         for triple in stored:

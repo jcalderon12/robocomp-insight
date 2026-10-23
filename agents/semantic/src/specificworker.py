@@ -53,7 +53,7 @@ from src.hypothesis_pipeline import error_batch
 from src.hypothesis_service import SemanticHypothesisService
 from src.live_causal_validator import LiveCausalValidator
 from src.semantic_memory import SemanticMemoryError, case_graph, snapshot_from_dataset
-from src.verdict_ingestor import case_triples_graph, ingest_verdict, load_verdict, mechanism_graph
+from src.verdict_ingestor import case_triples_graph, ingest_verdict, load_verdict, mechanism_graph, verification_graph
 
 # DSR contract with the inner simulator (attributes of the intention node)
 HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
@@ -306,18 +306,22 @@ class SpecificWorker(GenericWorker):
 
         # The simulation results and supported explanation go next to the decisions, in the case's
         # graph, with the legacy consolidation triples (contracts 1.12). Selecting an explanation does
-        # not assert a physical cause (contracts 1.11).
-        runs = mechanism = None
+        # not assert a physical cause (contracts 1.11). What the verification knows, accepted or not,
+        # goes with them (contracts 1.13).
+        runs = mechanism = verification = None
         v2 = is_v2(self.current_batch)
         if v2:
             verdict = load_verdict(verdict_path)
-            runs = simulation_graph(self.current_batch, verdict, verdict_path) if verdict is not None else None
+            if verdict is not None:
+                runs = simulation_graph(self.current_batch, verdict, verdict_path)
+                verification = verification_graph(self.current_batch, verdict, self.current_episode)
             if ingestion.triples:
                 mechanism = mechanism_graph(self.current_batch, ingestion.accepted_hypothesis_id, self.current_episode)
         if self.graphdb_writer is not None and (ingestion.triples or runs is not None):
             triples = set(ingestion.triples)
             legacy = case_triples_graph(triples) if v2 and triples else None
-            payloads = [graph.serialize(format="turtle") for graph in (legacy, runs, mechanism) if graph is not None]
+            payloads = [graph.serialize(format="turtle") for graph in (legacy, runs, mechanism, verification)
+                        if graph is not None]
             episode_iri = str(graph_iri(self.current_batch["episode"]["id"])) if v2 else None
 
             def consolidate(client):
