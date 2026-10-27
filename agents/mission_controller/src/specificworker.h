@@ -171,6 +171,12 @@ private:
 	// Follow_person mission status tracking
 	bool follow_person_active = false;  // Track if follow_person mission is currently active
 	bool last_aff_interacting_state = false;  // Track previous state of aff_interacting
+
+	// Semantic memory loop: a change the semantic agent cannot explain (its "unexplained" intention node)
+	// closes follow_person once the recording holds loss_recording_seconds after it, and the search ends
+	// when the semantic agent resolves the case (it deletes the node after storing the verdict).
+	double loss_recording_seconds = 5.0;  // Autopilot_loss_recording_seconds in etc/config
+	std::optional<std::chrono::steady_clock::time_point> unexplained_seen_at;  // Set while a case is open
 	
 	// Handshake state for episodic_memory synchronization (separate from scheduler's internal state)
 	uint64_t handshake_waiting_mission_id = 0;     // Mission ID awaiting handshake (0 = none)
@@ -229,7 +235,7 @@ private:
 	void create_take_photos_mission();                // Create take-photos mission once the cause is resolved (problem_position set)
 	void disable_autopilot_and_reset();               // Reset autopilot state and UI
 	bool bottle_rt_exists() const;                    // Minimal structural check
-	bool problem_node_exists() const;                 // Check if problem node exists in DSR graph
+	bool unexplained_node_exists() const;             // Check if the semantic agent's "unexplained" node exists
 	void stop_active_mission(); 					  // Stop currently active mission and update UI
 
 	/**

@@ -38,6 +38,11 @@ Agent.debugger.3d = false
 Period.Compute = 100
 Period.Emergency = 500
 
+# Seconds the follow_person recording keeps after a change the semantic agent cannot explain, before the
+# autopilot closes it and starts Search Problem Cause: the robot stops ~0.3 s after the loss, an occluded bottle
+# is seen again 1.7-2.5 s after it, and the episode looks 3 s past it.
+Autopilot_loss_recording_seconds = 5.0
+
 Component.Debug.Verbose = true
 
 Ice.Warn.Connections = "0"

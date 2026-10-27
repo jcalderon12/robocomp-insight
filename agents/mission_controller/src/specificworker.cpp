@@ -363,6 +363,10 @@ void SpecificWorker::initialize()
     //int period = configLoader.get<int>("Period.Compute") //NOTE: If you want get period of compute use getPeriod("compute")
     //std::string device = configLoader.get<std::string>("Device.name") 
 
+	// Seconds the follow_person recording keeps after an unexplained change before the autopilot closes it.
+	loss_recording_seconds = configLoader.get<double>("Autopilot_loss_recording_seconds");
+	std::cout << "Autopilot loss recording: " << loss_recording_seconds << " s" << std::endl;
+
 	// Initialize mission timer for real-time updates
 	mission_timer = new QTimer(this);
 	connect(mission_timer, &QTimer::timeout, this, &SpecificWorker::updateMissionTime);
@@ -475,6 +479,15 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 			}
 			// Sólo "Take Photos" cierra la cadena; follow_person la continúa.
 			if (completed_type == "Take Photos") {
+				disable_autopilot_and_reset();
+			}
+			// In the semantic memory loop one pass is one autopilot run: it ends when follow_person
+			// reaches the person without an unexplained change, or when the search for one is resolved
+			// without a "bump" (no photo chain).
+			const bool reached = completed_type == "follow_person" && !unexplained_seen_at.has_value();
+			const bool resolved = completed_type == "Search Problem Cause" && !G->get_node("bump").has_value();
+			if (reached || resolved) {
+				std::cout << "[AUTOPILOT] Pass finished (" << completed_type << ")." << std::endl;
 				disable_autopilot_and_reset();
 			}
 
@@ -1359,14 +1372,15 @@ void SpecificWorker::create_take_photos_mission()
 	std::cout << "[AUTOPILOT] Take Photos mission created" << std::endl;
 }
 
-bool SpecificWorker::problem_node_exists() const
+bool SpecificWorker::unexplained_node_exists() const
 {
 	if (!G) {
 		return false;
 	}
 
-	auto problem_opt = G->get_node("problem");
-	return problem_opt.has_value();
+	// UNEXPLAINED_INTENTION_NAME in agents/semantic/src/ontology_mapping.py
+	auto unexplained_opt = G->get_node("unexplained");
+	return unexplained_opt.has_value();
 }
 
 bool SpecificWorker::bottle_rt_exists() const
@@ -1396,6 +1410,7 @@ void SpecificWorker::disable_autopilot_and_reset()
 	mission_scheduler.setAutopilotEnabled(false);
 	follow_person_active = false;
 	last_aff_interacting_state = false;
+	unexplained_seen_at.reset();
 	handshake_waiting_mission_id = 0;
 	waiting_mission_row = -1;
 	waiting_mission_id = 0;
@@ -1480,11 +1495,25 @@ void SpecificWorker::monitor_mission_execution_state()
 	uint64_t active_id = mission_scheduler.getActiveMissionId();
 	if (active_id == 0) return;
 
-	// Monitor "problem" node
-	if (follow_person_active && problem_node_exists() && !G->get_node("bump").has_value()) {
-		std::cout << "[AUTOPILOT] Problem detected during follow_person mission. Stopping mission." << std::endl;
-		stop_active_mission();
-		create_search_problem_cause_mission();
+	std::string active_type = get_mission_type_from_id(active_id);
+
+	// A change the semantic agent cannot explain closes follow_person and opens the search, once the
+	// recording holds loss_recording_seconds after it: the robot's stop and what it perceives next (an
+	// occluded bottle is seen again 1.7-2.5 s later). The mission is completed, not stopped, so the
+	// scheduler does not resume it after the search.
+	if (active_type == "follow_person" && unexplained_node_exists()) {
+		const auto now = std::chrono::steady_clock::now();
+		if (!unexplained_seen_at.has_value()) {
+			unexplained_seen_at = now;
+			std::cout << "[AUTOPILOT] Unexplained change during follow_person: closing it in "
+					  << loss_recording_seconds << " s." << std::endl;
+		}
+		if (std::chrono::duration<double>(now - *unexplained_seen_at).count() >= loss_recording_seconds) {
+			std::cout << "[AUTOPILOT] Closing follow_person and starting the search." << std::endl;
+			create_search_problem_cause_mission();
+			mission_scheduler.requestMissionCompletion(active_id);
+			follow_person_active = false;
+		}
 		return;
 	}
 
@@ -1496,13 +1525,14 @@ void SpecificWorker::monitor_mission_execution_state()
 	if (bump_exists)
 		create_take_photos_mission();  // no-op if already created (internal duplicate guard)
 
-	// "Search Problem Cause" covers the full investigation, ending once "bump" (and its
-	// generated agent) exist - not just once a position is found on "problem".
-	if (get_mission_type_from_id(active_id) == "Search Problem Cause" && bump_exists)
+	// "Search Problem Cause" covers the full investigation: it ends when the semantic agent has
+	// stored the verdict and resolved the case it opened (it deletes "unexplained"), or once
+	// "bump" (and its generated agent) exist in the photo chain.
+	const bool case_resolved = unexplained_seen_at.has_value() && !unexplained_node_exists();
+	if (active_type == "Search Problem Cause" && (bump_exists || case_resolved))
 		mission_scheduler.requestMissionCompletion(active_id);
 
 	// Only monitor if the active mission is of type "follow_person" or "Take Photos"
-	std::string active_type = get_mission_type_from_id(active_id);
 	if (active_type != "follow_person" && active_type != "Take Photos") return;
 
 	auto affordance_opt = get_active_affordance_node(G);
@@ -1515,8 +1545,12 @@ void SpecificWorker::monitor_mission_execution_state()
 	try {
 		bool current_state = std::get<bool>(aff_iter->second.value());
 
+		// Losing the bottle also turns follow_me off (semantic, fake_castilla_la_mancha), maybe before the
+		// "unexplained" node appears: that ends follow_person through the unexplained case, not here.
+		const bool bottle_lost = active_type == "follow_person" && !bottle_rt_exists();
+
 		// Detect change from true to false - mission complete
-		if (last_aff_interacting_state && !current_state) {
+		if (last_aff_interacting_state && !current_state && !bottle_lost) {
 
 			// Signal mission completion to scheduler
 			mission_scheduler.requestMissionCompletion(active_id);
