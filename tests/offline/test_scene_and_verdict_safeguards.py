@@ -161,6 +161,20 @@ def test_swapped_axes():
     for name in ("initial_robot_position", "problem_position", "bottle_position", "initial_robot_orientation"):
         assert getattr(corrected, name) == getattr(recorded, name), name
 
+    # Route 2 of the final campaign, 25 deg off the room's x axis (Webots yaw -65 deg): the wrong axes agree
+    # sin(50 deg) = 0.77 with the heading, which the margin of 0.3 could not tell from the right ones.
+    turn = math.radians(25.0)
+    plain, swapped = FakeMemApi(yaw_deg=-65.0, deletions_s=[]), RootMemApi(yaw_deg=-65.0, deletions_s=[])
+    for api, order in ((plain, (0, 1)), (swapped, (1, 0))):
+        for event, travelled in zip(api.robot_rt, (0.0, 3.3)):
+            xy = (-3.7 + travelled * math.cos(turn), -1.6 + travelled * math.sin(turn))
+            event.attributes["rt_translation"] = Attr([xy[order[0]], xy[order[1]], 0.02])
+    recorded = extract_scene_poses(plain, [0.0] * 3, [0.0] * 3, [0.0] * 3)
+    corrected = extract_scene_poses(swapped, [0.0] * 3, [0.0] * 3, [0.0] * 3)
+    assert recorded.sources["axes"] == "recorded" and corrected.sources["axes"] == "swapped_xy", corrected.sources
+    for name in ("initial_robot_position", "problem_position", "bottle_position", "initial_robot_orientation"):
+        assert getattr(corrected, name) == getattr(recorded, name), name
+
 
 def test_observed_effect_and_horizon():
     api = FakeMemApi(yaw_deg=-90.0, deletions_s=[14.6, 18.6])
