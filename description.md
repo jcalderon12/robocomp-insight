@@ -6,7 +6,7 @@ Shadow is an indoor mobile robot that can follow people and carry unfastened obj
 - Shadow uses a differential-drive mobile base: 2 drive wheels on a common lateral axis (radius 100 mm, 518 mm apart) and 2 passive caster wheels, one at the front and one at the back.
 - It moves forward and backward, turns while moving and rotates in place; it cannot move sideways.
 - Each drive wheel has its own hub motor; a single dual-axis SVD48V driver controls both motors.
-- The base limits linear speed to 0.9 m/s and rotation speed to 2 rad/s, accelerates at up to 0.5 m/s^2 and brakes at up to 1.0 m/s^2.
+- The base limits linear speed to 0.9 m/s and rotation speed to 2 rad/s. When the speed setpoint changes, it accelerates or brakes at about 3.5 m/s^2 until it reaches the new speed.
 - A suspension of steel rods, dampers and springs decouples the wheels from the chassis.
 - The robot is at most 625 mm wide.
 - A 48 V lithium battery, mounted low in the chassis, powers the robot. It has an external emergency stop button.
