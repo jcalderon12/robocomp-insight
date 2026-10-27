@@ -73,7 +73,7 @@ class Logger:
         self.lines.append(message)
 
 
-WORKER_METHODS = ("check_for_problems", "load_hypotheses_causes", "waiting_for_batch", "retire_batch")
+WORKER_METHODS = ("check_for_problems", "load_hypotheses_causes", "waiting_for_batch", "retire_batch", "stage_done")
 
 
 def make_worker(batch_wait_s, with_intention_node, names=("Search Problem Cause_1", "Follow Person_1")):
@@ -85,7 +85,8 @@ def make_worker(batch_wait_s, with_intention_node, names=("Search Problem Cause_
         graphs={"work": work, "episodic": episodic}, logger=Logger(), state="IDLE",
         hypotheses_compiled=None, hypotheses_path=None, causes_data=None,
         processed_hypotheses_paths=set(), processed_episode_paths=set(), mem_api_path=None, mem_api=None,
-        actual_time=time.time(), batch_wait_s=batch_wait_s, batch_wait_started={}, scenes_written=0)
+        actual_time=time.time(), batch_wait_s=batch_wait_s, batch_wait_started={}, scenes_written=0,
+        case_timings=None)
     for name in WORKER_METHODS:
         setattr(worker, name, types.MethodType(getattr(specificworker.SpecificWorker, name), worker))
     worker.writeSimulationScene = lambda: setattr(worker, "scenes_written", worker.scenes_written + 1)

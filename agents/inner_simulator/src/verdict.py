@@ -407,7 +407,7 @@ def build_verdict(
                     "faithful": ADEQUACY_MAX is None or (lead_d is not None and lead_d <= ADEQUACY_MAX)}
 
     prior = priors(entries)
-    evaluations, log_terms, best_distances = [], [], []
+    evaluations, log_terms, best_distances, closest = [], [], [], []
     for entry, repetitions, pi in zip(entries, historicals, prior):
         distances, weights_q, cases, problems = [], [], [], []
         for repetition in repetitions:
@@ -423,8 +423,9 @@ def build_verdict(
         terms = np.where(np.isfinite(d) & np.isfinite(log_w),
                          -(d ** 2) / (2 * EPS ** 2) + np.log(np.maximum(weights_q, _EPS)) + log_w, -np.inf)
         log_terms.append(terms)
-        supported = d[np.isfinite(terms)]
-        best_distances.append(float(supported.min()) if supported.size else math.inf)
+        counted = np.flatnonzero(np.isfinite(terms))
+        best_distances.append(float(d[counted].min()) if counted.size else math.inf)
+        closest.append(int(counted[np.argmin(d[counted])]) if counted.size else None)
         timing = [abs(effect_time(r) - t_obs) for r, c in zip(repetitions, cases) if c != "none" and effect_time(r) is not None]
         evaluations.append({
             "hypothesis_id": entry["hypothesis_id"],
@@ -470,6 +471,9 @@ def build_verdict(
                                         else float(math.exp(min(700.0, log_evidence[i] - nominal_log)))),
             "parameter_estimate": _parameter_estimate(repetitions, weights),
             "best_repetition_index": best,
+            # The repetition closest to the record, the one ratio_to_nominal uses (it may differ from the best when
+            # the search's importance weights or the effect weigh in); its history is in the simulations file.
+            "closest_repetition_index": closest[i],
             "best_generated_instances": repetitions[best].get(GENERATED_INSTANCES, {}) if best is not None else {},
             "best_bottle_final_position": repetitions[best].get(BOTTLE_POSITION) if best is not None else None,
             "passes_rule": bool(posterior[i] >= P_MIN),
@@ -535,6 +539,51 @@ def write_verdict(verdict: dict[str, Any], output_dir: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
     output_path = out_dir / f"verdict_{_safe_filename(verdict.get('case_id', 'case'))}.json"
     output_path.write_text(json.dumps(verdict, indent=2), encoding="utf-8")
+    return str(output_path)
+
+
+# --------------------------------------------------------------------------- #
+# What the simulation looked like, next to the verdict
+# --------------------------------------------------------------------------- #
+SIMULATIONS_SCHEMA_VERSION = "1.0"
+
+
+def simulated_runs(verdict: dict[str, Any], historicals: list[list[dict[str, Any]]], scene: dict,
+                   record: Optional[dict]) -> dict[str, Any]:
+    """What the figures of simulated against recorded, and a later replay of a simulation, need from a case
+    (docs_output/diseno/evaluacion.md, 4.3): the scene, the record the verdict compared against, and for the
+    nominal and every hypothesis the repetition closest to the record (closest_repetition_index, the one
+    ratio_to_nominal uses) as the simulator returned it: its history (IMU, planar path), what perception saw, the
+    numbers it drew (generated_instances, and the unit draws of a generated cause) and where the bottle ended. A
+    replay runs the scene with that bump sample or those draws (causes_simulator.py --draws). The fast path keeps
+    the history of each chunk's closest repetition only, which includes every hypothesis' closest one."""
+    runs = []
+    for evaluation, repetitions in zip(verdict.get("hypotheses", []), historicals):
+        index = evaluation.get("closest_repetition_index")
+        repetition = repetitions[index] if index is not None else None
+        # Without the simulator's own distance (the slow path), every finite distance counts: its minimum.
+        distance = (None if repetition is None else repetition[DISTANCE] if DISTANCE in repetition
+                    else (evaluation.get("distance") or {}).get("min"))
+        runs.append({"hypothesis_id": evaluation["hypothesis_id"], "mechanism": evaluation.get("mechanism"),
+                     "cause": evaluation.get("cause"), "repetition_index": index, "distance": distance,
+                     "has_history": bool(repetition) and HISTORY in repetition, "repetition": repetition})
+    return {"schema_version": SIMULATIONS_SCHEMA_VERSION, "case_id": verdict.get("case_id"), "scene": scene,
+            "record": record, "runs": runs}
+
+
+def _plain(value: Any) -> Any:
+    """A numpy number or array as JSON writes it: the episodic-memory API gives the record in float32."""
+    if isinstance(value, (np.generic, np.ndarray)):
+        return value.tolist()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def write_simulations(runs: dict[str, Any], output_dir: str) -> str:
+    """simulated_runs next to the verdict, as simulations_<case_id>.json (compact: it holds the record)."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output_path = out_dir / f"simulations_{_safe_filename(runs.get('case_id') or 'case')}.json"
+    output_path.write_text(json.dumps(runs, separators=(",", ":"), default=_plain), encoding="utf-8")
     return str(output_path)
 
 

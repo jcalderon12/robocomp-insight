@@ -94,7 +94,7 @@ from src.episode_scene import (
 )
 from src.hypothesis_compiler import anchor_to_footprint, compile_batch
 from src.verdict import (build_verdict, channels_to_json, save_comparison_plots, save_real_imu_plot,
-                         scene_channels, write_verdict)
+                         scene_channels, simulated_runs, write_simulations, write_verdict)
 from src import search_rounds
 
 import pybullet as p
@@ -226,6 +226,10 @@ class SpecificWorker(GenericWorker):
         self.mem_api_path = None
         # When the recording saw the bottle leave the robot (seconds, IMU time base).
         self.observed_effect_time = None
+        # The instant the current batch was found and how long each stage took, for its verdict (stage_done).
+        self.case_timings = None
+        # Where the verdicts and their plots go (the agent runs from agents/inner_simulator).
+        self.output_root = "logs"
 
         # Clear terminal
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -429,6 +433,7 @@ class SpecificWorker(GenericWorker):
         graph. False means there is nothing new: fall back to the static causes.json."""
         self.hypotheses_compiled = None
         self.hypotheses_batch = None
+        self.case_timings = None
         try:
             unexplained_node = self.graphs["work"].get_node(UNEXPLAINED_NODE)
         except Exception as e:
@@ -455,6 +460,7 @@ class SpecificWorker(GenericWorker):
         self.hypotheses_compiled = compiled
         self.hypotheses_path = hypotheses_path
         self.hypotheses_batch = batch
+        self.case_timings = {"batch_found_at": time.time(), "stages_s": {}}
         self.causes_data = [entry["cause"] for entry in compiled["entries"]]
         self.logger.log(
             f"Hypotheses batch '{compiled.get('case_id', '')}' compiled: "
@@ -487,6 +493,23 @@ class SpecificWorker(GenericWorker):
         self.hypotheses_batch = None
         self.hypotheses_path = None
         self.state = "IDLE"
+
+    def stage_done(self, stage: str, started: float) -> None:
+        """Keep how long a stage of the current batch took since `started` (time.perf_counter)."""
+        if self.case_timings is not None:
+            self.case_timings["stages_s"][stage] = round(time.perf_counter() - started, 3)
+
+    def verdict_timings(self) -> dict:
+        """The timings the verdict carries (docs_output/diseno/evaluacion.md, 4.3): when the batch was found
+        (epoch seconds), each stage in seconds, when the verdict is written and the total between both."""
+        timings = dict(self.case_timings or {"batch_found_at": None, "stages_s": {}})
+        written_at = time.time()
+        found_at = timings.get("batch_found_at")
+        timings.update(batch_found_at=round(found_at, 3) if found_at is not None else None,
+                       verdict_written_at=round(written_at, 3),
+                       total_s=round(written_at - found_at, 3) if found_at is not None else None,
+                       processes=self.sim_processes)
+        return timings
 
 
     def __del__(self) -> None:
@@ -531,11 +554,16 @@ class SpecificWorker(GenericWorker):
                     scene_data = self.sim_scene.model_dump()
                     fast = (self.hypotheses_compiled is not None and not self.sim_gui
                             and scene_data.get("observed_effect_time") is not None and scene_data.get("anomaly_interval"))
+                    started = time.perf_counter()
                     record = real_record(self.mem_api) if self.hypotheses_compiled is not None else None
+                    self.stage_done("record", started)
+                    started = time.perf_counter()
                     if fast:
                         ordered_historicals = self.run_fast_simulations(record, scene_data)
                     else:
                         ordered_historicals = self.run_simulations()
+                    self.stage_done("simulation", started)
+                    simulated_at = time.perf_counter()
 
                     # Convert episodic memory history to IMU history given one of the historicals ts list as an example.
                     list_of_ts = ordered_historicals[0][0][HISTORY][TIMESTAMP]
@@ -615,60 +643,8 @@ class SpecificWorker(GenericWorker):
 
                         self.retire_batch()
                     else:
-                        # Hypotheses of the semantic memory: the contrastive verdict (nominal
-                        # baseline, effect at its time, IMU score), published for the memory.
-                        plots_dir = os.path.join(
-                            "logs/plots",
-                            (self.hypotheses_compiled or {}).get("case_id") or "static_causes",
-                        )
-                        os.makedirs(plots_dir, exist_ok=True)
-                        save_real_imu_plot(self.imu_history, os.path.join(plots_dir, "real_imu_history.png"))
-
-                        # ============ CONTRASTIVE VERDICT ============
-                        # Nominal baseline + symbolic effect (bottle off the tray) + IMU score.
-                        entries = self.hypotheses_compiled["entries"]
-                        skipped = self.hypotheses_compiled["skipped"]
-                        case_id = self.hypotheses_compiled.get("case_id", "") or "hypotheses_case"
-
-                        verdict = build_verdict(
-                            case_id=case_id,
-                            record=record,
-                            entries=entries,
-                            historicals=ordered_historicals,
-                            scene=self.sim_scene.model_dump(),
-                            skipped=skipped,
-                        )
-                        verdict_path = os.path.abspath(write_verdict(verdict, "logs/verdicts"))
-                        save_comparison_plots(self.imu_history, verdict["hypotheses"], ordered_historicals, plots_dir)
-
-                        accepted_id = verdict.get("accepted_hypothesis_id")
-                        top_id = verdict.get("most_probable_hypothesis_id")
-                        top = next((h for h in verdict["hypotheses"] if h["hypothesis_id"] == top_id), {})
-                        self.logger.log(
-                            f"Verdict written to {verdict_path}. Accepted hypothesis: {accepted_id}. "
-                            f"Most probable: {top_id} (posterior {top.get('posterior')}). "
-                            f"Robust to the Monte Carlo error: {verdict.get('acceptance_robust')}. "
-                            f"90 % set: {[m['mechanism'] for m in verdict['credible_set']['mechanisms']]}. "
-                            f"Anomaly interval: {verdict.get('anomaly_interval')}.",
-                            style="bold green" if accepted_id else "bold yellow",
-                        )
-                        if verdict.get("abstention_reason"):
-                            self.logger.log(f"Verdict abstained: {verdict['abstention_reason']}.", style="bold red")
-
-                        # Synthesize detector agent templates only for accepted causes
-                        accepted_causes = {
-                            e["cause"]["name"] for e in verdict["hypotheses"] if e.get("accepted")
-                        }
-                        for cause_name in accepted_causes:
-                            if not generate_agent(cause_name, AGENTS_FOLDER):
-                                print("Error while generating agent template for cause", cause_name)
-                        if accepted_causes:
-                            print("Agent templates generated at folder", AGENTS_FOLDER)
-
-                        self.publish_verdict_filepath(verdict_path)
-                        # Back to IDLE: the processed-episode guard avoids re-simulating the same
-                        # episode, while a later hypotheses batch for it is still picked up.
-                        self.retire_batch()
+                        # Hypotheses of the semantic memory: the contrastive verdict, published for the memory.
+                        self.write_batch_verdict(record, ordered_historicals, simulated_at)
 
                 case "TERMINATED":
                     pass
@@ -680,8 +656,74 @@ class SpecificWorker(GenericWorker):
             self.retire_batch()
 
         return True
-    
-        
+
+
+
+    def write_batch_verdict(self, record: dict, historicals: list, simulated_at: float) -> str:
+        """The verdict on the batch of the semantic memory (verdict.py), its plots and the agent templates of the
+        accepted causes. What the campaign keeps with it (docs_output/diseno/evaluacion.md, 4.3): the simulations
+        file (the scene, the record and the repetition of each hypothesis closest to it) and the timings of every
+        stage, so the verdict is written last, then published. `simulated_at` (time.perf_counter) is when the
+        simulations ended. Returns the verdict's path."""
+        case_id = self.hypotheses_compiled.get("case_id", "") or "hypotheses_case"
+        plots_dir = os.path.join(self.output_root, "plots", case_id)
+        verdicts_dir = os.path.join(self.output_root, "verdicts")
+        os.makedirs(plots_dir, exist_ok=True)
+        save_real_imu_plot(self.imu_history, os.path.join(plots_dir, "real_imu_history.png"))
+
+        # ============ CONTRASTIVE VERDICT ============
+        # Nominal baseline + symbolic effect (bottle off the tray) + IMU score.
+        scene = self.sim_scene.model_dump()
+        started = time.perf_counter()
+        verdict = build_verdict(
+            case_id=case_id,
+            record=record,
+            entries=self.hypotheses_compiled["entries"],
+            historicals=historicals,
+            scene=scene,
+            skipped=self.hypotheses_compiled["skipped"],
+        )
+        verdict_s = time.perf_counter() - started
+        verdict["simulations_path"] = os.path.abspath(
+            write_simulations(simulated_runs(verdict, historicals, scene, record), verdicts_dir))
+        save_comparison_plots(self.imu_history, verdict["hypotheses"], historicals, plots_dir)
+
+        # Synthesize detector agent templates only for accepted causes
+        accepted_causes = {
+            e["cause"]["name"] for e in verdict["hypotheses"] if e.get("accepted")
+        }
+        for cause_name in accepted_causes:
+            if not generate_agent(cause_name, AGENTS_FOLDER):
+                print("Error while generating agent template for cause", cause_name)
+        if accepted_causes:
+            print("Agent templates generated at folder", AGENTS_FOLDER)
+
+        if self.case_timings is not None:
+            self.case_timings["stages_s"]["verdict"] = round(verdict_s, 3)
+            self.case_timings["stages_s"]["outputs"] = round(time.perf_counter() - simulated_at - verdict_s, 3)
+        verdict["timings"] = self.verdict_timings()
+        verdict_path = os.path.abspath(write_verdict(verdict, verdicts_dir))
+
+        accepted_id = verdict.get("accepted_hypothesis_id")
+        top_id = verdict.get("most_probable_hypothesis_id")
+        top = next((h for h in verdict["hypotheses"] if h["hypothesis_id"] == top_id), {})
+        self.logger.log(
+            f"Verdict written to {verdict_path}. Accepted hypothesis: {accepted_id}. "
+            f"Most probable: {top_id} (posterior {top.get('posterior')}). "
+            f"Robust to the Monte Carlo error: {verdict.get('acceptance_robust')}. "
+            f"90 % set: {[m['mechanism'] for m in (verdict.get('credible_set') or {}).get('mechanisms', [])]}. "
+            f"Anomaly interval: {verdict.get('anomaly_interval')}. "
+            f"{verdict['timings']['total_s']} s since the batch was found.",
+            style="bold green" if accepted_id else "bold yellow",
+        )
+        if verdict.get("abstention_reason"):
+            self.logger.log(f"Verdict abstained: {verdict['abstention_reason']}.", style="bold red")
+
+        self.publish_verdict_filepath(verdict_path)
+        # Back to IDLE: the processed-episode guard avoids re-simulating the same
+        # episode, while a later hypotheses batch for it is still picked up.
+        self.retire_batch()
+        return verdict_path
 
     def run_simulations(self) -> list:
         """One causes_simulator process per cause, every repetition with its history: the static causes,
@@ -1031,6 +1073,7 @@ class SpecificWorker(GenericWorker):
             style="bold blue"
         )
         self.actual_time = time.time()
+        started = time.perf_counter()
         if self.mem_api_path != episode_path:
             self.logger.log("MemoryAPI will be initialized with filepath: " + episode_path, style="blue")
             self.mem_api = mem.EpisodicMemoryAPI(episode_path)
@@ -1048,6 +1091,7 @@ class SpecificWorker(GenericWorker):
                 break
             time.sleep(0.1)
         self.processed_episode_paths.add(episode_path)
+        self.stage_done("episodic_memory", started)
 
         if not self.mem_api.is_ready():
             self.logger.log(
@@ -1060,7 +1104,9 @@ class SpecificWorker(GenericWorker):
             self.retire_batch()
             return False
 
+        started = time.perf_counter()
         self.writeSimulationScene()
+        self.stage_done("scene", started)
         return True
 
     def waiting_for_batch(self, episode_path: str) -> bool:
