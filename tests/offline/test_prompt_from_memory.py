@@ -118,7 +118,7 @@ def check_records_read_back(cases):
         case = read_case(local_snapshot(episode, trigger, case_id=name), name)
         assert normalized(case.episode) == recorded(episode), name
         assert case.trigger == trigger, (name, case.trigger, trigger)
-        assert case.record_sha256 and case.provenance["tbox_version"] == "0.5", case.provenance
+        assert case.record_sha256 and case.provenance["tbox_version"] == "0.6", case.provenance
         assert case.provenance["contracts_version"] == "1.15" and case.provenance["code_commit"], case.provenance
 
 
@@ -197,7 +197,7 @@ def check_refusals():
     try:
         read_case(type(snapshot)(tbox=older, case=snapshot.case, graphs=snapshot.graphs, sha256="", source="test"), "c")
     except SemanticMemoryError as error:
-        assert "TBox 0.5" in str(error) and "TBox 0.2" in str(error), error
+        assert "TBox 0.6" in str(error) and "TBox 0.2" in str(error), error
     else:
         raise AssertionError("a case written with another TBox was read")
 

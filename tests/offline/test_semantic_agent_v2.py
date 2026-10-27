@@ -448,7 +448,7 @@ def run_agent_loop(episode_from_recording):
         # The case says with which TBox, contracts and code it was written.
         stored = worker.graphdb_client.dataset.graph(episode_iri)
         case = INST[f"Case_{batch['case_id']}"]
-        assert (case, INSIGHT.tboxVersion, Literal("0.5")) in stored
+        assert (case, INSIGHT.tboxVersion, Literal("0.6")) in stored
         assert (case, INSIGHT.contractsVersion, Literal("1.15")) in stored
         assert batch["mechanisms_version"] == str(stored.value(case, INSIGHT.tboxSha256))
         stored = worker.graphdb_client.dataset.graph(episode_iri)

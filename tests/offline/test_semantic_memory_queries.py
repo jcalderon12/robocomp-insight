@@ -147,7 +147,7 @@ def check_two_cases_kept(episode, batch, verdict, dataset):
     cases = {row["case"]: row for row in got["cq10_cases"]}
     assert set(cases) == {batch["case_id"], "second_case"}, cases
     for row in cases.values():
-        assert (row["tbox_version"], row["contracts_version"]) == ("0.5", "1.15"), row
+        assert (row["tbox_version"], row["contracts_version"]) == ("0.6", "1.15"), row
         assert len(row["tbox_sha256"]) == 64 and row["code_commit"] and row["model"] == batch["model"], row
     assert cases["second_case"]["episode_id"] == second_episode["episode_id"]
     proposals = {}

@@ -1,7 +1,8 @@
 """Builds the INSIGHT TBox: agents/semantic/data/insight_tbox.ttl.
 
 It merges, into one self-contained file:
-  * T_op.owl, the IPM's pruned module (DUL core and the SOMA causal relations);
+  * T_op.owl, the IPM's pruned module (DUL core and the SOMA causal relations), without its OCRA
+    terms (Collaboration and its plan and goal relations), which nothing in INSIGHT uses;
   * the DUL and SOMA classes the episode and the mechanisms need, imported with MIREOT: each term
     with its label, comment and named superclasses up to dul:Entity, and no other axiom;
   * the SOSA terms the evidence uses, with their alignment to DUL from the W3C SSN-DUL alignment;
@@ -18,7 +19,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from rdflib import Graph, Literal, Namespace, URIRef
+from rdflib import BNode, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 
 HERE = Path(__file__).resolve().parent
@@ -33,7 +34,11 @@ INST = Namespace("http://insight.local/instances#")
 OCRA = Namespace("http://www.iri.upc.edu/groups/perception/OCRA/ont/ocra.owl#")
 
 ONTOLOGY_IRI = URIRef("http://insight.local/ontology")
-VERSION = "0.5"
+VERSION = "0.6"
+
+# Namespaces of T_op.owl that the TBox leaves out (version 0.6): OCRA's Collaboration, with its plan
+# and goal relations, is about collaborative robotics; no INSIGHT term, query or prompt refers to it.
+DROPPED_NAMESPACES = [OCRA]
 
 # Design section 3.1, plus soma:State, which contract 1 needs for the support of the bottle
 # (soma:SupportState is a concept that classifies states, not a state), and soma:DesignedComponent,
@@ -141,6 +146,24 @@ def drop_ontology_headers(graph: Graph) -> None:
         graph.remove((ontology, None, None))
 
 
+def drop_namespace(graph: Graph, namespace: Namespace) -> None:
+    """Remove the terms of a namespace with their axioms, the blank nodes of their restrictions
+    included. Fails if a term left in the graph still refers to one of them."""
+    prefix = str(namespace)
+    pending = [s for s in set(graph.subjects()) if isinstance(s, URIRef) and str(s).startswith(prefix)]
+    seen = set()
+    while pending:
+        node = pending.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        pending.extend(o for o in graph.objects(node, None) if isinstance(o, BNode))
+        graph.remove((node, None, None))
+    left = [t for t in graph if any(isinstance(x, URIRef) and str(x).startswith(prefix) for x in t)]
+    if left:
+        raise ValueError(f"{len(left)} triples still refer to {prefix}, e.g. {left[0]}")
+
+
 def declared(graph: Graph, term: URIRef) -> bool:
     return next(graph.objects(term, RDF.type), None) is not None
 
@@ -178,6 +201,8 @@ def build() -> Graph:
 
     tbox = load(t_op_path, "xml")
     drop_ontology_headers(tbox)
+    for namespace in DROPPED_NAMESPACES:
+        drop_namespace(tbox, namespace)
     dul, soma = load(dul_path, "turtle"), load(soma_path, "xml")
     sosa, alignment = load(sosa_path, "turtle"), load(alignment_path, "turtle")
 
@@ -202,7 +227,7 @@ def build() -> Graph:
         lang="en")))
 
     for prefix, namespace in (("dul", DUL), ("soma", SOMA), ("sosa", SOSA), ("insight", INSIGHT),
-                              ("inst", INST), ("ocra", OCRA), ("owl", OWL)):
+                              ("inst", INST), ("owl", OWL)):
         tbox.bind(prefix, namespace, replace=True)
     return tbox
 
