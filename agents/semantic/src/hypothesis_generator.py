@@ -349,6 +349,21 @@ class GenerationResult:
     episode: Optional[dict[str, Any]] = None    #: the episode as the semantic memory gave it
 
 
+def batch_timings(timings: Optional[dict] = None, **stages_s: float) -> dict:
+    """The batch's `timings` (contracts 1.15): the instants the agent passes in (epoch seconds: unexplained_at,
+    recording_ready_at), every stage in seconds (its own and these), when the batch is written, and the total
+    since the change was found unexplained."""
+    out = {name: round(value, 3) if name.endswith("_at") and value is not None else value
+           for name, value in (timings or {}).items()}
+    stages = {**(out.get("stages_s") or {}), **stages_s}
+    out["stages_s"] = {name: round(float(value), 3) for name, value in stages.items()}
+    written_at = time.time()
+    out["batch_written_at"] = round(written_at, 3)
+    start = out.get("unexplained_at")
+    out["total_s"] = round(written_at - start, 3) if start is not None else None
+    return out
+
+
 def _shown(path: Path) -> str:
     """A path relative to the repository when it is inside it."""
     try:
@@ -374,17 +389,20 @@ def generate_batch(episode: dict[str, Any], llm: LLM, *, model: str, output_dir:
 def generate_from_memory(memory: MemorySnapshot, llm: LLM, *, model: str, output_dir: Path, case_id: str,
                          budget: Optional[int] = DEFAULT_BUDGET, max_attempts: int = DEFAULT_MAX_ATTEMPTS,
                          self_model_path: Path = DEFAULT_SELF_MODEL, episode_path: Optional[str] = None,
-                         log: Optional[Callable[[str], None]] = None) -> GenerationResult:
+                         log: Optional[Callable[[str], None]] = None,
+                         timings: Optional[dict] = None) -> GenerationResult:
     """Ask the LLM for a layer-3a proposal over the case the semantic memory holds, and publish its
     layer-3b batch. The episode, the trigger and the TBox are the ones read from the memory.
 
     Writes, in output_dir: {case_id}.json (the batch), {case_id}_prompt.md (the prompt) and
     {case_id}_transcript.json (every message of the conversation). If no answer passes the schema in
     max_attempts, the batch has status `error`, no hypotheses and the problems of each attempt.
-    Raises SemanticMemoryError if the memory does not hold the case.
+    Raises SemanticMemoryError if the memory does not hold the case. `timings` are the agent's instants
+    and stages before this one; the batch adds the prompt, the LLM and the checks (batch_timings).
     """
     log = log or (lambda message: None)
     output_dir.mkdir(parents=True, exist_ok=True)
+    clock = time.monotonic()
     case = read_case(memory, case_id)
     episode, trigger, tbox_path = case.episode, case.trigger, memory.tbox
     context = build_explanation_context(episode, tbox_path, trigger)
@@ -402,6 +420,7 @@ def generate_from_memory(memory: MemorySnapshot, llm: LLM, *, model: str, output
     attempts: list[dict[str, Any]] = []
     errors: list[str] = []
     batch = None
+    stages = {"prompt": time.monotonic() - clock, "llm": 0.0, "checks": 0.0}
     started = time.monotonic()
     for number in range(1, max_attempts + 1):
         attempt: dict[str, Any] = {"attempt": number, "model": model}
@@ -411,11 +430,14 @@ def generate_from_memory(memory: MemorySnapshot, llm: LLM, *, model: str, output
             answer, metrics = llm(messages)
         except Exception as error:          # the LLM was not reached: ask again, as it was
             attempt.update(status="llm_error", error=str(error), elapsed_seconds=round(time.monotonic() - clock, 3))
+            stages["llm"] += time.monotonic() - clock
             errors.append(f"attempt {number}: the LLM failed: {error}")
             log(f"attempt {number}: the LLM failed: {error}")
             continue
         attempt.update(elapsed_seconds=round(time.monotonic() - clock, 3), **({"ollama_native": metrics} if metrics else {}))
+        stages["llm"] += time.monotonic() - clock
         messages.append({"role": "assistant", "content": answer})
+        clock = time.monotonic()
         try:
             proposal = _recorded_ids(_extract_json_object(answer), context["display_ids"])
             batch = publish_batch(episode, proposal, arm=ARM, budget=budget, attempts=number,
@@ -425,9 +447,11 @@ def generate_from_memory(memory: MemorySnapshot, llm: LLM, *, model: str, output
         except ValueError as error:          # _extract_json_object: no JSON object in the answer
             problems = [f"the answer is not a JSON object ({error})"]
         else:
+            stages["checks"] += time.monotonic() - clock
             attempt["status"] = "success"
             log(f"attempt {number}: {len(batch['hypotheses'])} hypotheses published")
             break
+        stages["checks"] += time.monotonic() - clock
         attempt.update(status="refused", problems=problems)
         errors.append(f"attempt {number}: " + "; ".join(problems))
         log(f"attempt {number} refused: " + "; ".join(problems))
@@ -436,6 +460,7 @@ def generate_from_memory(memory: MemorySnapshot, llm: LLM, *, model: str, output
     if batch is None:
         batch = error_batch(episode, errors, arm=ARM, budget=budget, attempts=len(attempts), **metadata)
     batch["generation_metrics"] = {"llm_elapsed_seconds": round(time.monotonic() - started, 3), "attempts": attempts}
+    batch["timings"] = batch_timings(timings, **stages)
     batch_path = output_dir / f"{case_id}.json"
     batch_path.write_text(json.dumps(batch, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     transcript_path = output_dir / f"{case_id}_transcript.json"

@@ -38,7 +38,7 @@ ONTOLOGY_GRAPH = "http://insight.local/ontology"
 ONTOLOGY_IRI = URIRef("http://insight.local/ontology")
 #: Version of the contracts between the semantic memory and the evaluation
 #: (docs_output/implementacion/contratos.md) that this code writes.
-CONTRACTS_VERSION = "1.14"
+CONTRACTS_VERSION = "1.15"
 
 
 class SemanticMemoryError(RuntimeError):

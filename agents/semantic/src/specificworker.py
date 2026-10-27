@@ -48,12 +48,12 @@ from src.graphdb_client import GraphDBClient, GraphDBConfig
 from src.graphdb_writer import GraphDBWriter
 from src.hypothesis_config import HypothesisGeneratorConfig
 from src.hypothesis_context import build_hypothesis_generation_context, compact_timestamp_token
-from src.hypothesis_generator import ARM, GenerationResult, generate_from_memory, ollama_chat
+from src.hypothesis_generator import ARM, GenerationResult, batch_timings, generate_from_memory, ollama_chat
 from src.hypothesis_pipeline import error_batch
 from src.hypothesis_service import SemanticHypothesisService
 from src.live_causal_validator import LiveCausalValidator
 from src.semantic_memory import SemanticMemoryError, case_graph, snapshot_from_dataset
-from src.verdict_ingestor import case_triples_graph, ingest_verdict, load_verdict, mechanism_graph, verification_graph
+from src.verdict_ingestor import ingest_verdict, load_verdict, mechanism_graph, summary_graph, verification_graph
 
 # DSR contract with the inner simulator (attributes of the intention node)
 HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
@@ -72,6 +72,21 @@ NON_SEMANTIC_ATTRIBUTES = frozenset({"imu_accelerometer", "imu_gyroscope", "imu_
 #: How long the generation waits for GraphDB to store the case and give it back. A healthy GraphDB
 #: answers in milliseconds; past this the batch goes out empty (the simulator waits 120 s for it).
 MEMORY_READ_TIMEOUT_S = 30.0
+
+
+def write_consolidation_timing(path: Path, timing: dict, status: str) -> None:
+    """The consolidation's own record, next to the batch: when GraphDB took the case's verdict and was done
+    with it (epoch seconds), how long that took and how long since the change was found unexplained. It runs on
+    the writer's thread, after the case's last write; failing to write it does not undo or repeat that write."""
+    done_at = time.time()
+    timing.update(status=status, finished_at=round(done_at, 3))
+    if status == "written":
+        timing["graphdb_s"] = round(done_at - timing["graphdb_started_at"], 3)
+        timing["total_s"] = round(done_at - timing["unexplained_at"], 3) if timing.get("unexplained_at") else None
+    try:
+        path.write_text(json.dumps(timing, indent=1) + "\n", encoding="utf-8")
+    except OSError as exc:
+        console.print(f"Could not write the consolidation's timing to '{path}': {exc}", style="yellow")
 
 
 class SpecificWorker(GenericWorker):
@@ -112,6 +127,8 @@ class SpecificWorker(GenericWorker):
         self.causal_validator = LiveCausalValidator()
         self.unexplained = False
         self.unexplained_reason = ""
+        # When the live validator found the change unexplained (epoch seconds), for the case's timings.
+        self.unexplained_at = None
         self.stop_inserted = False
         self.bootstrap_sync = True
         self.trigger_added: frozenset[tuple[str, str, str]] = frozenset()
@@ -305,9 +322,10 @@ class SpecificWorker(GenericWorker):
             return
 
         # The simulation results and supported explanation go next to the decisions, in the case's
-        # graph, with the legacy consolidation triples (contracts 1.12). Selecting an explanation does
-        # not assert a physical cause (contracts 1.11). What the verification knows, accepted or not,
-        # goes with them (contracts 1.13).
+        # graph, with the legacy consolidation triples (contracts 1.12), whose explanation links its
+        # simulation (contracts 1.15). Selecting an explanation does not assert a physical cause
+        # (contracts 1.11). What the verification knows, accepted or not, goes with them (contracts 1.13).
+        seen_at = time.time()
         runs = mechanism = verification = None
         v2 = is_v2(self.current_batch)
         if v2:
@@ -319,17 +337,33 @@ class SpecificWorker(GenericWorker):
                 mechanism = mechanism_graph(self.current_batch, ingestion.accepted_hypothesis_id, self.current_episode)
         if self.graphdb_writer is not None and (ingestion.triples or runs is not None):
             triples = set(ingestion.triples)
-            legacy = case_triples_graph(triples) if v2 and triples else None
-            payloads = [graph.serialize(format="turtle") for graph in (legacy, runs, mechanism, verification)
-                        if graph is not None]
+            legacy = (summary_graph(self.current_batch, ingestion.accepted_intervention, ingestion.accepted_hypothesis_id)
+                      if v2 and triples else None)
+            pieces = {"summary": legacy, "runs": runs, "explanation": mechanism, "verification": verification}
+            payloads = [graph.serialize(format="turtle") for graph in pieces.values() if graph is not None]
             episode_iri = str(graph_iri(self.current_batch["episode"]["id"])) if v2 else None
+            # How long the consolidation took, for the cost of the case (docs_output/diseno/evaluacion.md, 4.3).
+            timing = {"case_id": ingestion.case_id, "verdict_path": verdict_path,
+                      "batch_path": str(self.last_hypotheses_path) if self.last_hypotheses_path else None,
+                      "unexplained_at": None if self.unexplained_at is None else round(self.unexplained_at, 3),
+                      "verdict_seen_at": round(seen_at, 3),
+                      "graphs_built_s": round(time.time() - seen_at, 3),
+                      "triples": {name: len(graph) for name, graph in pieces.items() if graph is not None},
+                      "queued_at": round(time.time(), 3)}
+            if not v2 and triples:
+                timing["triples"]["live"] = len(triples)
+            timing_path = self.hypothesis_config.output_dir / f"{ingestion.case_id}_consolidation.json"
 
             def consolidate(client):
+                timing.setdefault("graphdb_started_at", round(time.time(), 3))
+                timing["attempts"] = timing.get("attempts", 0) + 1
                 if not v2 and triples:      # generation v1 has no case graph: the live graph, as before
                     client.apply_delta(added=triples, removed=set())
                 for payload in payloads:
                     client.add_to_graph(payload, episode_iri)
-            self.graphdb_writer.submit(f"consolidate the verdict of case '{ingestion.case_id}'", consolidate)
+                write_consolidation_timing(timing_path, timing, "written")
+            self.graphdb_writer.submit(f"consolidate the verdict of case '{ingestion.case_id}'", consolidate,
+                                       on_failure=lambda: write_consolidation_timing(timing_path, timing, "failed"))
         if runs is not None:
             console.print(f"Simulation runs of case '{ingestion.case_id}' in the episode graph "
                           f"({len(runs)} triples).", style="cyan")
@@ -365,6 +399,7 @@ class SpecificWorker(GenericWorker):
             console.print(f"Could not delete intention node: {exc}", style="red")
         self.unexplained = False
         self.unexplained_reason = ""
+        self.unexplained_at = None
         self.stop_inserted = False
         self.hypothesis_generation_done = False
         self.last_hypotheses_path = None
@@ -559,6 +594,7 @@ class SpecificWorker(GenericWorker):
                         if not self.unexplained:
                             self.trigger_added = frozenset(added_triples)
                             self.trigger_removed = frozenset(removed_triples)
+                            self.unexplained_at = time.time()
                         self.unexplained = True
                         self.unexplained_reason = validation.reason
                         console.print(
@@ -666,6 +702,10 @@ class SpecificWorker(GenericWorker):
             return
         self._waiting_for_recording = False
         self.hypothesis_generation_done = True
+        # The instants and stages of the case, for the batch's timings (contracts 1.15).
+        ready_at = time.time()
+        stages = {} if self.unexplained_at is None else {"wait_for_recording": ready_at - self.unexplained_at}
+        timings = {"unexplained_at": self.unexplained_at, "recording_ready_at": ready_at, "stages_s": stages}
         self._restore_mirror()
         config = self.hypothesis_config
         case_id = f"semantic_unexplained_{compact_timestamp_token()}"
@@ -679,17 +719,22 @@ class SpecificWorker(GenericWorker):
         except Exception as exc:
             console.print(f"[Generation v2] No batch for '{recording}': {exc}", style="red")
             return
+        stages["episode"] = time.perf_counter() - started
+        clock = time.perf_counter()
         try:
             memory = self._store_and_read_case(case_id, episode, trigger)
+            stages["semantic_memory"] = time.perf_counter() - clock
             result = generate_from_memory(
                 memory, self.llm, model=config.primary_model, output_dir=config.output_dir, case_id=case_id,
                 budget=config.budget, max_attempts=config.max_attempts, self_model_path=config.description_path,
                 episode_path=str(episode_path), log=lambda message: console.print(f"[Generation v2] {message}", style="cyan"),
+                timings=timings,
             )
         except (SemanticMemoryError, TimeoutError, OSError) as exc:
             console.print(f"[Generation v2] The semantic memory could not give case '{case_id}' back: {exc}. "
                           "The LLM is not asked; the batch goes out without hypotheses.", style="red")
-            result = self._memory_error_batch(case_id, episode, trigger, episode_path, exc)
+            stages.setdefault("semantic_memory", time.perf_counter() - clock)
+            result = self._memory_error_batch(case_id, episode, trigger, episode_path, exc, timings)
         except Exception as exc:
             console.print(f"[Generation v2] No batch for '{recording}': {exc}", style="red")
             return
@@ -733,12 +778,14 @@ class SpecificWorker(GenericWorker):
                                            timeout_s=MEMORY_READ_TIMEOUT_S)
         return snapshot_from_dataset(dataset, ontology, graph)
 
-    def _memory_error_batch(self, case_id: str, episode: dict, trigger: dict, episode_path, error) -> GenerationResult:
+    def _memory_error_batch(self, case_id: str, episode: dict, trigger: dict, episode_path, error,
+                            timings: dict | None = None) -> GenerationResult:
         """The batch published when the semantic memory could not give the case back: no hypotheses."""
         config = self.hypothesis_config
         batch = error_batch(episode, [f"semantic memory: {error}"], arm=ARM, budget=config.budget, attempts=0,
                             case_id=case_id, model=config.primary_model, trigger=trigger,
                             episode_path=str(episode_path))
+        batch["timings"] = batch_timings(timings)
         batch_path = config.output_dir / f"{case_id}.json"
         batch_path.write_text(json.dumps(batch, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
         return GenerationResult(ok=False, batch=batch, batch_path=batch_path, prompt_path=None, transcript_path=None,

@@ -31,6 +31,15 @@ it back with the TBox, and builds the prompt from that; the prompt is the one th
 gives. If GraphDB cannot store or give back the case, the LLM is not asked: the batch goes out with
 no hypotheses and the error, and the JSON is never read in its place.
 
+What the final campaign needs is kept (contracts 1.15; docs_output/diseno/evaluacion.md, 4.3 and 6.1):
+  * the batch says when the change was found unexplained, when the recording was ready and when the batch
+    was written, and how long each stage took (the recording, the episode, the semantic memory, the prompt,
+    the LLM and the checks), also when the semantic memory is not there;
+  * the summary for the working memory (Case explainedBy Event_<cause>, typed as a simulation-supported
+    explanation) links the run the verdict accepted, so no explanation in the case's graph lacks its simulation;
+  * the consolidation leaves its own record next to the batch: when GraphDB took the verdict's graphs and
+    was done with them, how many triples of each, and the total since the change was found unexplained.
+
 What the memory decides is kept in the memory (contracts 1.8; criterion in
 docs_output/resultados/20_memoria_en_graphdb/CRITERIO.md):
   * the INSIGHT TBox is loaded into its own graph at start-up, and again at the next case if
@@ -251,6 +260,7 @@ def make_worker(output_dir):
         graphdb_writer=GraphDBWriter(db, lambda message, style: None, retry_seconds=0.01),
         hypothesis_config=config, hypothesis_service=None, llm=ScriptedLLM(ANSWER),
         unexplained=True, unexplained_reason="Bottle lost location on robot without explicit causal evidence.",
+        unexplained_at=time.time() - 2.0,
         trigger_added=frozenset(), trigger_removed=frozenset({LOST}), stop_inserted=False,
         hypothesis_generation_done=False, last_hypotheses_path=None, hypotheses_path_published=False,
         ingested_verdict_paths=set(), _parsed_ingestions={},
@@ -395,6 +405,14 @@ def run_agent_loop(episode_from_recording):
         assert batch["schema_version"] == "2.0" and batch["status"] == "success" and batch["arm"] == "llm_full"
         assert batch["case_id"].startswith("semantic_unexplained_") and batch["attempts"] == 1
         assert batch["trigger"]["unexplained_reason"].startswith("Bottle lost location")
+        # How long each stage took, for the cost of the case (contracts 1.15).
+        timings = batch["timings"]
+        assert set(timings["stages_s"]) == {"wait_for_recording", "episode", "semantic_memory", "prompt", "llm",
+                                            "checks"}, timings
+        assert all(value >= 0.0 for value in timings["stages_s"].values()), timings
+        assert timings["stages_s"]["wait_for_recording"] >= 2.0, timings          # the first cycle waited
+        assert timings["unexplained_at"] <= timings["recording_ready_at"] <= timings["batch_written_at"], timings
+        assert abs(timings["total_s"] - (timings["batch_written_at"] - timings["unexplained_at"])) < 2e-3, timings
 
         # 1. The episode is the one of the file reader.
         episode = json.loads(Path(batch["episode"]["path"]).read_text(encoding="utf-8"))
@@ -431,7 +449,7 @@ def run_agent_loop(episode_from_recording):
         stored = worker.graphdb_client.dataset.graph(episode_iri)
         case = INST[f"Case_{batch['case_id']}"]
         assert (case, INSIGHT.tboxVersion, Literal("0.5")) in stored
-        assert (case, INSIGHT.contractsVersion, Literal("1.14")) in stored
+        assert (case, INSIGHT.contractsVersion, Literal("1.15")) in stored
         assert batch["mechanisms_version"] == str(stored.value(case, INSIGHT.tboxSha256))
         stored = worker.graphdb_client.dataset.graph(episode_iri)
         ep = Namespace(str(episode_iri) + "#")
@@ -505,6 +523,22 @@ def run_agent_loop(episode_from_recording):
         assert (case, DUL.isSettingFor, ep.Verification) in stored
         assert (ep.Verification, INSIGHT.verdictDecision, Literal("accepted")) in stored
         assert (ep.Verification, INSIGHT.selectsExplanation, cause) in stored
+        # The summary for the working memory links the accepted run too (contracts 1.15): no explanation in the
+        # case's graph is without its simulation.
+        summary = URIRef(next(o for s, p, o in legacy if p == str(INST.explainedBy)))
+        assert (summary, INSIGHT.supportedBySimulation, ep.Run_H01) in stored
+        explanations = set(stored.subjects(RDF.type, INSIGHT.SimulationSupportedExplanation))
+        assert explanations == {summary, cause}, explanations
+        assert all(any(stored.triples((e, INSIGHT.supportedBySimulation, None))) for e in explanations)
+        # The consolidation's own record, next to the batch.
+        record = json.loads((Path(tmp) / f"{batch['case_id']}_consolidation.json").read_text(encoding="utf-8"))
+        assert record["status"] == "written" and record["attempts"] == 1 and record["case_id"] == batch["case_id"]
+        assert record["batch_path"] == published, record["batch_path"]
+        assert set(record["triples"]) == {"summary", "runs", "explanation", "verification"}, record["triples"]
+        assert record["triples"]["summary"] == len(legacy) + 1, record["triples"]
+        assert (record["unexplained_at"] <= record["verdict_seen_at"] <= record["queued_at"]
+                <= record["graphdb_started_at"] <= record["finished_at"]), record
+        assert record["graphdb_s"] >= 0.0 and abs(record["total_s"] - (record["finished_at"] - record["unexplained_at"])) < 2e-3
         # Asked as a question, with the TBox: which mechanism explains the case, and where.
         merged = Graph().parse(TBOX)
         for triple in stored:
@@ -557,6 +591,8 @@ def run_agent_loop(episode_from_recording):
         second_stored = db.dataset.graph(graph_iri(second["episode"]["id"]))
         assert (second_ep.Run_nominal, INSIGHT.effectRate, Literal(Decimal("0.0"))) in second_stored
         assert not any(second_stored.subjects(RDF.type, INSIGHT.SimulationSupportedExplanation))
+        record = json.loads((Path(tmp) / f"{second['case_id']}_consolidation.json").read_text(encoding="utf-8"))
+        assert record["status"] == "written" and set(record["triples"]) == {"runs", "verification"}, record
 
 
 def case_triples_in(live):
@@ -578,6 +614,8 @@ def check_memory_unavailable():
         assert batch["status"] == "error" and batch["hypotheses"] == [] and batch["attempts"] == 0, batch["status"]
         assert batch["errors"][0].startswith("semantic memory: GraphDB is not reachable"), batch["errors"]
         assert batch["trigger"]["unexplained_reason"].startswith("Bottle lost location")
+        assert set(batch["timings"]["stages_s"]) == {"wait_for_recording", "episode", "semantic_memory"}, batch["timings"]
+        assert batch["timings"]["total_s"] >= batch["timings"]["stages_s"]["semantic_memory"]
         assert not list(Path(tmp).glob("*_prompt.md"))
         assert compile_batch(batch)["entries"][0]["hypothesis_id"] == "__nominal__"
         # Without GraphDB in the config there is no semantic memory either.

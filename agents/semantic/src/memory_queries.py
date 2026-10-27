@@ -26,7 +26,7 @@ from src.case_rdf import decision_graph, simulation_graph
 from src.episode_contrast import DEFAULT_TBOX
 from src.episode_rdf import graph_iri
 from src.semantic_memory import ONTOLOGY_GRAPH, case_graph
-from src.verdict_ingestor import build_case_triples, case_triples_graph, mechanism_graph, verification_graph
+from src.verdict_ingestor import mechanism_graph, summary_graph, verification_graph
 
 QUERIES_DIR = Path(__file__).resolve().parents[1] / "data" / "queries"
 LIVE_GRAPH = "urn:insight:semantic:live"
@@ -92,8 +92,7 @@ def case_dataset(*, episode: dict, batch: dict, verdict: Optional[dict], mirror:
         pieces += [simulation_graph(batch, verdict, verdict_path), verification_graph(batch, verdict, episode)]
         if accepted and not abstained:
             cause = next(h for h in verdict["hypotheses"] if h["hypothesis_id"] == accepted)["cause"]["name"]
-            pieces += [case_triples_graph(build_case_triples(cause, batch["case_id"])),
-                       mechanism_graph(batch, accepted, episode)]
+            pieces += [summary_graph(batch, cause, accepted), mechanism_graph(batch, accepted, episode)]
     for piece in pieces:
         if piece is not None:
             for triple in piece:

@@ -119,7 +119,7 @@ def check_records_read_back(cases):
         assert normalized(case.episode) == recorded(episode), name
         assert case.trigger == trigger, (name, case.trigger, trigger)
         assert case.record_sha256 and case.provenance["tbox_version"] == "0.5", case.provenance
-        assert case.provenance["contracts_version"] == "1.14" and case.provenance["code_commit"], case.provenance
+        assert case.provenance["contracts_version"] == "1.15" and case.provenance["code_commit"], case.provenance
 
 
 def check_same_prompt(cases):

@@ -14,6 +14,8 @@ links stay available; their types now distinguish representation changes from ex
 Since contracts 1.13, verification_graph also keeps what the verification knows, accepted or not:
 the probability of each simulated mechanism, the 90 % credible set and, on an abstention, which
 alternatives remain standing and with which evidence of the episode. It never asserts a cause.
+Since contracts 1.15, the three triples above go to a v2 case's graph with the summary's explanation
+linked to its simulation (summary_graph).
 """
 
 from __future__ import annotations
@@ -82,6 +84,18 @@ def case_triples_graph(triples) -> Graph:
     graph = Graph()
     for s, p, o in triples:
         graph.add((URIRef(s), URIRef(p), URIRef(o)))
+    return graph
+
+
+def summary_graph(batch: dict, cause_name: str, accepted_hypothesis_id: str) -> Graph:
+    """The summary for the working memory (build_case_triples) as it goes to a v2 case's named graph, with its
+    explanation linked to the run the verdict accepted (contracts 1.15). Until 1.14 it was typed as a
+    simulation-supported explanation without its simulation (docs_output/resultados/52, section 5).
+    Event_<Intervention> is one individual for every case; the link, in each case's graph, goes to that case's run."""
+    graph = case_triples_graph(build_case_triples(cause_name, batch["case_id"]))
+    if is_v2(batch) and any(h.get("hypothesis_id") == accepted_hypothesis_id for h in batch.get("hypotheses", [])):
+        graph.add((URIRef(_intervention_event_iri(cause_name)), INSIGHT_TBOX.supportedBySimulation,
+                   run_iri(batch, accepted_hypothesis_id)))
     return graph
 
 
