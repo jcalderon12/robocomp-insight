@@ -395,17 +395,20 @@ class SpecificWorker(GenericWorker):
 
     def episode_intervals(self) -> list | None:
         """The intervals of the episode the current batch was generated from (contract 1), read from
-        the episode file the batch links, if its sha256 matches; None otherwise."""
+        the episode file the batch links, if its sha256 matches; None otherwise. The batch cites the
+        sha256 of the episode's canonical JSON (sorted keys, no spaces: hypothesis_pipeline.episode_sha256),
+        not of the indented file."""
         episode = (getattr(self, "hypotheses_batch", None) or {}).get("episode") or {}
         path = episode.get("path")
         if not path or not os.path.exists(path):
             return None
         try:
-            content = open(path, "rb").read()
-            if episode.get("sha256") and hashlib.sha256(content).hexdigest() != episode["sha256"]:
+            recorded = json.loads(open(path, "rb").read())
+            canonical = json.dumps(recorded, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            if episode.get("sha256") and hashlib.sha256(canonical.encode("utf-8")).hexdigest() != episode["sha256"]:
                 self.logger.log(f"Episode file {path} does not match the batch's sha256; not used.", style="yellow")
                 return None
-            return json.loads(content).get("intervals")
+            return recorded.get("intervals")
         except Exception as e:
             self.logger.log(f"Cannot read the episode file {path}: {e}", style="yellow")
             return None
