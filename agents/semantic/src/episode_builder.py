@@ -126,6 +126,9 @@ def yaw_from_quaternion(quaternion) -> float:
 
 #: Robot path (m) needed to tell from the motion which axes the recorded positions use.
 AXES_MIN_PATH_M = 0.3
+#: How much better the chosen axes must agree with the heading than the others. On a straight route at heading theta
+#: from the room's x axis the wrong axes agree sin(2 theta): 0.1 tells them apart up to ~32 deg (0.3 stopped at 22).
+AXES_MIN_MARGIN = 0.1
 
 
 def recorded_axes(pose_xy: np.ndarray, pose_yaw: np.ndarray) -> str:
@@ -145,9 +148,9 @@ def recorded_axes(pose_xy: np.ndarray, pose_yaw: np.ndarray) -> str:
     forward = np.column_stack([-np.sin(yaw), np.cos(yaw)])
     direct = float(np.sum(steps * forward)) / path
     swapped = float(np.sum(steps[:, ::-1] * forward)) / path
-    if swapped > 0.5 and swapped - direct > 0.3:
+    if swapped > 0.5 and swapped - direct > AXES_MIN_MARGIN:
         return "swapped_xy"
-    if direct > 0.5 and direct - swapped > 0.3:
+    if direct > 0.5 and direct - swapped > AXES_MIN_MARGIN:
         return "recorded"
     return "undetermined"
 

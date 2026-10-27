@@ -110,6 +110,18 @@ def check_swapped_axes():
     assert straight["source"]["pose_axes"] == "recorded" and corrected["source"]["pose_axes"] == "swapped_xy"
     for key in ("segments", "phases", "intervals", "accident"):
         assert corrected.get(key) == straight.get(key), key
+    # Route 2 of the final campaign runs 25 deg off the room's x axis: there the wrong axes agree sin(50 deg) = 0.77
+    # with the heading, which the margin of 0.3 could not tell from the right ones (1.0).
+    turn = math.radians(25.0)
+    rotation = np.array([[math.cos(turn), -math.sin(turn)], [math.sin(turn), math.cos(turn)]])
+    turned = replace(series, pose_xy=series.pose_xy @ rotation.T, pose_yaw=series.pose_yaw + turn)
+    turned_swapped = replace(turned, pose_xy=turned.pose_xy[:, ::-1].copy())
+    assert recorded_axes(turned.pose_xy, turned.pose_yaw) == "recorded"
+    assert recorded_axes(turned_swapped.pose_xy, turned_swapped.pose_yaw) == "swapped_xy"
+    straight, corrected = build_episode(turned), build_episode(turned_swapped)
+    assert corrected["source"]["pose_axes"] == "swapped_xy"
+    for key in ("segments", "phases", "intervals", "accident"):
+        assert corrected.get(key) == straight.get(key), key
     recording = RECORDINGS / "mission_follow_person_08102026_192854.txt"
     if not recording.exists():                 # Webots with the UEx main of 08/10, bump 25x3.5 cm
         return
