@@ -77,20 +77,6 @@
         "buildable": true
     },
     {
-        "name": "fake_castilla_la_mancha",
-        "directory": "$ROBOCOMP/components/robocomp-insight/agents/fake_castilla_la_mancha",
-        "command": "bin/fake_castilla_la_mancha etc/config",
-        "restart": false,
-        "buildable": true
-    },
-    {
-        "name": "fake_malaga",
-        "directory": "$ROBOCOMP/components/robocomp-insight/agents/fake_malaga",
-        "command": "bin/fake_malaga etc/config",
-        "restart": false,
-        "buildable": true
-    },
-    {
         "name": "semantic",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/semantic",
         "command": "bin/semantic etc/config",
