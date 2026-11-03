@@ -100,9 +100,7 @@ void SpecificWorker::initialize()
 
 	last_velocities_readed = getVelocitiesFromDSR();
 
-	prev_distance_error = 0.0f;
-	prev_angle_error    = 0.0f;
-	last_follow_time    = std::chrono::steady_clock::now();
+	nav_last_time = std::chrono::steady_clock::now();
 
 	last_odometry = {0.0f, 0.0f, 0.0f};
 
@@ -151,7 +149,9 @@ void SpecificWorker::compute()
 	}
 	else{
 		stop_robot();
-		was_following = false;  // next follow_target() call starts a fresh D-term baseline
+		nav_rotating = false;
+		nav_turn_sign = 0;
+		nav_detour_side = 0;
 		follow_holding = false;
 		last_target_distance = -1.f;
 		reset_photo_spin();
@@ -204,7 +204,7 @@ int SpecificWorker::startup_check()
 
 #pragma region ROBOT_METHODS
 
-void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance)
+void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance, float distance_tolerance)
 {
     auto robot_node_opt = G->get_node("robot");
     if (!robot_node_opt.has_value())
@@ -257,92 +257,255 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
     last_target_angle    = angle_to_target;      // la lee la etapa APPROACH
     last_target_stamp    = std::chrono::steady_clock::now();
 
-    float distance_error = 0.0f;
-    if (distance_to_target > 1e-3f)
-        distance_error = (distance_to_target - desired_distance) / distance_to_target;
+    const float max_v = WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor;
+    const float max_w = WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor;
 
-    if (distance_error < 0.0f)
-        distance_error = 0.0f;
+    // Ya a distancia: solo queda encararlo, girando en el sitio. Con tolerancia negativa vale
+    // cualquier distancia menor que la deseada, porque el robot nunca va marcha atras.
+    const bool at_distance = distance_tolerance < 0.f
+        ? distance_to_target <= desired_distance
+        : std::abs(distance_to_target - desired_distance) <= distance_tolerance;
 
-	float d_distance_error = 0.0f;
-	float d_angle_error    = 0.0f;
+    float linear_velocity = 0.f, angular_velocity = 0.f;
+    if (at_distance)
+    {
+        nav_rotating = false;
+        angular_velocity = turn_towards(angle_to_target, max_w);
+    }
+    else
+    {
+        // Meta: el punto de la recta robot-objetivo a desired_distance del objetivo. Si el robot
+        // esta mas cerca, la meta cae a su espalda y la alcanza dando la vuelta.
+        const float scale = 1.f - desired_distance / distance_to_target;
+        std::tie(linear_velocity, angular_velocity) = navigate_to(robot_node, x * scale, y * scale, max_v, max_w);
+    }
 
-	auto now = std::chrono::steady_clock::now();
-
-	// La RT refresca cada ~100 ms y este lazo corre cada ~16 ms, asi que la mayoria de ciclos
-	// repiten la misma medida. Derivar entonces con el periodo de control infla la derivada unas
-	// 6 veces y mete una patada que sobrepasa el objetivo: solo se deriva cuando la medida cambia,
-	// y con el tiempo transcurrido desde el cambio anterior.
-	const bool measurement_changed = std::abs(angle_to_target - prev_angle_error) > 1e-6f
-	                              || std::abs(distance_error - prev_distance_error) > 1e-6f;
-
-	// Skip the derivative term on the first cycle after (re)starting to follow a target:
-	// prev_distance_error/prev_angle_error/last_follow_time are otherwise stale (from
-	// whatever target was last tracked, possibly a different mission), producing a bogus
-	// error jump that briefly kicks linear_velocity/angular_velocity hard at start.
-	if (measurement_changed)
-	{
-		float dt = std::chrono::duration<float>(now - last_follow_time).count();
-		if (dt > 1e-4f && was_following)
-		{
-			d_distance_error = (distance_error - prev_distance_error) / dt;
-			float angle_diff = angle_to_target - prev_angle_error;
-			angle_diff = std::atan2(std::sin(angle_diff), std::cos(angle_diff));
-			d_angle_error = angle_diff / dt;
-		}
-
-		last_follow_time    = now;
-		prev_distance_error = distance_error;
-		prev_angle_error    = angle_to_target;
-		was_following = true;
-	}
-
-    const float Kp_lin = 0.8f;
-    const float Kd_lin = 0.1f;   
-
-    const float Kp_ang = 1.0f;
-    const float Kd_ang = 0.1f;   
-
-	float linear_velocity  = Kp_lin * distance_error + Kd_lin * d_distance_error;
-	float angular_velocity = -(Kp_ang * angle_to_target + Kd_ang * d_angle_error);
-
-	float angle_attenuation = std::cos(std::clamp(angle_to_target, -HALF_PI, HALF_PI));
-	linear_velocity *= angle_attenuation;
-
-	linear_velocity = std::clamp(
-		linear_velocity,
-		0.0f,
-		WEBOTS_MAX_LINEAR_SPEED * max_forward_speed_factor
-	);
-
-	angular_velocity = std::clamp(
-		angular_velocity,
-		-WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor,
-		WEBOTS_MAX_ANGULAR_SPEED * max_angular_speed_factor
-	);
-
-    if (print_extra_info){
-		auto ts_robot = std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::steady_clock::now().time_since_epoch()).count();
-	
-		std::cout << "[" << ts_robot << "] RT target translation -> x: " << x << " | y: " << y
-				  << " | angle_to_target: " << angle_to_target
-				  << " | linear_v: " << linear_velocity
-				  << " | angular_v: " << angular_velocity << std::endl;
-	}    
-	
-	// std::cout << "Distance: "    << distance_to_target
-        //          << "  Error: "     << distance_error
-        //          << "  dError/dt: " << d_distance_error
-        //          << "  Angle: "     << angle_to_target
-        //          << "  Linear Vel: "<< linear_velocity
-        //          << "  Angular Vel:"<< angular_velocity
-	 	//		  << "RT target translation -> x: " << x << " | y: " << y 
-		//		  << std::endl;
+    if (print_extra_info)
+    {
+        auto ts_robot = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::cout << "[" << ts_robot << "] RT target translation -> x: " << x << " | y: " << y
+                  << " | angle_to_target: " << angle_to_target
+                  << " | linear_v: " << linear_velocity
+                  << " | angular_v: " << angular_velocity << std::endl;
+    }
 
 	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, linear_velocity);
 	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, angular_velocity);
 	G->update_node(robot_node);
+}
+
+float SpecificWorker::turn_towards(float angle, float max_w)
+{
+	// Cerca de +-180 grados el rumbo cambia de signo con cualquier ruido y el robot no decidiria
+	// hacia donde girar: pasado NAV_TURN_LOCK_ANGLE se fija el sentido hasta tenerlo delante.
+	const float PI = std::numbers::pi_v<float>;
+	if (std::abs(angle) < NAV_TURN_UNLOCK_ANGLE)
+		nav_turn_sign = 0;
+	else if (nav_turn_sign == 0 && std::abs(angle) > NAV_TURN_LOCK_ANGLE)
+		nav_turn_sign = angle > 0.f ? 1 : -1;
+
+	if (nav_turn_sign != 0 && (angle > 0.f ? 1 : -1) != nav_turn_sign)
+		angle += nav_turn_sign * 2.f * PI;   // sigue por el mismo lado aunque el rumbo haya saltado
+
+	// Rumbo positivo = objetivo a la derecha = giro negativo.
+	return std::clamp(-NAV_TURN_GAIN * angle, -max_w, max_w);
+}
+
+std::vector<SpecificWorker::Obstacle> SpecificWorker::collect_obstacles(const DSR::Node &robot_node)
+{
+	// Obstaculos conocidos: los nodos "object" del DSR con RT desde el robot, en su marco. Un
+	// objeto que aun no esta en el DSR no se esquiva, que es lo que hace que el primer bache se pise.
+	std::vector<Obstacle> obstacles;
+	for (const auto &node : G->get_nodes_by_type("object"))
+	{
+		auto t_opt = rt->get_translation(robot_node, node.id());
+		if (!t_opt.has_value())
+			continue;
+		const float ox = static_cast<float>(t_opt.value().x());
+		const float oy = static_cast<float>(t_opt.value().y());
+		if (std::hypot(ox, oy) < TARGET_NULL_DISTANCE)
+			continue;   // RT a ceros: ausencia de dato
+
+		// Tamaño medido por la simulacion (metros); el mayor de los dos lados en planta.
+		float size = NAV_DEFAULT_OBSTACLE_SIZE;
+		auto size_it = node.attrs().find("concept_size");
+		if (size_it != node.attrs().end())
+		{
+			try
+			{
+				const auto &s = std::get<std::vector<float>>(size_it->second.value());
+				if (s.size() >= 2)
+					size = std::max(s[0], s[1]);
+			}
+			catch (const std::bad_variant_access&) {}
+		}
+		obstacles.push_back({ox, oy, size / 2.f + NAV_ROBOT_RADIUS + NAV_SAFETY_MARGIN});
+	}
+	return obstacles;
+}
+
+std::pair<float, float> SpecificWorker::detour_subgoal(float gx, float gy, const std::vector<Obstacle> &obstacles)
+{
+	// Sin esto el DWA se queda parado delante de un obstaculo que tapa la meta: acercarse empeora la
+	// holgura tanto como mejora la distancia. Se apunta a la tangente del primero que corta la recta.
+	const float goal_dist = std::hypot(gx, gy);
+	if (goal_dist < 1e-3f)
+		return {gx, gy};
+	const float ux = gx / goal_dist, uy = gy / goal_dist;
+
+	const Obstacle *blocking = nullptr;
+	float blocking_along = goal_dist;
+	for (const auto &o : obstacles)
+	{
+		const float along = o.x * ux + o.y * uy;
+		if (along <= 0.f || along >= blocking_along)
+			continue;
+		if (std::abs(o.x * uy - o.y * ux) >= o.radius)
+			continue;   // la recta pasa por fuera
+		if (std::hypot(gx - o.x, gy - o.y) < o.radius || std::hypot(o.x, o.y) < o.radius)
+			continue;   // meta o robot dentro del margen: rodear no lo arregla
+		blocking = &o;
+		blocking_along = along;
+	}
+	if (blocking == nullptr)
+	{
+		nav_detour_side = 0;
+		return {gx, gy};
+	}
+
+	// Tangente desde el robot al circulo de radio inflado + NAV_DETOUR_MARGIN, prolongada para que
+	// el robot la rebase. Rumbos medidos como el resto: atan2(x, y), positivo a la derecha.
+	const float D = std::hypot(blocking->x, blocking->y);
+	const float r = blocking->radius + NAV_DETOUR_MARGIN;
+	const float base = std::atan2(blocking->x, blocking->y);
+	const float alpha = std::asin(std::min(1.f, r / D));
+	const float length = std::sqrt(std::max(D * D - r * r, 0.f)) + NAV_DETOUR_EXTENSION;
+	auto candidate = [&](int side) {
+		const float b = base + side * alpha;
+		return std::pair<float, float>{length * std::sin(b), length * std::cos(b)};
+	};
+
+	// El lado se elige una vez, el del camino mas corto, y se mantiene mientras siga tapando.
+	if (nav_detour_side == 0)
+	{
+		auto path_length = [&](int side) {
+			auto [cx, cy] = candidate(side);
+			return std::hypot(cx, cy) + std::hypot(gx - cx, gy - cy);
+		};
+		nav_detour_side = path_length(1) <= path_length(-1) ? 1 : -1;
+	}
+	return candidate(nav_detour_side);
+}
+
+std::pair<float, float> SpecificWorker::navigate_to(const DSR::Node &robot_node, float gx, float gy, float max_v, float max_w)
+{
+	const auto obstacles = collect_obstacles(robot_node);
+	std::tie(gx, gy) = detour_subgoal(gx, gy, obstacles);
+
+	// Meta de lado o detras: primero se encara girando en el sitio. Los arcos solo avanzan, y con
+	// la meta a la espalda todos alejan antes de acercar. Histeresis para no alternar en el borde.
+	const float goal_angle = std::atan2(gx, gy);
+	if (std::abs(goal_angle) > (nav_rotating ? NAV_ROTATE_DONE_ANGLE : NAV_ROTATE_FIRST_ANGLE))
+	{
+		nav_rotating = true;
+		return {0.f, turn_towards(goal_angle, max_w)};
+	}
+	nav_rotating = false;
+
+	// Velocidad actual: la ultima mandada. Frenar es inmediato; acelerar, limitado.
+	const auto current = getVelocitiesFromDSR();
+	const float v_now = current[0] / 1000.f;
+	const float w_now = current[1];
+	auto now = std::chrono::steady_clock::now();
+	const float dt = std::clamp(std::chrono::duration<float>(now - nav_last_time).count(), 0.01f, 0.2f);
+	nav_last_time = now;
+	const float v_hi = std::clamp(v_now + NAV_ACCEL_V * dt, 0.f, max_v);
+
+	// Distancia libre de partida a cada obstaculo: si ya se esta dentro de su margen, se aceptan los
+	// arcos que no entran mas, para poder salir.
+	std::vector<float> start_clear;
+	for (const auto &o : obstacles)
+		start_clear.push_back(std::hypot(o.x, o.y) - o.radius);
+
+	const int steps = static_cast<int>(NAV_SIM_TIME / NAV_SIM_STEP);
+	float best_cost = std::numeric_limits<float>::max();
+	std::pair<float, float> best = {0.f, 0.f};
+
+	for (int i = 0; i < NAV_V_SAMPLES; ++i)
+	{
+		const float v = v_hi * i / (NAV_V_SAMPLES - 1);
+		for (int j = 0; j < NAV_W_SAMPLES; ++j)
+		{
+			const float w = -max_w + 2.f * max_w * j / (NAV_W_SAMPLES - 1);
+
+			// Arco a (v, w) constantes en el marco del robot: avance en +y, giro positivo a la izquierda.
+			float px = 0.f, py = 0.f, th = 0.f;
+			float min_clear = std::numeric_limits<float>::max();
+			bool valid = true;
+			for (int k = 0; k < steps && valid; ++k)
+			{
+				th += w * NAV_SIM_STEP;
+				px += -std::sin(th) * v * NAV_SIM_STEP;
+				py +=  std::cos(th) * v * NAV_SIM_STEP;
+				for (size_t n = 0; n < obstacles.size(); ++n)
+				{
+					const float clear = std::hypot(px - obstacles[n].x, py - obstacles[n].y) - obstacles[n].radius;
+					if (start_clear[n] < 0.f)
+					{
+						if (clear < start_clear[n] - 0.01f)
+							valid = false;
+					}
+					else if (clear < 0.f)
+						valid = false;
+					else
+						min_clear = std::min(min_clear, clear);
+				}
+			}
+			if (!valid)
+				continue;
+
+			// Rumbo a la meta desde el final del arco, relativo al rumbo final del robot.
+			const float goal_dist = std::hypot(gx - px, gy - py);
+			const float heading_err = std::abs(std::remainder(std::atan2(gx - px, gy - py) + th, 2.f * std::numbers::pi_v<float>));
+			const float clear_cost = min_clear >= NAV_CLEARANCE_CAP ? 0.f : (NAV_CLEARANCE_CAP - min_clear) / NAV_CLEARANCE_CAP;
+
+			const float cost = NAV_W_GOAL * goal_dist
+			                 + NAV_W_HEADING * heading_err
+			                 + NAV_W_CLEARANCE * clear_cost
+			                 - NAV_W_SPEED * v / std::max(max_v, 1e-3f)
+			                 + NAV_W_SMOOTH * std::abs(w - w_now);
+			if (cost < best_cost)
+			{
+				best_cost = cost;
+				best = {v, w};
+			}
+		}
+	}
+
+	if (best_cost == std::numeric_limits<float>::max() && !nav_blocked_warned)
+	{
+		std::cerr << "navigate_to: ningun arco libre; robot parado." << std::endl;
+		nav_blocked_warned = true;
+	}
+	else if (best_cost < std::numeric_limits<float>::max())
+		nav_blocked_warned = false;
+
+	return best;
+}
+
+bool SpecificWorker::target_perceived()
+{
+	// concept_person marca perceived=false cuando la RT sale de su memoria y no de verla. Un objetivo
+	// que no publica el atributo se da por percibido.
+	auto target_node_opt = get_target_concept_node();
+	if (!target_node_opt.has_value())
+		return false;
+	auto att = target_node_opt.value().attrs().find("perceived");
+	if (att == target_node_opt.value().attrs().end())
+		return true;
+	try { return std::get<bool>(att->second.value()); }
+	catch (const std::bad_variant_access&) { return true; }
 }
 
 std::vector<float> SpecificWorker::auto_localization()
@@ -615,7 +778,6 @@ void SpecificWorker::reset_photo_spin()
 {
 	spin_stage = SpinStage::APPROACH;
 	approach_started = false;
-	backoff_started = false;
 	last_target_distance = -1.f;
 	last_target_angle = 0.f;
 	spin_accumulated = 0.f;
@@ -673,29 +835,6 @@ std::string SpecificWorker::read_verify_result()
 }
 
 // Distancia al TARGET actual. Solo el modulo: no depende de como esten orientados los ejes.
-// Distancia y rumbo al objetivo leidos directamente de la RT. Las etapas que no pasan por
-// follow_target necesitan medir por su cuenta: last_target_* solo lo escribe el.
-bool SpecificWorker::target_measure(float &distance, float &angle)
-{
-	auto robot_node_opt = G->get_node("robot");
-	auto target_edges = G->get_edges_by_type("TARGET");
-	if (!robot_node_opt.has_value() || target_edges.empty())
-		return false;
-
-	auto t_opt = rt->get_translation(robot_node_opt.value(), target_edges[0].to());
-	if (!t_opt.has_value())
-		return false;
-
-	const auto x = static_cast<float>(t_opt.value().x());
-	const auto y = static_cast<float>(t_opt.value().y());
-	distance = std::hypot(x, y);
-	if (distance < TARGET_NULL_DISTANCE)
-		return false;   // vector nulo: ausencia de dato, no una posicion
-
-	angle = std::atan2(x, y);
-	return true;
-}
-
 float SpecificWorker::target_distance()
 {
 	auto robot_node_opt = G->get_node("robot");
@@ -708,36 +847,6 @@ float SpecificWorker::target_distance()
 		return -1.f;
 
 	return static_cast<float>(std::hypot(t_opt.value().x(), t_opt.value().y()));
-}
-
-void SpecificWorker::turn_in_place(float rot_speed)
-{
-	auto robot_node_opt = G->get_node("robot");
-	if (!robot_node_opt.has_value())
-	{
-		std::cerr << "Robot node not found in DSR." << std::endl;
-		return;
-	}
-	DSR::Node robot_node = robot_node_opt.value();
-
-	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, 0.0f);
-	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, rot_speed);
-	G->update_node(robot_node);
-}
-
-void SpecificWorker::drive_forward(float speed)
-{
-	auto robot_node_opt = G->get_node("robot");
-	if (!robot_node_opt.has_value())
-	{
-		std::cerr << "Robot node not found in DSR." << std::endl;
-		return;
-	}
-	DSR::Node robot_node = robot_node_opt.value();
-
-	G->add_or_modify_attrib_local<robot_ref_adv_speed_att>(robot_node, speed);
-	G->add_or_modify_attrib_local<robot_ref_rot_speed_att>(robot_node, 0.0f);
-	G->update_node(robot_node);
 }
 
 // Pone aff_interacting=false en la afordance alcanzada por TARGET -> has_intention, que es como
@@ -767,6 +876,14 @@ void SpecificWorker::check_follow_reached()
 {
 	if (last_target_distance < 0.f)
 		return;
+
+	// Con la persona fuera de la vista la RT sale de la memoria de concept_person: llegar a donde
+	// se la vio por ultima vez no es haberla alcanzado.
+	if (!target_perceived())
+	{
+		follow_holding = false;
+		return;
+	}
 
 	// Una medida congelada es indistinguible de un objetivo quieto a la distancia justa, y
 	// completaria la mision sola: solo cuenta si follow_target la ha refrescado hace poco.
@@ -841,7 +958,7 @@ void SpecificWorker::photo_spin()
 		case SpinStage::APPROACH:
 		{
 			// Colocarse a photo_approach_distance del concepto y mirandolo: follow_target hace las
-			// dos cosas, con el giro limitado para no cruzar el punto antipodal.
+			// dos cosas. Demasiado cerca, la meta le cae a la espalda y da la vuelta para alejarse.
 			float d = target_distance();
 			if (d < 0.f)
 			{
@@ -865,18 +982,6 @@ void SpecificWorker::photo_spin()
 				break;
 			}
 
-			// Demasiado cerca: el controlador no retrocede, asi que hay que dar la vuelta y
-			// alejarse por la recta que une al robot con el concepto.
-			if (d < photo_approach_distance - PHOTO_APPROACH_MARGIN)
-			{
-				std::cout << "photo_spin APPROACH: a " << d << " m, mas cerca de los "
-				          << photo_approach_distance << " m pedidos; alejandose." << std::endl;
-				stop_robot();
-				backoff_started = false;
-				spin_stage = SpinStage::BACKOFF;
-				break;
-			}
-
 			if (std::chrono::duration<float>(now - approach_check_start).count() >= 0.5f)
 			{
 				std::cout << "photo_spin APPROACH: d=" << d << " m | angulo="
@@ -889,7 +994,8 @@ void SpecificWorker::photo_spin()
 			    || std::abs(d - photo_approach_distance) > PHOTO_APPROACH_MARGIN
 			    || std::abs(last_target_angle) > PHOTO_APPROACH_ANGLE_TOLERANCE)
 			{
-				follow_target(PHOTO_APPROACH_SPEED_FACTOR, PHOTO_APPROACH_ANGULAR_FACTOR, photo_approach_distance);
+				follow_target(PHOTO_APPROACH_SPEED_FACTOR, PHOTO_APPROACH_ANGULAR_FACTOR,
+				              photo_approach_distance, PHOTO_APPROACH_MARGIN);
 				break;
 			}
 
@@ -898,53 +1004,6 @@ void SpecificWorker::photo_spin()
 			request_verification();
 			verify_wait_start = std::chrono::steady_clock::now();
 			spin_stage = SpinStage::VERIFY;
-			break;
-		}
-
-		case SpinStage::BACKOFF:
-		{
-			float d = 0.f, bearing = 0.f;
-			if (!target_measure(d, bearing))
-			{
-				stop_robot();
-				break;   // sin RT del concepto no hay recta sobre la que alejarse
-			}
-
-			auto now = std::chrono::steady_clock::now();
-			if (!backoff_started)
-			{
-				backoff_started = true;
-				backoff_start = now;
-			}
-
-			if (std::chrono::duration<float>(now - backoff_start).count() > PHOTO_BACKOFF_TIMEOUT)
-			{
-				std::cout << "photo_spin BACKOFF: sin alejarse en " << PHOTO_BACKOFF_TIMEOUT
-				          << " s; se aborta." << std::endl;
-				spin_stage = SpinStage::ABORTED;
-				break;
-			}
-
-			// Ya a distancia: volver a APPROACH, que gira en el sitio para encarar el concepto
-			// sin tocar la distancia ganada.
-			if (d >= photo_approach_distance)
-			{
-				std::cout << "photo_spin BACKOFF: a " << d << " m; encarando de nuevo." << std::endl;
-				stop_robot();
-				approach_started = false;
-				spin_stage = SpinStage::APPROACH;
-				break;
-			}
-
-			// Direccion de huida: el antipodal del rumbo al concepto. Vale 0 justo cuando el robot
-			// queda de espaldas, asi que se corrige como cualquier otro error de rumbo.
-			const float PI = std::numbers::pi_v<float>;
-			float away = bearing > 0.f ? bearing - PI : bearing + PI;
-
-			if (std::abs(away) > PHOTO_BACKOFF_ANGLE_TOLERANCE)
-				turn_in_place(away > 0.f ? -PHOTO_BACKOFF_TURN_SPEED : PHOTO_BACKOFF_TURN_SPEED);
-			else
-				drive_forward(PHOTO_BACKOFF_SPEED);
 			break;
 		}
 

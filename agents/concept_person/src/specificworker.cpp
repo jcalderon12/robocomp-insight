@@ -87,7 +87,7 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-	auto relative_position = get_person_relative_position();
+	auto relative_position = apply_person_memory(get_person_relative_position());
 
 	if(print_extra_info)
 		std::cout << "[" << now_ms << "] get_person_relative_position -> x: " << relative_position[0]
@@ -286,6 +286,89 @@ std::vector<float> SpecificWorker::get_person_relative_position()
 	return relative_position;
 }
 
+
+std::vector<float> SpecificWorker::apply_person_memory(const std::vector<float>& detected)
+{
+	float robot_x = 0.f, robot_y = 0.f, yaw = 0.f;
+	const bool have_pose = get_robot_pose_2d(robot_x, robot_y, yaw);
+	const float c = std::cos(yaw), s = std::sin(yaw);
+	auto now = std::chrono::steady_clock::now();
+
+	// Ejes del robot en el marco root, medidos en la grabacion de follow_person del 03/11/2026:
+	// el robot avanza en (cos yaw, -sin yaw) y su derecha es (sin yaw, cos yaw). auto_localization()
+	// intercambia x/y de la traslacion pero deja el cuaternion de Webots, de ahi el signo cambiado.
+	if (std::hypot(detected[0], detected[1]) >= PERSON_NULL_DISTANCE)
+	{
+		set_person_perceived(true);
+		if (have_pose)
+		{
+			// detected = {derecha, avance, altura} en el marco del robot.
+			person_memory_x = robot_x + detected[1] * c + detected[0] * s;
+			person_memory_y = robot_y - detected[1] * s + detected[0] * c;
+			person_memory_z = detected[2];
+			person_memory_stamp = now;
+			person_memory_valid = true;
+			person_memory_expired_warned = false;
+		}
+		return detected;
+	}
+
+	set_person_perceived(false);
+	const float age = std::chrono::duration<float>(now - person_memory_stamp).count();
+	if (!person_memory_valid || !have_pose || age > PERSON_MEMORY_MAX_AGE)
+	{
+		if (person_memory_valid && age > PERSON_MEMORY_MAX_AGE && !person_memory_expired_warned)
+		{
+			std::cout << "Memoria de la persona caducada (" << age << " s); se publica ausencia de dato." << std::endl;
+			person_memory_expired_warned = true;
+		}
+		return detected;   // ceros: ausencia de dato
+	}
+
+	// Posicion recordada vista desde la pose actual: el robot se gira hacia donde la vio por ultima vez.
+	const float dx = person_memory_x - robot_x;
+	const float dy = person_memory_y - robot_y;
+	return {dx * s + dy * c, dx * c - dy * s, person_memory_z};
+}
+
+bool SpecificWorker::get_robot_pose_2d(float &x, float &y, float &yaw)
+{
+	auto robot_opt = G->get_node("robot");
+	auto root_opt = G->get_node("root");
+	if (!robot_opt.has_value() || !root_opt.has_value())
+		return false;
+
+	auto t_opt = rt->get_translation(root_opt.value(), robot_opt.value().id());
+	auto edge_opt = rt->get_edge_RT(root_opt.value(), robot_opt.value().id());
+	if (!t_opt.has_value() || !edge_opt.has_value())
+		return false;
+	auto q_opt = G->get_attrib_by_name<rt_quaternion_att>(edge_opt.value());
+	if (!q_opt.has_value())
+		return false;
+	const std::vector<float> &q = q_opt.value().get();   // {qx, qy, qz, qw}
+	if (q.size() < 4)
+		return false;
+	x = static_cast<float>(t_opt.value().x());
+	y = static_cast<float>(t_opt.value().y());
+	yaw = std::atan2(2.f * (q[3] * q[2] + q[0] * q[1]), 1.f - 2.f * (q[1] * q[1] + q[2] * q[2]));
+	return true;
+}
+
+void SpecificWorker::set_person_perceived(bool perceived)
+{
+	if (person_perceived_published == static_cast<int>(perceived))
+		return;
+	auto person_opt = G->get_node("person");
+	if (!person_opt.has_value())
+		return;
+
+	DSR::Node person_node = person_opt.value();
+	G->runtime_checked_add_or_modify_attrib_local(person_node, "perceived", perceived);
+	G->update_node(person_node);
+	person_perceived_published = static_cast<int>(perceived);
+	if (!perceived)
+		std::cout << "Persona fuera de la vista: se sigue su ultima posicion conocida." << std::endl;
+}
 
 float SpecificWorker::calculate_linear_speed_from_distance(std::vector<float> distance)
 {

@@ -155,6 +155,24 @@ public slots:
 	std::vector<float> get_person_relative_position();
 
 	/**
+	 * \brief Person memory: each detection is stored in the root frame and, with no detection,
+	 * the relative position is rebuilt from that memory and the current robot pose instead of
+	 * returning zeros. Publishes perceived=true/false on the person node.
+	 */
+	std::vector<float> apply_person_memory(const std::vector<float>& detected);
+
+	/**
+	 * \brief Robot pose from the root->robot RT written by concept_robot: x, y (meters) and the
+	 * quaternion yaw (radians). False if the RT is missing.
+	 */
+	bool get_robot_pose_2d(float &x, float &y, float &yaw);
+
+	/**
+	 * \brief Writes perceived on the person node, only when it changes.
+	 */
+	void set_person_perceived(bool perceived);
+
+	/**
 	 * \brief Compare whether two vectors are too similar to avoid publishing the same data twice.
 	 * \return Return true if the vector are not to similar
 	 */
@@ -189,6 +207,18 @@ private:
 	bool simulated = configLoader.get<bool>("Simulated");
 
 	std::vector<float> last_relative_pose = {0.0f, 0.0f, 0.0f}; // {x, y, z}
+
+	// ---- Memoria de la persona (apply_person_memory()) ----
+	// Un vector nulo es "no la veo", no una posicion: es lo que devuelve la segmentacion sin persona.
+	static constexpr float PERSON_NULL_DISTANCE = 1e-3f;    // metros
+	// Tope de la memoria. Generoso a proposito: el giro de take_photos dura minuto y medio y la
+	// persona se ve en algun paso de la vuelta, pero puede quedar a la espalda al terminar.
+	static constexpr float PERSON_MEMORY_MAX_AGE = 120.f;   // segundos
+	bool  person_memory_valid = false;
+	float person_memory_x = 0.f, person_memory_y = 0.f, person_memory_z = 0.f;  // marco root, metros
+	std::chrono::steady_clock::time_point person_memory_stamp;
+	int   person_perceived_published = -1;   // -1 nunca publicado; 0/1 el ultimo valor
+	bool  person_memory_expired_warned = false;
 	std::vector<float> pending_relative_position = {0.0f, 0.0f, 0.0f};
 	int consecutive_large_jump_confirmations = 0;
 	int required_large_jump_confirmations = 3;

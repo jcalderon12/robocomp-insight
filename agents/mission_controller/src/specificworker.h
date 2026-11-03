@@ -170,6 +170,7 @@ private:
 	
 	// Follow_person mission status tracking
 	bool follow_person_active = false;  // Track if follow_person mission is currently active
+	bool photos_done = false;  // Take Photos ya completada: no se repite y el siguiente follow_person cierra la cadena
 	bool last_aff_interacting_state = false;  // Track previous state of aff_interacting
 	
 	// Handshake state for episodic_memory synchronization (separate from scheduler's internal state)

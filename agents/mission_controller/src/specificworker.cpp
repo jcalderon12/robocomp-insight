@@ -332,6 +332,7 @@ void SpecificWorker::initialize()
 		if (autopilot_enabled) {
 			// Initialize scheduler's autopilot orchestration
 			mission_scheduler.setAutopilotEnabled(true);
+				photos_done = false;
 				create_or_check_follow_person_mission();
 			
 			mission_controller_ui.autopilot_toggle_button->setText("ON");
@@ -473,8 +474,13 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 			if (completed_type == "Take Photos") {
 				delete_active_target_edge();
 			}
-			// Sólo "Take Photos" cierra la cadena; follow_person la continúa.
+			// Tras las fotos se vuelve a seguir a la persona, y es ese follow_person el que cierra
+			// la cadena: el robot ya conoce el bache y tiene que esquivarlo.
 			if (completed_type == "Take Photos") {
+				photos_done = true;
+			}
+			const bool chain_finished = (completed_type == "follow_person" && photos_done);
+			if (chain_finished) {
 				disable_autopilot_and_reset();
 			}
 
@@ -519,6 +525,13 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 			waiting_mission_row = -1;
 			waiting_mission_id = 0;
 			follow_person_active = false;
+
+			// Despues de limpiar el estado de espera: create_or_check_follow_person_mission no crea
+			// nada mientras waiting_mission_row siga apuntando a una mision.
+			if (completed_type == "Take Photos") {
+				std::cout << "[AUTOPILOT] Take Photos completed. Creating follow_person again." << std::endl;
+				create_or_check_follow_person_mission();
+			}
 			break;
 		}
 
@@ -1329,6 +1342,11 @@ void SpecificWorker::create_search_problem_cause_mission()
 
 void SpecificWorker::create_take_photos_mission()
 {
+	// Una sola tanda de fotos por cadena: con el bache aun en el DSR, el monitor la volveria a crear
+	// en cuanto terminase.
+	if (photos_done)
+		return;
+
 	// Check if a "Take Photos" mission already exists and is PENDING
 	for (int i = 0; i < model->rowCount(); i++)
 	{
