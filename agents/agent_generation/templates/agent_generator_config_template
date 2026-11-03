@@ -33,9 +33,13 @@ Ice.MessageSizeMax = "20004800"
 Simulated = true
 
 # Misión de fotos: este agente dispara en cada parada del giro y etiqueta proyectando
-# world_position. El margen de descarte en el borde se deduce de Expected_size_m, este factor
+# simulated_position. El margen de descarte en el borde se deduce de Expected_size_m, este factor
 # sólo lo escala.
 Camera_name = "camera"
+# DEF del objeto real en Webots, solo para medir el error de simulated_position: se graba junto al
+# veredicto de la verificacion y en el CSV de cada disparo, y no entra en el control. Vacio = sin
+# referencia. Tiene que existir en el mundo; si no resuelve, el agente avisa una vez y sigue.
+Real_def = "{{concept_name|upper}}"
 Photo_save_dir = "photos"
 Expected_size_m = 0.25
 Label_margin_factor = 1.0

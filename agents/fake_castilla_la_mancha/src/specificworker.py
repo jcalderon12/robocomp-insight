@@ -161,7 +161,7 @@ class SpecificWorker(GenericWorker):
         bump_node = Node(self.agent_id, "object", name="bump")
         bump_node.attrs["pos_x"] = Attribute(problem_node.attrs["pos_x"].value, self.agent_id)
         bump_node.attrs["pos_y"] = Attribute(problem_node.attrs["pos_y"].value, self.agent_id)
-        bump_node.attrs["world_position"] = Attribute([float(v) for v in problem_node.attrs["problem_position"].value], self.agent_id)
+        bump_node.attrs["simulated_position"] = Attribute([float(v) for v in problem_node.attrs["problem_position"].value], self.agent_id)
         # Medidas del concepto, tal como las midio la simulacion del modelo que instancia la causa.
         if "concept_size" in problem_node.attrs:
             bump_node.attrs["concept_size"] = Attribute(

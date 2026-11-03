@@ -285,10 +285,12 @@ class SpecificWorker(GenericWorker):
         robot_positions = self.get_robot_positions_relative_to_problem()
         if robot_positions is not None and robot_positions.get("last_position_before_problem") is not None:
             lpbp = robot_positions["last_position_before_problem"]
-            # lpbp comes from episodic's root->robot RT, in METERS; sim_scene wants mm.
+            # lpbp comes from episodic's root->robot RT, in METERS, and that is what sim_scene
+            # and CauseBump's grid expect: no conversion. The RT also has x/y swapped by
+            # auto_localization(), which is what the [1],[0],[2] undoes.
             problem_position_fixed = [lpbp[1] , lpbp[0] , lpbp[2]]
             self.sim_scene.problem_position = problem_position_fixed
-            self.logger.log(f"Problem position set for simulation: {problem_position_fixed} (mm)", style="green")
+            self.logger.log(f"Problem position set for simulation: {problem_position_fixed} (m)", style="green")
         else:
             self.sim_scene.problem_position = PROBLEM_POS
         self.sim_scene.problem_orientation = [0,0,0,1]
@@ -873,7 +875,7 @@ class SpecificWorker(GenericWorker):
 
         problem_node.attrs["problem_position"] = Attribute(list(position), self.agent_id)
         self.graphs["work"].update_node(problem_node)
-        self.logger.log(f"Stored problem_position {position} (mm) on 'problem' node.", style="bold green")
+        self.logger.log(f"Stored problem_position {position} (m) on 'problem' node.", style="bold green")
 
 
     def mark_cause_confirmed_in_dsr(self) -> None:
@@ -1098,9 +1100,10 @@ class SpecificWorker(GenericWorker):
         'unknown' (or confidence < cfg['c_floor']).
 
         selection['location']/['fallback_location'] come straight from CauseBump's grid,
-        which is PyBullet-native METERS; 'problem_position' on the DSR is contracted in
-        MILLIMETERS (same as ROBOT_POS/PROBLEM_POS/BOTTLE_POS) and concept_robot divides
-        it by 1000 on read -> convert m -> mm here, at the DSR-writing boundary.
+        in PyBullet-native METERS, and that is the contract of 'problem_position' on the DSR
+        too -- same as ROBOT_POS/PROBLEM_POS/BOTTLE_POS, and what every reader downstream
+        assumes: fake_castilla_la_mancha copies it verbatim into the concept's
+        'simulated_position', which concept_<x> reads as meters. No conversion here.
         """
         problem_node = self.graphs["work"].get_node("problem")
         if problem_node is None:

@@ -10,9 +10,8 @@ Antes de modificar código, pregunta primero, salvo que se pida explícitamente 
 
 # Arquitectura
 
-Componentes RoboComp sobre un grafo DSR compartido. `robocompdsl` genera `generated/` desde el
-`.cdsl`; el código propio vive en `src/specificworker.{py,cpp,h}`. Los lanza Program Manager
-desde `~/software/Program-manager/etc/insight_config_sim.json`.
+Program Manager lanza los componentes desde
+`~/software/Program-manager/etc/insight_config_sim.json`.
 
 Grafos: `G = Graphs.at("work")` (dominio 0, mundo), `mission_graph` (1, misiones),
 `historic_graph` (2). Las afordances viven en el grafo de trabajo, no en el episódico.
@@ -28,7 +27,7 @@ Grafos: `G = Graphs.at("work")` (dominio 0, mundo), `mission_graph` (1, misiones
 `webots-bridge` | **repositorio aparte** (`robocomp/webots-bridge`), no es de este proyecto |
 
 Cadena de misiones: `follow_person` -> cae la botella -> `problem` -> `search_cause` ->
-`take_photos`. La misión de fotos es `APPROACH -> BACKOFF -> VERIFY -> TURNING/SETTLING -> DONE`.
+`take_photos`.
 
 El agente del concepto se genera desde las plantillas Jinja2 de
 `agents/agent_generation/templates/`. **Editar siempre la plantilla**: `generate_agent()` hace
@@ -51,7 +50,6 @@ El agente del concepto se genera desde las plantillas Jinja2 de
   Webots, pero el cuaternión tal cual. Quien la consuma debe deshacer el swap.
 - **Unidades**: `world_position` en metros; `getObjectPose` del puente en milímetros.
 - **`problem_position` no es una medida**: es la última posición registrada del robot antes de
-  que apareciera el nodo `problem`. Arrastra el retardo de detección de la botella, medido entre
-  14 y 45 cm según la tanda.
+  que apareciera el nodo `problem`, así que arrastra el retardo de detección de la botella.
 - Las grabaciones salen de **0 bytes si se mata el flujo a media misión**: hay que pararla desde
   la UI o dejar que termine.

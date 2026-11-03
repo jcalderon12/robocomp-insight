@@ -99,7 +99,11 @@ class SpecificWorker(GenericWorker):
         super(SpecificWorker, self).__init__(proxy_map, configData)
         self.Period = configData["Period"]["Compute"]
 
-        self.concept_def = CONCEPT_NAME.upper()
+        # DEF del objeto real en Webots, solo para la pista de error. Vacio = sin referencia: el
+        # agente funciona igual pero no publica nada. La correspondencia concepto <-> objeto
+        # simulado la sabe quien monta el experimento, no este agente.
+        self.real_def = configData.get("Real_def", "")
+        self.real_def_warned = False
         self.robot_def = "shadow"
         self.simulated = configData["Simulated"]
 
@@ -118,6 +122,7 @@ class SpecificWorker(GenericWorker):
         self.verify_depth_sigma_max = configData["Verify_depth_sigma_max"]
         self.verify_distance_tolerance = configData["Verify_distance_tolerance"]
         self.verify_answered = False
+        self.verify_verdict = None    # "ok" / "fail": contestada no es lo mismo que correcta
         self.verify_waiting_logged = False
         self.last_bearing_check_ms = 0    # limita el diagnostico de rumbo a 2 Hz
         self.device_name = "cuda" if self.cuda_available() else "cpu"
@@ -130,7 +135,8 @@ class SpecificWorker(GenericWorker):
         os.makedirs(self.photo_session_dir, exist_ok=True)
         self.photo_log_path = os.path.join(self.photo_session_dir, "shots.csv")
         with open(self.photo_log_path, "w") as log:
-            log.write("label,u,v,depth_m,path\n")
+            log.write("label,u,v,depth_m,real_rel_x,real_rel_y,real_rel_z,"
+                      "real_world_x,real_world_y,real_world_z,path\n")
         console.print(f"Fotos de esta sesión en: {self.photo_session_dir}", style="cyan")
 
         # concept classifier: trained on the fly with the photos of the mission
@@ -170,7 +176,6 @@ class SpecificWorker(GenericWorker):
             if self.update_relative_position(relative_position):
                 self.last_relative_pose = relative_position
                 self.has_published_once = True
-                self.publish_real_position()
 
         if self.stage in (Stage.IDLE, Stage.SHOOTING, Stage.VERIFYING):
             self.log_bearing_check(concept_node, relative_position, now_ms)
@@ -195,7 +200,7 @@ class SpecificWorker(GenericWorker):
 
     def get_relative_position(self, concept_node):
         """Relative position between the robot and CONCEPT_NAME, in the robot's local frame
-        (meters). Simulated: world_position, i.e. what the simulation estimated, against the
+        (meters). Simulated: simulated_position, i.e. what the simulation estimated, against the
         robot's Webots pose. Real: TODO, needs a CONCEPT_NAME label from ImageSegmentation (not
         trained yet)."""
         relative_position = [0.0, 0.0, 0.0]
@@ -203,9 +208,9 @@ class SpecificWorker(GenericWorker):
         if self.simulated:
             # El concepto se situa donde lo estimo la simulacion, no donde esta de verdad: es lo
             # que este agente "cree" y es el objetivo al que se aproxima el robot.
-            if "world_position" not in concept_node.attrs:
+            if "simulated_position" not in concept_node.attrs:
                 return self.last_relative_pose
-            wp = concept_node.attrs["world_position"].value
+            wp = concept_node.attrs["simulated_position"].value
 
             try:
                 robot_pose = self.webots2robocomp_proxy.getObjectPose(self.robot_def)
@@ -213,7 +218,7 @@ class SpecificWorker(GenericWorker):
                 console.print(f"Sin pose de Webots ({e}); se mantiene la última RT.", style="bold red")
                 return self.last_relative_pose
 
-            # world_position va en metros; getObjectPose devuelve milimetros.
+            # simulated_position va en metros; getObjectPose devuelve milimetros.
             dx = float(wp[0]) - robot_pose.position.x / 1000.0
             dy = float(wp[1]) - robot_pose.position.y / 1000.0
             dz = float(wp[2]) - robot_pose.position.z / 1000.0
@@ -243,31 +248,68 @@ class SpecificWorker(GenericWorker):
 
         return relative_position
 
-    def publish_real_position(self):
-        """Publica en el nodo del concepto su posicion relativa REAL, con la misma convencion que
-        la RT. No la lee nadie: sirve para medir contra ella el error de world_position y de la
-        proyeccion cuando algo no cuadra."""
-        try:
-            concept_pose = self.webots2robocomp_proxy.getObjectPose(self.concept_def)
-            robot_pose = self.webots2robocomp_proxy.getObjectPose(self.robot_def)
-        except Exception:
+    def warn_no_real_reference(self, reason):
+        """Avisa una sola vez, no por ciclo: sin referencia real la mision es identica, solo se
+        queda sin la pista contra la que medir el error."""
+        if self.real_def_warned:
             return
+        self.real_def_warned = True
+        console.print(f"Sin referencia real (DEF '{self.real_def}'): {reason}. Se sigue sin ella.",
+                      style="bold yellow")
 
-        dx = (concept_pose.position.x - robot_pose.position.x) / 1000.0
-        dy = (concept_pose.position.y - robot_pose.position.y) / 1000.0
-        dz = (concept_pose.position.z - robot_pose.position.z) / 1000.0
+    def real_reference(self):
+        """Posicion REAL del concepto: la pista contra la que se mide el error de
+        simulated_position. None si no hay referencia fiable, nunca ceros.
+
+        El puente devuelve NaN cuando no resuelve el DEF (y ceros en las versiones anteriores),
+        asi que las dos cosas se descartan: son ausencia de dato, no una posicion. Devuelve los dos
+        marcos porque se compara contra dos cosas: 'world' contra simulated_position (resta
+        directa) y 'relative' contra la RT, con su misma convencion."""
+        if not self.real_def:
+            return None
+
+        try:
+            concept_pose = self.webots2robocomp_proxy.getObjectPose(self.real_def)
+            robot_pose = self.webots2robocomp_proxy.getObjectPose(self.robot_def)
+        except Exception as e:
+            self.warn_no_real_reference(f"el puente no contesto ({e})")
+            return None
+
+        # getObjectPose devuelve milimetros; el resto del agente trabaja en metros.
+        concept_world = [concept_pose.position.x / 1000.0,
+                         concept_pose.position.y / 1000.0,
+                         concept_pose.position.z / 1000.0]
+        robot_world = [robot_pose.position.x / 1000.0,
+                       robot_pose.position.y / 1000.0,
+                       robot_pose.position.z / 1000.0]
+
+        if not all(math.isfinite(v) for v in concept_world + robot_world):
+            self.warn_no_real_reference("DEF sin resolver (pose NaN)")
+            return None
+        if not any(concept_world) or not any(robot_world):
+            self.warn_no_real_reference("DEF sin resolver (pose a cero)")
+            return None
+
+        dx = concept_world[0] - robot_world[0]
+        dy = concept_world[1] - robot_world[1]
+        dz = concept_world[2] - robot_world[2]
 
         q = robot_pose.orientation
         theta = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         local_x = -math.sin(theta) * dx + math.cos(theta) * dy
         local_y = -math.cos(theta) * dx - math.sin(theta) * dy
 
-        node = self.g.get_node(CONCEPT_NAME)
-        if node is None:
-            return
         # Mismo orden que la RT, para poder comparar las dos directamente.
-        node.attrs["real_position"] = Attribute([float(-local_y), float(local_x), float(dz)], self.agent_id)
-        self.g.update_node(node)
+        return {"relative": [-local_y, local_x, dz], "world": concept_world}
+
+    def real_reference_attrs(self):
+        """La referencia real como atributos del nodo, {} si no hay. Se publica en la MISMA
+        escritura que el veredicto para que la muestra sea del mismo instante."""
+        real = self.real_reference()
+        if real is None:
+            return {}
+        return {"real_position": [float(v) for v in real["relative"]],
+                "real_world_position": [float(v) for v in real["world"]]}
 
     def update_relative_position(self, relative_position):
         """Update the robot->CONCEPT_NAME RT edge in the DSR. Returns True if it was written.
@@ -304,7 +346,7 @@ class SpecificWorker(GenericWorker):
         rt_deg = math.degrees(math.atan2(relative_position[0], relative_position[1]))
         try:
             rgb, depth_m, image = self.get_current_rgbd()
-            projection = self.project_world_position(concept_node, image)
+            projection = self.project_simulated_position(concept_node, image)
         except Exception as e:
             console.print(f"[rumbo] RT {rt_deg:+7.1f} | sin proyeccion ({e})", style="yellow")
             return
@@ -371,9 +413,12 @@ class SpecificWorker(GenericWorker):
             self.verify_answered = self.verify_concept(concept_node)
             return
 
-        # Solo se dispara despues de que la verificacion haya contestado: antes del APPROACH el
-        # robot esta parado un instante y se colaba una foto con el concepto fuera de cuadro.
-        if active and self.verify_answered:
+        # Solo se dispara con la verificacion contestada Y correcta. Lo primero porque antes del
+        # APPROACH el robot esta parado un instante y se colaba una foto con el concepto fuera de
+        # cuadro. Lo segundo porque un "fail" dice que el concepto no esta donde se cree: la
+        # etiqueta sale de proyectar simulated_position, asi que disparar mete en el dataset una
+        # foto etiquetada por un punto que no apunta al concepto.
+        if active and self.verify_answered and self.verify_verdict == "ok":
             self.stage = Stage.SHOOTING
             # one photo per stop, even if the stop lasts several cycles
             if self.robot_is_stopped():
@@ -385,6 +430,7 @@ class SpecificWorker(GenericWorker):
 
         if not active:
             self.verify_answered = False
+            self.verify_verdict = None
             self.verify_waiting_logged = False
 
         if self.mission_was_active and not active and not self.session_trained:
@@ -418,7 +464,7 @@ class SpecificWorker(GenericWorker):
         self.g.update_node(node)
 
     def verify_concept(self, concept_node):
-        """Comprueba que el concepto esta de verdad donde dice world_position: proyecta el punto,
+        """Comprueba que el concepto esta de verdad donde dice simulated_position: proyecta el punto,
         segmenta con SAM en ese pixel y mide la mascara.
 
         Devuelve True solo si ha podido mirar y ha contestado. Si el punto todavia no esta en
@@ -429,7 +475,7 @@ class SpecificWorker(GenericWorker):
         if rgb is None or depth_m is None:
             return False
 
-        projection = self.project_world_position(concept_node, image)
+        projection = self.project_simulated_position(concept_node, image)
         if projection is None or projection["behind"] or projection["u"] is None:
             return False
 
@@ -465,6 +511,10 @@ class SpecificWorker(GenericWorker):
             console.print(f"Verificacion OK: tamaño {best['size_m']:.3f} m, profundidad "
                           f"{best['z_med']:.2f} m, sigma {best['sigma']:.3f}", style="bold green")
 
+        # La verdad va en la misma escritura que el veredicto, y tambien cuando es "fail": son
+        # los casos que hay que explicar (creencia desplazada vs. SAM segmentando otra cosa).
+        diag.update(self.real_reference_attrs())
+        self.verify_verdict = diag["verify_result"]
         self.publish_concept_attrs(diag)
         return True
 
@@ -575,13 +625,13 @@ class SpecificWorker(GenericWorker):
         )
         return root_to_robot @ robot_to_camera
 
-    def project_world_position(self, concept_node, image):
-        """Proyecta world_position (marco root, metros) en la imagen. A diferencia de la versión
+    def project_simulated_position(self, concept_node, image):
+        """Proyecta simulated_position (marco root, metros) en la imagen. A diferencia de la versión
         de vision_sam devuelve también los puntos que caen fuera del encuadre: el etiquetado
         necesita distinguir "fuera de cuadro" de "no proyectable"."""
-        if "world_position" not in concept_node.attrs:
+        if "simulated_position" not in concept_node.attrs:
             return None
-        wp = concept_node.attrs["world_position"].value
+        wp = concept_node.attrs["simulated_position"].value
         point_root_m = [float(wp[0]), float(wp[1]), float(wp[2])]
 
         root_to_camera = self.get_root_to_camera_transform()
@@ -619,16 +669,16 @@ class SpecificWorker(GenericWorker):
         return None
 
     def take_labelled_photo(self, concept_node):
-        """Captura el frame actual, lo etiqueta proyectando world_position y lo guarda en la
+        """Captura el frame actual, lo etiqueta proyectando simulated_position y lo guarda en la
         carpeta de su etiqueta. El robot está parado y asentado cuando se llama."""
         rgb, _, image = self.get_current_rgbd()
         if rgb is None:
             console.print("Disparo descartado: sin imagen de la cámara.", style="bold red")
             return
 
-        projection = self.project_world_position(concept_node, image)
+        projection = self.project_simulated_position(concept_node, image)
         if projection is None:
-            console.print("Disparo descartado: no se pudo proyectar world_position.", style="bold red")
+            console.print("Disparo descartado: no se pudo proyectar simulated_position.", style="bold red")
             return
 
         label = self.label_for_projection(projection, image)
@@ -650,8 +700,12 @@ class SpecificWorker(GenericWorker):
         v_txt = "" if projection["v"] is None else f"{projection['v']:.1f}"
         console.print(f"{label} en ({u_txt}, {v_txt}) a {projection['depth_m']:.2f} m -> {path}",
                       style="green" if label.startswith("con_") else "blue")
+        # La etiqueta sale de proyectar simulated_position, o sea de la creencia: sin la posicion
+        # real en la misma fila, un dataset mal etiquetado no hay forma de detectarlo despues.
+        real = self.real_reference()
+        real_txt = ",,,,," if real is None else ",".join(f"{v:.3f}" for v in real["relative"] + real["world"])
         with open(self.photo_log_path, "a") as log:
-            log.write(f"{label},{u_txt},{v_txt},{projection['depth_m']:.3f},{path}\n")
+            log.write(f"{label},{u_txt},{v_txt},{projection['depth_m']:.3f},{real_txt},{path}\n")
 
     # Concept classifier
     def run_training(self):
