@@ -474,6 +474,17 @@ void SpecificWorker::update_or_create_imu_node()
 		acceleration = {acceleration_raw.XAcc, acceleration_raw.YAcc, acceleration_raw.ZAcc};
 		angularVel = {angularVel_raw.XGyr, angularVel_raw.YGyr, angularVel_raw.ZGyr};
 
+		// The rest of the loop (semantic's evidence, inner_simulator's verdict) reads the IMU as the Webots
+		// Shadow gives it: the specific force in the robot frame (x right, y forward, z up), +9.81 on z at rest.
+		// The Phidget of the physical Shadow (imu_phidget passes its values through) gives the opposite of
+		// that on its three accelerometer axes, and its gyroscope as Webots does. Measured on the run of
+		// 04/11/2026 16:00 (docs_output/resultados/66): z reads -9.82 at rest, y is negative while speeding up
+		// and positive while braking, and x follows +g sin(roll) (correlation 0.93, slope 1.05) while the left
+		// wheel climbs a 3.5 cm bump, which the gyroscope reads as a left-side-up roll of 4.6 deg.
+		if (not simulated)
+			for (auto &axis : acceleration)
+				axis = -axis;
+
 	}catch(const Ice::Exception& ex)
     {
         std::cout <<"IMU proxy exception:"<< ex << std::endl;
@@ -947,9 +958,15 @@ void SpecificWorker::FullPoseEstimationPub_newFullPose(RoboCompFullPoseEstimatio
     float last_y     = last_odometry[1];
     float last_theta = last_odometry[2];
 
+	// theta grows counterclockwise (vrz has the sign of the rot setpoint, and the base turns counterclockwise
+	// for a positive one), and it is published as rot_z(theta) (auto_localization). The robot frame is
+	// +y-forward and x to the right, so the velocity turns into the room frame with that same rotation:
+	// forward is (-sin theta, cos theta). The former (sin theta, cos theta) mirrored the path against the
+	// heading (run of 04/11/2026 16:00: the heading turned +4 deg while the path turned -5.5 deg;
+	// docs_output/resultados/66).
 	float theta = last_theta + avg_vrz * dt;
-	float x     = last_x + (avg_vy * std::sin(last_theta) + avg_vx * std::cos(last_theta)) * dt;
-	float y     = last_y + (avg_vy * std::cos(last_theta) - avg_vx * std::sin(last_theta)) * dt;
+	float x     = last_x + (avg_vx * std::cos(last_theta) - avg_vy * std::sin(last_theta)) * dt;
+	float y     = last_y + (avg_vx * std::sin(last_theta) + avg_vy * std::cos(last_theta)) * dt;
 
     last_odometry = {x, y, theta};
 
