@@ -50,6 +50,9 @@ Sam_weights = "/home/robolab/robocomp/components/robocomp-insight/agents/vision_
 Verify_size_tolerance = 0.5
 Verify_depth_sigma_max = 0.15
 Verify_distance_tolerance = 0.3
+# Si es true, se dispara aunque la verificacion sea negativa (pruebas del clasificador). Tiene que
+# coincidir con Force_photos de concept_robot, que es quien decide si hace el giro.
+Force_photos = false
 
 # Clasificador del concepto: backbone DINOv3 y cada cuántos ciclos se clasifica la vista
 # actual una vez entrenado. Entrena con las fotos que él mismo ha tomado en esta ejecución.

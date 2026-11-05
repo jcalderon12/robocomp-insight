@@ -122,9 +122,11 @@ public slots:
 	 * \param desired_distance: Desired distance to the target in meters.
 	 * \param distance_tolerance: Band around desired_distance that counts as reached. Negative:
 	 * any distance up to desired_distance counts (follow_person).
+	 * \param brake_gain: If positive, caps the forward speed at brake_gain * (d - desired) / d
+	 * (m/s), the progressive braking of the former PD. 0 disables it.
 	 */
 	void follow_target(float max_forward_speed_factor = 0.6f, float max_angular_speed_factor = 0.6f,
-	                   float desired_distance = 0.5f, float distance_tolerance = -1.f);
+	                   float desired_distance = 0.5f, float distance_tolerance = -1.f, float brake_gain = 0.f);
 
 	/**
 	 * \brief Dynamic Window Approach: samples (forward, turn) pairs reachable from the current
@@ -259,6 +261,7 @@ private:
 	static constexpr float NAV_SIM_STEP = 0.1f;                // segundos por paso de la simulacion
 	static constexpr int   NAV_V_SAMPLES = 6;
 	static constexpr int   NAV_W_SAMPLES = 21;
+	static constexpr float NAV_MAX_W = 1.2f;                   // rad/s de giro maximo en los arcos (no en el giro en el sitio)
 	static constexpr float NAV_ACCEL_V = 1.0f;                 // m/s^2; el giro no se limita
 	// Pesos del coste: distancia final a la meta (m), error de rumbo (rad), cercania a obstaculos
 	// (0..1 por debajo de NAV_CLEARANCE_CAP), velocidad (0..1) y cambio de giro (rad/s).
@@ -288,6 +291,10 @@ private:
 	// Holgura sobre desired_distance: la aproximacion es asintotica y los ultimos centimetros se
 	// recorren a milimetros por segundo, asi que exigir la distancia exacta puede no cumplirse nunca.
 	static constexpr float FOLLOW_REACHED_MARGIN = 0.1f;   // metros
+	// Tope de avance en follow_person: 0.6 m/s, lo que daba el PD de antes del DWA. A mas velocidad
+	// el bache 1 se pisa mas fuerte y el robot recorre mas hasta que aparece 'problem'.
+	static constexpr float FOLLOW_SPEED_FACTOR = 0.4f;
+	static constexpr float FOLLOW_BRAKE_GAIN = 0.8f;       // m/s, el Kp_lin del PD antiguo
 	// Deriva de la distancia durante la espera que se interpreta como que la persona se ha movido.
 	static constexpr float FOLLOW_HOLD_DRIFT     = 0.25f;  // metros
 	float follow_hold_seconds;           // segundos que hay que aguantar a la distancia deseada
@@ -339,6 +346,7 @@ private:
 	// Verificacion: se pide al agente del concepto y se espera su veredicto, con tope de tiempo
 	// porque la primera vez tiene que cargar el modelo.
 	float verify_timeout_seconds;
+	bool force_photos = false;   // Force_photos: hacer las fotos aunque la verificacion sea negativa
 	std::chrono::steady_clock::time_point verify_wait_start;
 	bool  approach_started = false;
 	std::chrono::steady_clock::time_point approach_check_start;  // ventana de la traza de diagnostico

@@ -121,6 +121,7 @@ class SpecificWorker(GenericWorker):
         self.verify_size_tolerance = configData["Verify_size_tolerance"]
         self.verify_depth_sigma_max = configData["Verify_depth_sigma_max"]
         self.verify_distance_tolerance = configData["Verify_distance_tolerance"]
+        self.force_photos = configData.get("Force_photos", False)
         self.verify_answered = False
         self.verify_verdict = None    # "ok" / "fail": contestada no es lo mismo que correcta
         self.verify_waiting_logged = False
@@ -143,7 +144,8 @@ class SpecificWorker(GenericWorker):
         self.dinov3_repo = configData["Dinov3_repo"]
         self.dinov3_weights = configData["Dinov3_weights"]
         self.inference_period_cycles = configData["Inference_period_cycles"]
-        self.model_dir = "model"
+        # Un modelo por sesion, con el mismo nombre que su carpeta de fotos: entre flujos no se mezclan.
+        self.model_dir = os.path.join("model", os.path.basename(self.photo_session_dir))
         self.backbone = None
         self.classifier = None
         self.cycle_count = 0
@@ -418,7 +420,8 @@ class SpecificWorker(GenericWorker):
         # cuadro. Lo segundo porque un "fail" dice que el concepto no esta donde se cree: la
         # etiqueta sale de proyectar simulated_position, asi que disparar mete en el dataset una
         # foto etiquetada por un punto que no apunta al concepto.
-        if active and self.verify_answered and self.verify_verdict == "ok":
+        # Force_photos salta lo segundo para probar el clasificador: el veredicto sigue grabado.
+        if active and self.verify_answered and (self.verify_verdict == "ok" or self.force_photos):
             self.stage = Stage.SHOOTING
             # one photo per stop, even if the stop lasts several cycles
             if self.robot_is_stopped():
@@ -811,8 +814,16 @@ class SpecificWorker(GenericWorker):
             console.print(f"Vista actual: {label} (p={probabilities[1]:.3f})",
                           style="bold green" if label == "con_bache" else "bold blue")
 
-            with open(os.path.join(self.model_dir, "inference.csv"), "a") as log:
-                log.write(f"{int(time.time() * 1000)},{label},{probabilities[1]:.4f}\n")
+            # Con la posicion real en la misma fila, como en shots.csv, para medir aciertos despues.
+            real = self.real_reference()
+            real_txt = ",,,,," if real is None else ",".join(f"{v:.3f}" for v in real["relative"] + real["world"])
+            path = os.path.join(self.model_dir, "inference.csv")
+            new_file = not os.path.exists(path)
+            with open(path, "a") as log:
+                if new_file:
+                    log.write("timestamp_ms,label,p_con,real_rel_x,real_rel_y,real_rel_z,"
+                              "real_world_x,real_world_y,real_world_z\n")
+                log.write(f"{int(time.time() * 1000)},{label},{probabilities[1]:.4f},{real_txt}\n")
 
         except Exception as e:
             console.print(f"Fallo clasificando la vista actual: {e}", style="bold red")

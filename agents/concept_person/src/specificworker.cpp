@@ -87,7 +87,11 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-	auto relative_position = apply_person_memory(get_person_relative_position());
+	auto detected = get_person_relative_position();
+	// Un salto sin confirmar no se publica ni entra en la memoria: mientras, se sigue la recordada.
+	const bool is_detection = std::hypot(detected[0], detected[1]) >= PERSON_NULL_DISTANCE;
+	const bool held = is_detection && !confirm_person_jump(detected);
+	auto relative_position = apply_person_memory(held ? std::vector<float>{0.f, 0.f, 0.f} : detected, held);
 
 	if(print_extra_info)
 		std::cout << "[" << now_ms << "] get_person_relative_position -> x: " << relative_position[0]
@@ -246,7 +250,7 @@ std::vector<float> SpecificWorker::get_person_relative_position()
 			if (obj.label == "person"){
 				auto point_cloud = obj.points3D;
 				if (!point_cloud.X.empty()){
-					person_positions.push_back(std::vector<float>{point_cloud.X[0], point_cloud.Y[0], point_cloud.Z[0]});
+					person_positions.push_back(median_point(point_cloud));
 				}
 			}
 		}
@@ -287,7 +291,29 @@ std::vector<float> SpecificWorker::get_person_relative_position()
 }
 
 
-std::vector<float> SpecificWorker::apply_person_memory(const std::vector<float>& detected)
+std::vector<float> SpecificWorker::median_point(const RoboCompImageSegmentation::PointCloud& cloud)
+{
+	// Mediana por eje: un punto suelto del fondo no arrastra la posicion como lo hacia el primero.
+	auto median = [](std::vector<float> v) {
+		const auto mid = v.begin() + v.size() / 2;
+		std::nth_element(v.begin(), mid, v.end());
+		return *mid;
+	};
+	std::vector<float> xs, ys, zs;
+	const size_t n = std::min({cloud.X.size(), cloud.Y.size(), cloud.Z.size()});
+	for (size_t i = 0; i < n; ++i)
+		if (std::isfinite(cloud.X[i]) && std::isfinite(cloud.Y[i]) && std::isfinite(cloud.Z[i]) && cloud.Y[i] > 0.f)
+		{
+			xs.push_back(cloud.X[i]);
+			ys.push_back(cloud.Y[i]);
+			zs.push_back(cloud.Z[i]);
+		}
+	if (xs.empty())
+		return {0.f, 0.f, 0.f};   // ausencia de dato
+	return {median(xs), median(ys), median(zs)};
+}
+
+std::vector<float> SpecificWorker::apply_person_memory(const std::vector<float>& detected, bool held)
 {
 	float robot_x = 0.f, robot_y = 0.f, yaw = 0.f;
 	const bool have_pose = get_robot_pose_2d(robot_x, robot_y, yaw);
@@ -313,7 +339,9 @@ std::vector<float> SpecificWorker::apply_person_memory(const std::vector<float>&
 		return detected;
 	}
 
-	set_person_perceived(false);
+	// Un salto retenido no es perder a la persona: perceived se queda como estaba.
+	if (!held)
+		set_person_perceived(false);
 	const float age = std::chrono::duration<float>(now - person_memory_stamp).count();
 	if (!person_memory_valid || !have_pose || age > PERSON_MEMORY_MAX_AGE)
 	{
@@ -506,6 +534,15 @@ bool SpecificWorker::update_relative_position_to_person(const std::vector<float>
 		return false;
 	}
 
+	auto robot_node = optional_robot_node.value();
+	auto person_node = optional_person_node.value();
+	rt->insert_or_assign_edge_RT(robot_node, person_node.id(), relative_position, {0.0f, 0.0f, 0.0f});
+	last_relative_pose = relative_position;
+	return true;
+}
+
+bool SpecificWorker::confirm_person_jump(const std::vector<float>& relative_position)
+{
 	float dx = relative_position[0] - last_relative_pose[0];
 	float dy = relative_position[1] - last_relative_pose[1];
 	float dz = relative_position[2] - last_relative_pose[2];
@@ -531,7 +568,7 @@ bool SpecificWorker::update_relative_position_to_person(const std::vector<float>
 			consecutive_large_jump_confirmations++;
 			if (print_extra_info){
 				// std::cout << "Large jump confirmation " << consecutive_large_jump_confirmations << "/" << required_large_jump_confirmations << std::endl;
-				std::cout << "[" << now_ms << "] jump_distance: " << jump_distance
+				std::cout << "jump_distance: " << jump_distance
 				<< " | threshold: " << large_jump_threshold
 				<< " | pending_distance: " << pending_distance
 				<< " | tolerance: " << large_jump_candidate_tolerance
@@ -544,12 +581,8 @@ bool SpecificWorker::update_relative_position_to_person(const std::vector<float>
 		}
 	}
 
-	auto robot_node = optional_robot_node.value();
-	auto person_node = optional_person_node.value();
-	rt->insert_or_assign_edge_RT(robot_node, person_node.id(), relative_position, {0.0f, 0.0f, 0.0f});
-	last_relative_pose = relative_position;
 	consecutive_large_jump_confirmations = 0;
-	pending_relative_position = last_relative_pose;
+	pending_relative_position = relative_position;
 	return true;
 }
 

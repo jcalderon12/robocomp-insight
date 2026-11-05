@@ -155,11 +155,26 @@ public slots:
 	std::vector<float> get_person_relative_position();
 
 	/**
+	 * \brief Per-axis median of the valid points of a cloud (finite, ahead of the camera).
+	 * Zeros if none is valid.
+	 */
+	std::vector<float> median_point(const RoboCompImageSegmentation::PointCloud& cloud);
+
+	/**
 	 * \brief Person memory: each detection is stored in the root frame and, with no detection,
 	 * the relative position is rebuilt from that memory and the current robot pose instead of
 	 * returning zeros. Publishes perceived=true/false on the person node.
+	 * \param held True if a detection was withheld by confirm_person_jump(): memory is used but
+	 * perceived is left unchanged.
 	 */
-	std::vector<float> apply_person_memory(const std::vector<float>& detected);
+	std::vector<float> apply_person_memory(const std::vector<float>& detected, bool held = false);
+
+	/**
+	 * \brief Jump filter: a detection farther than large_jump_threshold from the last published
+	 * position is accepted only after required_large_jump_confirmations consistent samples.
+	 * \return True if the detection can be used
+	 */
+	bool confirm_person_jump(const std::vector<float>& relative_position);
 
 	/**
 	 * \brief Robot pose from the root->robot RT written by concept_robot: x, y (meters) and the
@@ -222,8 +237,8 @@ private:
 	std::vector<float> pending_relative_position = {0.0f, 0.0f, 0.0f};
 	int consecutive_large_jump_confirmations = 0;
 	int required_large_jump_confirmations = 3;
-	float large_jump_threshold = 1000.0f; // millimeters
-	float large_jump_candidate_tolerance = 200.0f; // millimeters
+	float large_jump_threshold = 1.0f; // metros
+	float large_jump_candidate_tolerance = 0.2f; // metros
 
 signals:
 	//void customSignal();

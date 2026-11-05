@@ -122,6 +122,7 @@ void SpecificWorker::initialize()
 	const float deg2rad = std::numbers::pi_v<float> / 180.f;
 	photo_approach_distance = configLoader.get<double>("Photo_approach_distance") / 1000.f;
 	verify_timeout_seconds = configLoader.get<double>("Verify_timeout_seconds");
+	force_photos = configLoader.get<bool>("Force_photos");
 	photo_angular_step  = configLoader.get<double>("Photo_angular_step") * deg2rad;
 	photo_settle_seconds = configLoader.get<double>("Photo_settle_seconds");
 	photo_spin_speed    = configLoader.get<double>("Photo_spin_speed_factor") * WEBOTS_MAX_ANGULAR_SPEED;
@@ -143,7 +144,7 @@ void SpecificWorker::compute()
 		else
 		{
 			reset_photo_spin();
-			follow_target(1.0f, 1.0f, desired_distance);
+			follow_target(FOLLOW_SPEED_FACTOR, 1.0f, desired_distance, -1.f, FOLLOW_BRAKE_GAIN);
 			check_follow_reached();
 		}
 	}
@@ -204,7 +205,7 @@ int SpecificWorker::startup_check()
 
 #pragma region ROBOT_METHODS
 
-void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance, float distance_tolerance)
+void SpecificWorker::follow_target(float max_forward_speed_factor, float max_angular_speed_factor, float desired_distance, float distance_tolerance, float brake_gain)
 {
     auto robot_node_opt = G->get_node("robot");
     if (!robot_node_opt.has_value())
@@ -277,7 +278,11 @@ void SpecificWorker::follow_target(float max_forward_speed_factor, float max_ang
         // Meta: el punto de la recta robot-objetivo a desired_distance del objetivo. Si el robot
         // esta mas cerca, la meta cae a su espalda y la alcanza dando la vuelta.
         const float scale = 1.f - desired_distance / distance_to_target;
-        std::tie(linear_velocity, angular_velocity) = navigate_to(robot_node, x * scale, y * scale, max_v, max_w);
+        // Frenado progresivo del PD de antes del DWA: v <= gain * (d - deseada) / d.
+        float nav_max_v = max_v;
+        if (brake_gain > 0.f && distance_to_target > desired_distance)
+            nav_max_v = std::min(max_v, brake_gain * (distance_to_target - desired_distance) / distance_to_target);
+        std::tie(linear_velocity, angular_velocity) = navigate_to(robot_node, x * scale, y * scale, nav_max_v, max_w);
     }
 
     if (print_extra_info)
@@ -412,6 +417,9 @@ std::pair<float, float> SpecificWorker::navigate_to(const DSR::Node &robot_node,
 		return {0.f, turn_towards(goal_angle, max_w)};
 	}
 	nav_rotating = false;
+
+	// Al avanzar no se usan giros por encima de NAV_MAX_W: afina la rejilla de muestras de giro.
+	max_w = std::min(max_w, NAV_MAX_W);
 
 	// Velocidad actual: la ultima mandada. Frenar es inmediato; acelerar, limitado.
 	const auto current = getVelocitiesFromDSR();
@@ -1016,6 +1024,16 @@ void SpecificWorker::photo_spin()
 			if (verdict == "ok")
 			{
 				std::cout << "photo_spin: verificacion correcta; empieza el giro." << std::endl;
+				stop_robot();
+				spin_accumulated = 0.f;
+				spin_since_shot = photo_angular_step;
+				spin_heading_valid = false;
+				spin_stage = SpinStage::TURNING;
+			}
+			else if (verdict == "fail" && force_photos)
+			{
+				// Force_photos: el veredicto queda grabado pero no frena el giro.
+				std::cerr << "photo_spin: verificacion negativa; Force_photos activo, se hace el giro igual." << std::endl;
 				stop_robot();
 				spin_accumulated = 0.f;
 				spin_since_shot = photo_angular_step;
