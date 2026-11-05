@@ -37,7 +37,7 @@
     {
         "name": "inner_simulator",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/inner_simulator",
-        "command": "bin/inner_simulator etc/config",
+        "command": "bin/inner_simulator etc/config_real",
         "restart": false,
         "buildable": true
     },
@@ -79,7 +79,7 @@
     {
         "name": "semantic",
         "directory": "$ROBOCOMP/components/robocomp-insight/agents/semantic",
-        "command": "bin/semantic etc/config",
+        "command": "bin/semantic etc/config_real",
         "restart": false,
         "buildable": true
     },

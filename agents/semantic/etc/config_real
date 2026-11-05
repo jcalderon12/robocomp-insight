@@ -1,0 +1,111 @@
+# The physical Shadow (insight_config.json): as etc/config, with the self-model of the physical robot
+# (description_real.md) and its own GraphDB repository. docs_output/resultados/66.
+
+# --- Common Agent Data ---
+Agent.id = 9 # Change id
+Agent.name = "semantic"
+
+# --- Single Instance Configuration ---
+# Use this if you only have one graph.
+#Agent.configFile = ""
+#Agent.domain = 0
+#Agent.tree = true
+#Agent.graph = true
+#Agent.2d = true
+#Agent.3d = true
+
+# --- Multiple Instance Configuration ---
+# The working memory, and the episodic one: the "Follow Person" mission publishes there the path
+# of its recording, from which the generation v2 builds the episode (as the inner simulator does).
+Agent.work.configFile = ""
+Agent.work.domain = 0
+Agent.work.tree = true
+Agent.work.graph = true
+Agent.work.2d = true
+Agent.work.3d = true
+
+Agent.episodic.configFile = ""
+Agent.episodic.domain = 1
+Agent.episodic.tree = false
+Agent.episodic.graph = false
+Agent.episodic.2d = false
+Agent.episodic.3d = false
+
+Period.Compute = 100
+Period.Emergency = 500
+
+Component.Debug.Verbose = true
+
+Ice.Warn.Connections = "0"
+Ice.Trace.Network = "0"
+Ice.Trace.Protocol = "0"
+Ice.MessageSizeMax = "20004800"
+
+# --- GraphDB mirror (defaults shown explicitly) ---
+graphDB.Enabled = true
+graphDB.Endpoint = "http://localhost:7200"
+graphDB.Repository = "insight_real"
+graphDB.NamedGraph = "urn:insight:semantic:live"
+# The INSIGHT TBox (agents/semantic/data/insight_tbox.ttl), loaded by the agent at start-up in a
+# graph of its own; each case's episode and decisions go to http://insight.local/episodes/<id>.
+graphDB.OntologyGraph = "http://insight.local/ontology"
+
+# --- Hypothesis generation ---
+hypothesisGenerator.Enabled = true
+hypothesisGenerator.OutputDir = "generated_hypotheses"
+hypothesisGenerator.DescriptionPath = "../../description_real.md"
+# Closed catalog of executable simulation interventions (shared contract with inner_simulator)
+hypothesisGenerator.CatalogPath = "../../etc/intervention_catalog.json"
+hypothesisGenerator.PrimaryModel = "gemma4:31b-cloud"
+
+# Local fallback model. Must be downloaded beforehand with: ollama pull qwen3:14b
+hypothesisGenerator.FallbackModel = "qwen3:14b"
+hypothesisGenerator.OllamaBaseUrl = "http://localhost:11434"
+hypothesisGenerator.RequestTimeoutSeconds = 300
+hypothesisGenerator.InternalCount = 3
+hypothesisGenerator.ExternalCount = 3
+hypothesisGenerator.PreferredClient = "ollama_http"
+# The whole robot self-model (description.md, ~6 KB) must reach the prompt: its grounding
+# rules, diagnostic regions and invalid-fault examples come last and were being cut at 3500.
+hypothesisGenerator.DescriptionCharLimit = 12000
+# v2: episode, mechanisms and grounding by the memory (contract 3); v1: the LLM writes the blueprints.
+hypothesisGenerator.Generation = "v2"
+# v2 only: compiled causes simulated per case and LLM attempts. "all": every hypothesis that survives
+# the contrast and can be simulated is simulated (the nominal run is always free); a number k caps the
+# causes, in the LLM's order, as the evaluation's comparisons do.
+hypothesisGenerator.Budget = "all"
+hypothesisGenerator.MaxAttempts = 3
+
+# Available models ollama cloud:
+# gemma4:31b-cloud
+# qwen3.5:cloud
+# qwen3.5:397b-cloud
+# qwen3-coder-next:cloud
+# ministral-3:3b-cloud
+# ministral-3:8b-cloud
+# ministral-3:14b-cloud
+# devstral-small-2:24b-cloud
+# nemotron-3-super:cloud
+# qwen3-next:80b-cloud
+# rnj-1:8b-cloud
+# minimax-m2.7:cloud
+# nemotron-3-nano:30b-cloud
+# minimax-m2.5:cloud
+# devstral-2:123b-cloud
+# gemini-3-flash-preview:cloud
+# cogito-2.1:671b-cloud
+# glm-4.7:cloud
+# deepseek-v3.2:cloud
+# minimax-m2.1:cloud
+# mistral-large-3:675b-cloud
+# gpt-oss:20b-cloud
+# gpt-oss:120b-cloud
+# qwen3-vl:235b-cloud
+# qwen3-vl:235b-instruct-cloud
+# qwen3-coder:480b-cloud
+# deepseek-v3.1:671b-cloud
+# minimax-m2:cloud
+# glm-4.6:cloud 
+# gemma3:4b-cloud
+# gemma3:12b-cloud
+# gemma3:27b-cloud
