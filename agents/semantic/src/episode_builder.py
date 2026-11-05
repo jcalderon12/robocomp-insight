@@ -50,8 +50,12 @@ SUPPORT = "Support_bottle"
 
 #: The DSR robot frame is +y-forward; room headings count from +x.
 DSR_TO_ROOM_HEADING_DEG = 90.0
-#: concept_robot sends -robot_ref_rot_speed to the base: the robot turns against the setpoint sign.
-ROT_SETPOINT_SIGN = -1.0
+#: The base turns with the sign of robot_ref_rot_speed (positive counterclockwise), which concept_robot sends
+#: to it as it is. The -1 of 07/10 dated from when concept_robot sent -robot_ref_rot_speed. Measured: in free
+#: motion the Webots gyroscope follows the setpoint (1 s windows of 16-28/10 with a commanded turn over 3 deg:
+#: 60 at a ratio 0.7-1.3, 25 at -1.3 to -0.7, the rest where the follow controller opposes a disturbance), and
+#: the physical Shadow turned +6.7 deg for +5.5 deg commanded (04/11/2026; docs_output/resultados/66).
+ROT_SETPOINT_SIGN = 1.0
 GRAVITY_M_S2 = 9.81
 
 #: Motion: moving above this speed, turning above this yaw rate.

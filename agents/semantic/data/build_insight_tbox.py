@@ -34,7 +34,9 @@ INST = Namespace("http://insight.local/instances#")
 OCRA = Namespace("http://www.iri.upc.edu/groups/perception/OCRA/ont/ocra.owl#")
 
 ONTOLOGY_IRI = URIRef("http://insight.local/ontology")
-VERSION = "0.6"
+# 0.7 (05/11/2026): yaw_change says the commanded turn is the integral of robot_ref_rot_speed with its own sign,
+# as the base turns (docs_output/resultados/66). Nothing else changes.
+VERSION = "0.7"
 
 # Namespaces of T_op.owl that the TBox leaves out (version 0.6): OCRA's Collaboration, with its plan
 # and goal relations, is about collaborative robotics; no INSIGHT term, query or prompt refers to it.

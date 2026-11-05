@@ -217,7 +217,7 @@ insight:lateral_accel_peak a sosa:ObservableProperty ;
 
 insight:yaw_change a sosa:ObservableProperty ;
     rdfs:label "yaw change"@en ;
-    rdfs:comment "Heading change of the recorded pose over the interval, next to the commanded one: -integral of robot_ref_rot_speed, whose sign is opposite to the executed turn (deg)."@en .
+    rdfs:comment "Heading change of the recorded pose over the interval, next to the commanded one: the integral of robot_ref_rot_speed, positive counterclockwise like the heading (deg)."@en .
 
 insight:yaw_rate_peak a sosa:ObservableProperty ;
     rdfs:label "yaw rate peak"@en ;

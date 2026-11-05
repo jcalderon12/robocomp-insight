@@ -310,8 +310,8 @@ def _own_clock(view: EpisodeView) -> Optional[float]:
 
 def _heading_mismatch(view: EpisodeView, quantity: str, limit: float) -> Condition:
     """|recorded heading change - r x commanded one| over Interval_fall < limit (deg), with r the
-    episode's own clock. The commanded change is already -integral(robot_ref_rot_speed): the
-    episode turns the setpoint sign around. Without r (no free motion) it is unknown."""
+    episode's own clock. The commanded change is the integral of robot_ref_rot_speed, with the sign
+    episode_builder.ROT_SETPOINT_SIGN gives it. Without r (no free motion) it is unknown."""
     entry = view.evidence.get("yaw_change") or {}
     turned, ordered, clock = entry.get("value"), entry.get("commanded"), _own_clock(view)
     if turned is None or ordered is None or clock is None:

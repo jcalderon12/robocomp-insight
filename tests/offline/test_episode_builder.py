@@ -278,7 +278,8 @@ def check_episode_1229():
         if baseline is not None:
             close(entry["baseline"], baseline, 0.005, f"{evidence_id} baseline")
     close(evidence["Ev_yaw_change"]["value"], 0.3, 0.1, "yaw change")
-    close(evidence["Ev_yaw_change"]["commanded"], 0.1, 0.05, "commanded yaw change")
+    # The commanded turn has the setpoint's own sign since 05/11 (episode_builder.ROT_SETPOINT_SIGN; resultados/66).
+    close(evidence["Ev_yaw_change"]["commanded"], -0.1, 0.05, "commanded yaw change")
     # The contract says "about 0.01": the filtered setpoint falls ~0.01 m/s every 0.5 s, so a
     # 0.5 s window spans two of those steps (0.0197). Either way, no step was ordered.
     assert evidence["Ev_setpoint_step"]["value"] <= 0.02, evidence["Ev_setpoint_step"]
@@ -433,7 +434,7 @@ def check_rdf_1229():
           ?o sosa:observedProperty insight:yaw_change ; sosa:hasSimpleResult ?recorded ;
              insight:commandedValue ?commanded ; sosa:phenomenonTime ?i .
           ?i rdfs:label "Interval_fall" }"""))
-    assert [(float(a), float(b)) for a, b in commanded] == [(0.35, 0.11)], commanded
+    assert [(float(a), float(b)) for a, b in commanded] == [(0.35, -0.11)], commanded
     reaction = {str(r[0]).split("#")[1] for r in merged.query(PREFIXES + """
         SELECT ?x WHERE { ?x insight:isSystemReaction true }""")}
     assert reaction == {"Phase_reaction", "Ev_reaction_braking"}, reaction
