@@ -24,3 +24,5 @@ class SimulationScene(BaseModel):
     anomaly_interval:Optional[list[float]] = None # [start, end] s of the episode's anomaly interval (end = t_obs), which the verdict compares on.
     anomaly_footprint:Optional[dict] = None # {x: [min, max], y: [min, max]} m the robot covered during the anomaly interval (its path dilated by its reach).
     world_time_step_s:Optional[float] = None # Physics step (s) of the recorded Webots world: the span each recorded accelerometer sample averages over, and the step Webots' soft contacts are defined with. None: Webots' default, 32 ms.
+    base_max_acceleration:Optional[float] = None # m/s^2 at the rim of each drive wheel while it speeds up to its setpoint, as the driver of the physical Shadow ramps it (SVD48VBase maxAcceleration). None: the Webots motor, which reaches it at its torque limit.
+    base_max_deceleration:Optional[float] = None # m/s^2 at the rim of each drive wheel while it slows down (SVD48VBase maxDeceleration). Used only with base_max_acceleration.

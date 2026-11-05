@@ -215,6 +215,15 @@ class SpecificWorker(GenericWorker):
         self.sim_processes = int(sim_cfg.get("Processes", 0)) or os.cpu_count() or 1
         # How long to wait for the semantic agent's batch before the static causes (see waiting_for_batch).
         self.batch_wait_s = float(sim_cfg.get("BatchWaitSeconds", BATCH_WAIT_DEFAULT_S))
+        # The physical Shadow (etc/config_real; docs_output/resultados/66): its recordings run on the wall clock,
+        # so Simulation.ClockRate = 1 replaces the fit of the Webots clock, and its driver ramps each drive
+        # wheel (Base.MaxAcceleration and Base.MaxDeceleration, m/s^2, as in SVD48VBase etc/config_diferential).
+        # Unset or 0: the Webots clock fitted from the recording, and the Webots motor.
+        self.sim_clock_rate = float(sim_cfg.get("ClockRate", 0) or 0) or None
+        base_cfg = configData.get("Base", {})
+        base_acc = float(base_cfg.get("MaxAcceleration", 0) or 0)
+        base_dec = float(base_cfg.get("MaxDeceleration", 0) or 0)
+        self.base_limits = (base_acc, base_dec) if base_acc > 0 and base_dec > 0 else None
         self.batch_wait_started = {}
 
         # Hypothesis-driven mode state (set when the semantic agent publishes a batch)
@@ -373,7 +382,8 @@ class SpecificWorker(GenericWorker):
        # The anomaly interval comes from the episode the semantic memory built (the batch links it
        # with its sha256); without a batch the scene applies the same rule to the recording.
        scene, info = build_simulation_scene(self.mem_api, ROBOT_POS, PROBLEM_POS,
-                                            episode_intervals=self.episode_intervals())
+                                            episode_intervals=self.episode_intervals(),
+                                            clock_rate=self.sim_clock_rate, base_limits=self.base_limits)
        self.logger.log(f"Simulation seeded at {scene['start_time_s']:.2f} s, anomaly interval "
                        f"{scene['anomaly_interval']} ({info['anomaly_interval_source']}).", style="purple")
        if self.hypotheses_compiled is not None:

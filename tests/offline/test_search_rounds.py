@@ -152,6 +152,17 @@ def _rep(d, log_weight=0.0):
 
 
 def check_verdict():
+    # These repetitions carry their distance and no history, so the lead-in of the nominal cannot be measured; the
+    # validity bound (verdict.ADEQUACY_MAX, set since 05/11, resultados/66) is checked in test_scene_and_verdict_safeguards.
+    import src.verdict as verdict_module
+    previous, verdict_module.ADEQUACY_MAX = verdict_module.ADEQUACY_MAX, None
+    try:
+        _check_verdict()
+    finally:
+        verdict_module.ADEQUACY_MAX = previous
+
+
+def _check_verdict():
     scene = {"observed_effect_time": 7.5, "anomaly_interval": [5.5, 7.5], "start_time_s": 4.0}
     record = _record()
     # explains half the discrepancy: accepted

@@ -604,6 +604,8 @@ def build_simulation_scene(
     physics_dt: Optional[float] = None,
     episode_intervals: Optional[list] = None,
     seeded: bool = True,
+    clock_rate: Optional[float] = None,
+    base_limits: Optional[tuple[float, float]] = None,
 ) -> tuple[dict, dict]:
     """The scene the causes simulator replays (a SimulationScene dict, positions in
     meters, like the fallbacks), plus what was learned while building
@@ -618,7 +620,12 @@ def build_simulation_scene(
     recorded state of the robot then, with the bottle on its tray; `start_time_s` says when, and the
     setpoints, the horizon and everything simulated stay on the recording's clock.
 
-    The robot replays both setpoints: forward and rotation speed."""
+    The robot replays both setpoints: forward and rotation speed.
+
+    On the physical robot (docs_output/resultados/66) there is no Webots clock to fit: `clock_rate`
+    gives it (1, the recording's own clock) instead of episode_clock_rate. `base_limits`
+    (acceleration, deceleration in m/s^2) makes the replayed base ramp each drive wheel to its
+    setpoint as the driver of the physical Shadow does, instead of the Webots motor."""
     robot_fallback_m = list(fallback_robot_position)
     poses = extract_scene_poses(
         mem_api,
@@ -640,8 +647,11 @@ def build_simulation_scene(
     until_ns = origin_ns + int(observed_effect_time * 1e9) if observed_effect_time is not None else None
     speeds = commanded_speed_history(mem_api, until_ns, origin_ns) or {TIMESTAMP: [], ADV_SPEED: []}
     rot_speeds = commanded_rot_speed_history(mem_api, until_ns, origin_ns) or {TIMESTAMP: [], ROT_SPEED: []}
-    clock_rate, clock_windows = episode_clock_rate(
-        mem_api, origin_ns, observed_effect_time if observed_effect_time is not None else length)
+    if clock_rate is None:
+        clock_rate, clock_windows = episode_clock_rate(
+            mem_api, origin_ns, observed_effect_time if observed_effect_time is not None else length)
+    else:
+        clock_windows = 0
 
     start_time, initial_speed, interval, interval_source, footprint = 0.0, 0.0, None, None, None
     initial_position, initial_orientation = list(poses.initial_robot_position), poses.initial_robot_orientation
@@ -683,6 +693,8 @@ def build_simulation_scene(
         "initial_speed": initial_speed,
         "anomaly_interval": interval,
         "anomaly_footprint": footprint,
+        "base_max_acceleration": base_limits[0] if base_limits else None,
+        "base_max_deceleration": base_limits[1] if base_limits else None,
     }
     info = {"pose_sources": poses.sources, "effect_times": effect_times, "episode_length": length,
             "clock_rate": clock_rate, "clock_rate_windows": clock_windows,

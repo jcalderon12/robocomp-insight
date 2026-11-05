@@ -114,7 +114,13 @@ EPS = 0.04
 EXPLANATION_RATIO_MAX = 0.615
 PATH_SCALE_M = 0.05
 EFFECT_WEIGHTS = {"on_time": 1.0, "off_time": 1.0, "none": 1.0}
-ADEQUACY_MAX: Optional[float] = None
+#: The validity bound: above it, the nominal replay is too far from the record before the anomaly interval to
+#: judge any hypothesis, and the verdict abstains as not faithful. Above every case of the final Webots campaign
+#: (48 cases of 28/10: median 1.03, largest 2.39), so none of its verdicts changes. On the first run on the
+#: physical Shadow (04/11/2026), with the IMU and the base not yet calibrated, it was 49.6; the verdict, with no
+#: bound, called that replay faithful and the posterior went whole to the least bad hypothesis
+#: (docs_output/resultados/65 and 66).
+ADEQUACY_MAX: Optional[float] = 3.0
 CALIBRATED = True
 
 #: Mechanism of a cause, for the prior when the batch does not name it.

@@ -285,6 +285,8 @@ class CausesSimulator:
         self.base_width = 0.44                   # m, width of the chassis box (boundingObject)
 
         self.motors = ["wheel_right_joint", "wheel_left_joint"]
+        self.wheel_rim_speed = {motor: 0.0 for motor in self.motors}   # base_ramp's command; set_initial_speed sets it
+        self.initial_wheel_rim_speed = dict(self.wheel_rim_speed)
         self.joints_name = self.get_joints_info(self.robot)
         self.links_name = self.get_link_info(self.robot)
 
@@ -459,6 +461,12 @@ class CausesSimulator:
         self.problem_orientation = self.simulation_scene.problem_orientation
         self.simulation_length = self.simulation_scene.simulation_length
         self.clock_rate = self.simulation_scene.clock_rate if self.simulation_scene.clock_rate > 0 else 1.0
+        # The base of the physical Shadow ramps each drive wheel to its setpoint (its driver's maximum
+        # acceleration and deceleration); the Webots motor reaches it at its torque limit, about 3.5 m/s^2.
+        # A wheel blocked by a cause stops at once: that is a fault, not a ramp. docs_output/resultados/66.
+        acceleration = getattr(self.simulation_scene, "base_max_acceleration", None)
+        deceleration = getattr(self.simulation_scene, "base_max_deceleration", None)
+        self.base_ramp = (float(acceleration), float(deceleration)) if acceleration and deceleration else None
         # If cause uses grid-based generation, derive repetitions from grid dimensions
         if hasattr(self.current_cause, 'grid_dimensions'):
             grid_dims = getattr(self.current_cause, 'grid_dimensions', [10, 10])
@@ -519,6 +527,7 @@ class CausesSimulator:
             self.reset_wheels_movement()
             self.current_cause = copy.deepcopy(self.initial_cause)
             p.restoreState(stateId=self.intialState) # Restore the clean state
+            self.wheel_rim_speed = dict(self.initial_wheel_rim_speed)
         return
     
     # ================ FAST REPETITIONS  ================
@@ -630,7 +639,7 @@ class CausesSimulator:
             if snapshots is not None and self.stepCount % self.history_stride == 0:
                 snapshots.append(self._snapshot())
             command = (self.command_time(self.simulationTime), tuple(self.wheel_movement[m] for m in self.motors))
-            if command != self._last_command:
+            if command != self._last_command or self.base_ramp is not None:
                 self._last_command = command
                 self.do_acceleration_robot(self.simulationTime)
             if cause:
@@ -669,6 +678,7 @@ class CausesSimulator:
         position, orientation = p.getBasePositionAndOrientation(self.robot)
         return {"state": p.saveState(), "step": self.stepCount, "time": self.simulationTime,
                 "history_steps": self.history_steps, "velocity_before": self._velocity_before.copy(),
+                "wheel_rim_speed": dict(self.wheel_rim_speed),
                 "n_history": len(self.imu_history[TIMESTAMP]), "n_perception": len(self.perception[TIMESTAMP]),
                 "next_frame_time": self.next_frame_time, "lost_frames": self.lost_frames,
                 "effect_time": self.effect_time, "fall_time": self.fall_time,
@@ -681,6 +691,7 @@ class CausesSimulator:
         self.simulationTime = snapshot["time"]
         self.history_steps = snapshot["history_steps"]
         self._velocity_before = snapshot["velocity_before"].copy()
+        self.wheel_rim_speed = dict(snapshot["wheel_rim_speed"])
         self._last_command = None
         self.imu_history = {key: list(values[:snapshot["n_history"]]) for key, values in self.nominal_history.items()}
         self.perception = {key: list(values[:snapshot["n_perception"]]) for key, values in self.nominal_perception.items()}
@@ -811,6 +822,9 @@ class CausesSimulator:
     def set_initial_speed(self) -> None:
         """A seeded scene starts with the robot moving as recorded: the base and the bottle at the
         recorded forward speed along the robot's heading, the drive wheels rolling with it."""
+        # With base_ramp, what the driver commands each wheel (m/s at the rim) starts at that speed.
+        self.wheel_rim_speed = {motor: max(self.initial_speed, 0.0) for motor in self.motors}
+        self.initial_wheel_rim_speed = dict(self.wheel_rim_speed)
         if self.initial_speed <= 0.0:
             return
         _, orientation = p.getBasePositionAndOrientation(self.robot)
@@ -944,6 +958,8 @@ class CausesSimulator:
         wheels_velocity = self.get_wheels_velocity_from_forward_velocity_and_angular_velocity(self.get_target_velocity(command_time), self.angularSpeed)
         for motor_name in self.motors:
             if not self.wheel_movement[motor_name]: wheels_velocity[motor_name] = 0
+        if self.base_ramp is not None:
+            self.ramp_wheels(wheels_velocity)
         for motor_name in self.motors:
             p.setJointMotorControl2(bodyUniqueId=self.robot,
                                     jointIndex=self.joints_name[motor_name],
@@ -951,6 +967,24 @@ class CausesSimulator:
                                     targetVelocity=wheels_velocity[motor_name],
                                     force=WHEEL_MAX_FORCE
             )
+
+    def ramp_wheels(self, wheels_velocity: dict) -> None:
+        """Move each wheel's command (rad/s, in place) from what the driver commanded it the step before
+        towards its setpoint, by at most one physics step of the base's acceleration while it speeds up,
+        or of its deceleration while it slows down or reverses. A blocked wheel (wheel_movement) stops at
+        once. Called on every physics step while base_ramp is set."""
+        acceleration, deceleration = self.base_ramp
+        for motor_name in self.motors:
+            target = wheels_velocity[motor_name] * self.wheels_radius
+            if not self.wheel_movement[motor_name]:
+                self.wheel_rim_speed[motor_name] = 0.0
+                continue
+            current = self.wheel_rim_speed[motor_name]
+            speeding_up = abs(target) > abs(current) and target * current >= 0.0
+            limit = (acceleration if speeding_up else deceleration) * self.dt
+            current += max(-limit, min(limit, target - current))
+            self.wheel_rim_speed[motor_name] = current
+            wheels_velocity[motor_name] = current / self.wheels_radius
 
     def command_time(self, simulationTime: float) -> float:
         """The instant whose setpoint the base follows at `simulationTime`: the start of the current
