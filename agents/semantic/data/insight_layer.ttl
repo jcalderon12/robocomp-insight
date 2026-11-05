@@ -1,0 +1,1200 @@
+# INSIGHT layer of the TBox: the terms SOMA, DUL and SOSA do not have.
+#
+# Hand-written. build_insight_tbox.py merges it with T_op, the imported SOMA/DUL classes and the
+# SOSA terms into insight_tbox.ttl. Contracts 1 (episode) and 2 (mechanisms) in
+# docs_output/implementacion/contratos.md describe what each term is for.
+#
+# New vocabulary lives in insight: (http://insight.local/ontology#). Individuals stay in inst:
+# (http://insight.local/instances#), and the five terms production already writes keep that IRI.
+
+@prefix insight: <http://insight.local/ontology#> .
+@prefix inst:    <http://insight.local/instances#> .
+@prefix dul:     <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#> .
+@prefix soma:    <http://www.ease-crc.org/ont/SOMA.owl#> .
+@prefix sosa:    <http://www.w3.org/ns/sosa/> .
+@prefix owl:     <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+
+
+# --------------------------------------------------------------------------------------------- #
+# Terms production already writes (agents/semantic/src/ontology_mapping.py, verdict_ingestor.py)
+# --------------------------------------------------------------------------------------------- #
+
+inst:AnomalyCase a owl:Class ;
+    rdfs:subClassOf dul:Situation ;
+    rdfs:label "anomaly case"@en ;
+    rdfs:comment "A perceived change the robot could not explain when it happened. Consolidation records an explanation selected by simulation, without establishing a physical cause."@en .
+
+inst:Intention a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "intention"@en ;
+    rdfs:comment "An intention node of the working memory (DSR), such as 'unexplained'."@en .
+
+inst:hasIntention a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:associatedWith ;
+    rdfs:label "has intention"@en .
+
+inst:explainedBy a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:associatedWith ;
+    rdfs:label "explained by"@en ;
+    rdfs:comment "Links an anomaly case to its simulation-supported explanation. Legacy intervention identifiers are retained, but do not assert that an intervention occurred in the world."@en .
+
+inst:concernsEvent a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:isSettingFor ;
+    rdfs:label "concerns event"@en ;
+    rdfs:comment "Links an anomaly case to the observed change in its representation; this alone does not establish a physical event."@en .
+
+
+# --------------------------------------------------------------------------------------------- #
+# Contract 1: the episode
+# --------------------------------------------------------------------------------------------- #
+
+insight:Episode a owl:Class ;
+    rdfs:subClassOf dul:Situation ;
+    rdfs:label "episode"@en ;
+    rdfs:comment "The abstracted episode of an unexplained change: phases, path segments, intervals, a support estimate, the observed anomaly and recorded evidence. Built from the working memory (DSR) or from a recording."@en .
+
+insight:ObservedAnomaly a owl:Class ;
+    rdfs:subClassOf dul:Event ;
+    rdfs:label "observed representation change"@en ;
+    rdfs:comment "A recorded change in the robot's representation that requires explanation. An event in the working memory, not evidence by itself of an accident, displacement or physical cause. Legacy ids such as Accident_1 do not change this meaning."@en .
+
+insight:SupportEstimate a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "support estimate"@en ;
+    rdfs:comment "The system's interpretation of a represented carrying relation and its self-model as support of an object. Its validity interval concerns the estimate, not the physical duration of support."@en .
+
+insight:affectedEntity a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range dul:Entity .
+insight:observedBy a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range dul:Agent .
+insight:observedAtSegment a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range insight:PathSegment ;
+    rdfs:comment "Path segment occupied by the observer when it recorded the anomaly; not the object's location."@en .
+insight:observerX a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:decimal .
+insight:observerY a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:decimal .
+insight:observerHeadingDeg a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:decimal .
+insight:estimatedSupporter a owl:ObjectProperty ;
+    rdfs:domain insight:SupportEstimate ; rdfs:range dul:PhysicalObject .
+insight:estimatedSupportedObject a owl:ObjectProperty ;
+    rdfs:domain insight:SupportEstimate ; rdfs:range dul:PhysicalObject .
+insight:estimateValidDuring a owl:ObjectProperty ;
+    rdfs:domain insight:SupportEstimate ; rdfs:range dul:TimeInterval ;
+    rdfs:comment "Interval during which the support estimate was maintained; not a physical support interval."@en .
+insight:invalidatesEstimate a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range insight:SupportEstimate ;
+    rdfs:comment "The recorded change invalidates this estimate, without asserting that physical support ended."@en .
+
+insight:PathSegment a owl:Class ;
+    rdfs:subClassOf dul:PhysicalPlace ;
+    rdfs:label "path segment"@en ;
+    rdfs:comment "A stretch of the path the robot drove, counted back from its pose at the fall in pieces of 1 m (Segment_final is the last metre)."@en .
+
+insight:SystemReaction a owl:Class ;
+    rdfs:subClassOf dul:Event ;
+    rdfs:label "system reaction"@en ;
+    rdfs:comment "What the system did after it perceived the anomaly, such as stopping. It is never a cause, and no contrast rule reads it."@en .
+
+insight:recordedIn a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ;
+    rdfs:range xsd:anyURI ;
+    rdfs:label "recorded in"@en ;
+    rdfs:comment "The episodic-memory recording the episode was abstracted from. The semantic memory keeps the meaning; the signals stay in that recording."@en .
+
+insight:timeOriginNs a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ;
+    rdfs:range xsd:integer ;
+    rdfs:label "time origin (ns)"@en ;
+    rdfs:comment "Timestamp in nanoseconds of the first IMU event: time zero of the episode, as for the simulator and the verdict."@en .
+
+insight:startS a owl:DatatypeProperty ;
+    rdfs:domain dul:TimeInterval ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "start (s)"@en ;
+    rdfs:comment "Start of the interval, in seconds from the episode time origin."@en .
+
+insight:endS a owl:DatatypeProperty ;
+    rdfs:domain dul:TimeInterval ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "end (s)"@en ;
+    rdfs:comment "End of the interval, in seconds from the episode time origin."@en .
+
+insight:timeS a owl:DatatypeProperty ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "time (s)"@en ;
+    rdfs:comment "Instant of an event, in seconds from the episode time origin (for the observed anomaly, t_obs)."@en .
+
+insight:motionKind a owl:DatatypeProperty ;
+    rdfs:range xsd:string ;
+    rdfs:label "motion kind"@en ;
+    rdfs:comment "Kind of motion of a phase: stopped, advance_straight or turn."@en .
+
+insight:traversedDuring a owl:ObjectProperty ;
+    rdfs:domain insight:PathSegment ;
+    rdfs:range dul:TimeInterval ;
+    rdfs:label "traversed during"@en .
+
+insight:orderBackFromFall a owl:DatatypeProperty ;
+    rdfs:domain insight:PathSegment ;
+    rdfs:range xsd:positiveInteger ;
+    rdfs:label "order back from the fall"@en ;
+    rdfs:comment "1 for Segment_final, 2 for the metre before, and so on."@en .
+
+insight:fromX a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "from x (m)"@en .
+insight:fromY a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "from y (m)"@en .
+insight:toX   a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "to x (m)"@en .
+insight:toY   a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "to y (m)"@en .
+insight:xMin  a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "bounding box x min (m)"@en .
+insight:xMax  a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "bounding box x max (m)"@en .
+insight:yMin  a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "bounding box y min (m)"@en .
+insight:yMax  a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "bounding box y max (m)"@en .
+
+insight:headingDeg a owl:DatatypeProperty ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "heading (deg)"@en ;
+    rdfs:comment "Heading in the room frame, 0 = +x, counter-clockwise (DSR yaw + 90 deg)."@en .
+
+insight:lengthM a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "length (m)"@en .
+insight:meanSpeedMps a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "mean speed (m/s)"@en .
+
+insight:ends a owl:ObjectProperty ;
+    rdfs:domain dul:Event ;
+    rdfs:range soma:State ;
+    rdfs:label "ends"@en ;
+    rdfs:comment "A physical event ends a physical state. Not used for loss of a represented carrying relation or invalidation of a support estimate."@en .
+
+insight:isSystemReaction a owl:DatatypeProperty ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "is system reaction"@en ;
+    rdfs:comment "True for observations taken during the system reaction; contrast rules ignore them."@en .
+
+insight:baselineValue a owl:DatatypeProperty ;
+    rdfs:domain sosa:Observation ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "baseline value"@en ;
+    rdfs:comment "The same property measured in Interval_baseline (free motion), to compare peaks with."@en .
+
+insight:commandedValue a owl:DatatypeProperty ;
+    rdfs:domain sosa:Observation ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "commanded value"@en ;
+    rdfs:comment "What the base command alone gives for the same property over the same interval. For yaw_change, -integral of robot_ref_rot_speed (deg), which the turn_vs_command rule, scaled by the episode's own clock, compares with the recorded change."@en .
+
+insight:atTimeS a owl:DatatypeProperty ;
+    rdfs:domain sosa:Observation ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "at time (s)"@en ;
+    rdfs:comment "Instant of the peak, in seconds from the episode time origin."@en .
+
+insight:unit a owl:DatatypeProperty ;
+    rdfs:domain sosa:Observation ;
+    rdfs:range xsd:string ;
+    rdfs:label "unit"@en .
+
+
+# Observable properties: the fixed evidence list of contract 1 (section 2.3).
+
+insight:pitch_rate_peak a sosa:ObservableProperty ;
+    rdfs:label "pitch rate peak"@en ;
+    rdfs:comment "Max |gyroscope x| in the interval (rad/s)."@en .
+
+insight:vertical_accel_peak a sosa:ObservableProperty ;
+    rdfs:label "vertical acceleration peak"@en ;
+    rdfs:comment "Max |accelerometer z - g| in the interval (m/s2)."@en .
+
+insight:longitudinal_accel_peak a sosa:ObservableProperty ;
+    rdfs:label "longitudinal acceleration peak"@en ;
+    rdfs:comment "Max |accelerometer y| (forward axis) in the interval (m/s2)."@en .
+
+insight:lateral_accel_peak a sosa:ObservableProperty ;
+    rdfs:label "lateral acceleration peak"@en ;
+    rdfs:comment "Max |accelerometer x| in the interval (m/s2)."@en .
+
+insight:yaw_change a sosa:ObservableProperty ;
+    rdfs:label "yaw change"@en ;
+    rdfs:comment "Heading change of the recorded pose over the interval, next to the commanded one: -integral of robot_ref_rot_speed, whose sign is opposite to the executed turn (deg)."@en .
+
+insight:yaw_rate_peak a sosa:ObservableProperty ;
+    rdfs:label "yaw rate peak"@en ;
+    rdfs:comment "Max |gyroscope z| in the interval (rad/s)."@en .
+
+insight:setpoint_step a sosa:ObservableProperty ;
+    rdfs:label "setpoint step"@en ;
+    rdfs:comment "Largest change of the filtered forward setpoint (0.2 s moving median of the zero-order hold) within 0.5 s (m/s)."@en .
+
+insight:speed_ratio a sosa:ObservableProperty ;
+    rdfs:label "speed ratio"@en ;
+    rdfs:comment "Path / integral of the setpoint in the interval, divided by the same ratio in Interval_baseline. Relative to the episode itself because of the Webots clock."@en .
+
+insight:max_sustained_horizontal_accel a sosa:ObservableProperty ;
+    rdfs:label "max sustained horizontal acceleration"@en ;
+    rdfs:comment "Max before t_obs of the min of 3 consecutive horizontal acceleration samples (m/s2). Measured in simulated time, so independent of the Webots clock."@en .
+
+insight:person_distance_min a sosa:ObservableProperty ;
+    rdfs:label "minimum person distance"@en ;
+    rdfs:comment "Minimum robot-person distance in the interval (m)."@en .
+
+insight:bottle_reacquired a sosa:ObservableProperty ;
+    rdfs:label "bottle reacquired"@en ;
+    rdfs:comment "Whether the robot->bottle RT edge appears again after t_obs within the available recording."@en .
+
+insight:reaction_onset a sosa:ObservableProperty ;
+    rdfs:label "reaction onset"@en ;
+    rdfs:comment "First setpoint event equal to 0 after t_obs (unfiltered) (s)."@en .
+
+
+# The robot's sources of evidence (self-model: description.md).
+
+inst:Sensor_IMU a sosa:Sensor ;
+    rdfs:label "IMU (WT901B AHRS)"@en ;
+    rdfs:comment "Node 'imu' of the DSR: accelerometer with gravity and gyroscope; x lateral, y forward, z up."@en ;
+    sosa:observes insight:pitch_rate_peak , insight:vertical_accel_peak , insight:longitudinal_accel_peak ,
+        insight:lateral_accel_peak , insight:yaw_rate_peak , insight:max_sustained_horizontal_accel .
+
+inst:Sensor_Localization a sosa:Sensor ;
+    rdfs:label "localization"@en ;
+    rdfs:comment "RT edge room -> robot of the DSR: the robot pose in the room frame."@en ;
+    sosa:observes insight:yaw_change , insight:speed_ratio .
+
+inst:Sensor_BaseCommand a sosa:Sensor ;
+    rdfs:label "base command"@en ;
+    rdfs:comment "robot_ref_adv_speed and robot_ref_rot_speed of the robot node: what the base was ordered to do."@en ;
+    sosa:observes insight:setpoint_step , insight:speed_ratio , insight:yaw_change , insight:reaction_onset .
+
+inst:Sensor_PersonTracker a sosa:Sensor ;
+    rdfs:label "person tracker"@en ;
+    rdfs:comment "RT edge robot -> person of the DSR."@en ;
+    sosa:observes insight:person_distance_min .
+
+inst:Sensor_BottleTracker a sosa:Sensor ;
+    rdfs:label "bottle tracker"@en ;
+    rdfs:comment "RT edge robot -> bottle of the DSR; its deletion is the observed effect (t_obs)."@en ;
+    sosa:observes insight:bottle_reacquired .
+
+
+# --------------------------------------------------------------------------------------------- #
+# Contract 2: the mechanisms
+# --------------------------------------------------------------------------------------------- #
+
+# The consolidation: the cause the inner simulation accepted (task A4, subpaso 3.3).
+
+insight:VerifiedCause a owl:Class ;
+    rdfs:subClassOf dul:Event ;
+    rdfs:label "verified cause"@en ;
+    owl:deprecated true ;
+    rdfs:comment "Legacy physical-cause representation, retained to read old exports. New cases use SimulationSupportedExplanation and do not assert a physical causal event from simulation alone."@en .
+
+insight:SimulationSupportedExplanation a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "simulation-supported explanation"@en ;
+    rdfs:comment "An explanation selected by the simulator for an observed anomaly, with its hypothesis and supporting run. Describes a candidate mechanism; does not assert that this mechanism occurred physically or that unresolved alternatives were refuted."@en .
+
+insight:explainsObservation a owl:ObjectProperty ;
+    rdfs:domain insight:SimulationSupportedExplanation ; rdfs:range insight:ObservedAnomaly .
+insight:selectedHypothesis a owl:ObjectProperty ;
+    rdfs:domain insight:SimulationSupportedExplanation ; rdfs:range insight:Hypothesis .
+insight:supportedBySimulation a owl:ObjectProperty ;
+    rdfs:domain insight:SimulationSupportedExplanation ; rdfs:range insight:SimulationRun .
+insight:hasUnresolvedAlternative a owl:ObjectProperty ;
+    rdfs:domain insight:SimulationSupportedExplanation ; rdfs:range insight:Hypothesis ;
+    rdfs:comment "A different hypothesis not refuted by available checks but without a simulation realization here. It is neither accepted nor refuted by selecting this explanation."@en .
+
+insight:hypothesisId a owl:DatatypeProperty ;
+    rdfs:range xsd:string ;
+    rdfs:label "hypothesis id"@en ;
+    rdfs:comment "Id of a hypothesis in the published batch (contract 3), also kept on its simulation-supported explanation if selected."@en .
+
+
+insight:Mechanism a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "mechanism"@en ;
+    rdfs:comment "A candidate explanation of an observed discrepancy: its applicable profiles, requirements, predicted trace, and simulation realization or reason it cannot be simulated."@en .
+
+insight:ExplanationProfile a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "explanation context profile"@en ;
+    rdfs:comment "Selects candidate mechanisms from the kind of recorded change and known entity roles, without assuming its physical cause."@en .
+
+insight:profileId a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string .
+insight:matchesOperation a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string .
+insight:matchesPredicate a owl:ObjectProperty ;
+    rdfs:domain insight:ExplanationProfile ;
+    rdfs:comment "RDF relation whose recorded modification may activate this profile."@en .
+insight:requiresAffectedRole a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string ;
+    rdfs:comment "Recorded role of the changed relation's subject; role bindings come from the episode."@en .
+insight:legacyEpisodeSection a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string ;
+    rdfs:comment "Required section of a legacy episode that records an observation without an explicit delta."@en .
+insight:observationNote a owl:DatatypeProperty ;
+    rdfs:domain insight:ExplanationProfile ; rdfs:range xsd:string .
+insight:appliesToProfile a owl:ObjectProperty ;
+    rdfs:domain insight:Mechanism ; rdfs:range insight:ExplanationProfile .
+insight:appliesToAnyChange a owl:DatatypeProperty ;
+    rdfs:domain insight:Mechanism ; rdfs:range xsd:boolean ;
+    rdfs:comment "Explicit declaration of general applicability; missing annotations do not imply applicability to arbitrary cases."@en .
+
+insight:Profile_CarriedObjectRelationLoss a insight:ExplanationProfile ;
+    insight:profileId "carried_object_relation_loss" ;
+    rdfs:label "perceived discontinuity of a carried-object relation"@en ;
+    insight:matchesOperation "removed" ;
+    insight:matchesPredicate dul:hasLocation ;
+    insight:requiresAffectedRole "supported" ;
+    insight:legacyEpisodeSection "support" .
+
+insight:SimulationIntervention a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "simulation intervention"@en ;
+    rdfs:comment "A primitive the inner simulator can apply: an entry of etc/intervention_catalog.json, the nominal replay, or an experimental one."@en .
+
+insight:EpisodeCheck a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "episode check"@en ;
+    rdfs:comment "A check of a hypothesis against the episode, before simulating."@en .
+
+insight:Precondition a owl:Class ;
+    rdfs:subClassOf insight:EpisodeCheck ;
+    rdfs:label "precondition"@en ;
+    rdfs:comment "Must hold in the episode for the mechanism to make sense; if it fails, the hypothesis is incoherent."@en .
+
+insight:ContrastRule a owl:Class ;
+    rdfs:subClassOf insight:EpisodeCheck ;
+    rdfs:label "contrast rule"@en ;
+    rdfs:comment "Compares the trace a mechanism predicts with the evidence. It can only discard (or explain from memory), never confirm."@en .
+
+insight:AnchorKind a owl:Class ;
+    rdfs:subClassOf dul:Concept ;
+    rdfs:label "anchor kind"@en ;
+    rdfs:comment "Kind of episode individual a hypothesis is anchored to."@en .
+
+insight:QualitativeParameter a owl:Class ;
+    rdfs:subClassOf dul:Parameter ;
+    rdfs:label "qualitative parameter"@en ;
+    rdfs:comment "A kind the LLM chooses in words (e.g. a bump or a cable, the side of a wheel); the grounding step turns it into numbers. Magnitudes (size, strength, slipperiness) are not parameters: the grounding covers the whole range the catalog can simulate."@en .
+
+insight:SegmentAnchor a insight:AnchorKind ;
+    rdfs:label "segment anchor"@en ;
+    rdfs:comment "The hypothesis names a path segment of the episode."@en .
+
+insight:IntervalAnchor a insight:AnchorKind ;
+    rdfs:label "interval anchor"@en ;
+    rdfs:comment "The hypothesis names a time interval of the episode."@en .
+
+insight:mechanismId a owl:DatatypeProperty ;
+    rdfs:range xsd:string ;
+    rdfs:label "mechanism id"@en ;
+    rdfs:comment "Short id used in the JSON contracts (e.g. obstacle_traversed)."@en .
+
+insight:promptDescription a owl:DatatypeProperty ;
+    rdfs:range xsd:string ;
+    rdfs:label "prompt description"@en ;
+    rdfs:comment "One sentence shown to the LLM."@en .
+
+insight:titleTemplate a owl:DatatypeProperty ;
+    rdfs:range xsd:string ;
+    rdfs:label "title template"@en ;
+    rdfs:comment "Title of a hypothesis, written from the mechanism and its anchors instead of the LLM title."@en .
+
+insight:family a owl:DatatypeProperty ;
+    rdfs:range xsd:string ;
+    rdfs:label "family"@en ;
+    rdfs:comment "internal or external; kept for compatibility with the previous batches."@en .
+
+insight:inOldCatalog a owl:DatatypeProperty ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "in old catalog"@en ;
+    rdfs:comment "Whether the four-primitive catalog could already express it."@en .
+
+insight:requiresAnchor a owl:ObjectProperty ;
+    rdfs:domain insight:Mechanism ;
+    rdfs:range insight:AnchorKind ;
+    rdfs:label "requires anchor"@en .
+
+insight:admitsParameter a owl:ObjectProperty ;
+    rdfs:domain insight:Mechanism ;
+    rdfs:range insight:QualitativeParameter ;
+    rdfs:label "admits parameter"@en .
+
+insight:parameterName a owl:DatatypeProperty ;
+    rdfs:domain insight:QualitativeParameter ;
+    rdfs:range xsd:string ;
+    rdfs:label "parameter name"@en .
+
+insight:allowedValue a owl:DatatypeProperty ;
+    rdfs:domain insight:QualitativeParameter ;
+    rdfs:range xsd:string ;
+    rdfs:label "allowed value"@en .
+
+insight:requires a owl:ObjectProperty ;
+    rdfs:domain insight:Mechanism ;
+    rdfs:range insight:Precondition ;
+    rdfs:label "requires"@en .
+
+insight:hasContrastRule a owl:ObjectProperty ;
+    rdfs:domain insight:Mechanism ;
+    rdfs:range insight:ContrastRule ;
+    rdfs:label "has contrast rule"@en .
+
+insight:entailsObservation a owl:ObjectProperty ;
+    rdfs:domain insight:Mechanism ;
+    rdfs:range sosa:ObservableProperty ;
+    rdfs:label "entails observation"@en ;
+    rdfs:comment "An observable property on which the mechanism leaves a trace in the recording."@en .
+
+insight:checksProperty a owl:ObjectProperty ;
+    rdfs:domain insight:EpisodeCheck ;
+    rdfs:range sosa:ObservableProperty ;
+    rdfs:label "checks property"@en .
+
+insight:ruleId a owl:DatatypeProperty ;
+    rdfs:domain insight:EpisodeCheck ;
+    rdfs:range xsd:string ;
+    rdfs:label "rule id"@en .
+
+insight:ruleEffect a owl:DatatypeProperty ;
+    rdfs:domain insight:EpisodeCheck ;
+    rdfs:range xsd:string ;
+    rdfs:label "rule effect"@en ;
+    rdfs:comment "incoherent (precondition), discard, explain_or_discard, or inform."@en .
+
+insight:ruleStatus a owl:DatatypeProperty ;
+    rdfs:domain insight:EpisodeCheck ;
+    rdfs:range xsd:string ;
+    rdfs:label "rule status"@en ;
+    rdfs:comment "fixed (physics or geometry) or to_calibrate (provisional threshold, set in the contrast task)."@en .
+
+insight:realizedBy a owl:ObjectProperty ;
+    rdfs:domain insight:Mechanism ;
+    rdfs:range insight:SimulationIntervention ;
+    rdfs:label "realized by"@en ;
+    rdfs:comment "An intervention that simulates the mechanism; a mechanism may have one per kind (the obstacle: a dome of unknown size for a bump, a fixed asset for a cable). What is simulated is what the hypothesis says."@en .
+
+insight:notSimulableBecause a owl:DatatypeProperty ;
+    rdfs:domain insight:Mechanism ;
+    rdfs:range xsd:string ;
+    rdfs:label "not simulable because"@en .
+
+insight:costInSimulations a owl:DatatypeProperty ;
+    rdfs:domain insight:Mechanism ;
+    rdfs:range xsd:nonNegativeInteger ;
+    rdfs:label "cost in simulations"@en ;
+    rdfs:comment "Compiled causes each simulated variant takes from the budget (the nominal run is free). An intervention that runs more repetitions than one cause costs what it runs (the dome of unknown size, 4); a wheel of unknown side is one variant per side."@en .
+
+insight:catalogId a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationIntervention ;
+    rdfs:range xsd:string ;
+    rdfs:label "catalog id"@en ;
+    rdfs:comment "Key of the intervention in etc/intervention_catalog.json."@en .
+
+insight:isExperimental a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationIntervention ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "is experimental"@en ;
+    rdfs:comment "Only in experiments/, not in the production simulator."@en .
+
+
+# Interventions.
+
+insight:Intervention_spawn_static_object a insight:SimulationIntervention ;
+    rdfs:label "spawn static object"@en ;
+    insight:catalogId "spawn_static_object" ;
+    insight:isExperimental false .
+
+insight:Intervention_spawn_scaled_dome a insight:SimulationIntervention ;
+    rdfs:label "spawn scaled dome"@en ;
+    rdfs:comment "A bump of unknown size: each repetition draws the diameter and height of a dome over the range the robot sets (contracts 1.5)."@en ;
+    insight:catalogId "spawn_scaled_dome" ;
+    insight:isExperimental false .
+
+insight:Intervention_apply_external_force a insight:SimulationIntervention ;
+    rdfs:label "apply external force"@en ;
+    insight:catalogId "apply_external_force" ;
+    insight:isExperimental false .
+
+insight:Intervention_set_friction a insight:SimulationIntervention ;
+    rdfs:label "set friction"@en ;
+    insight:catalogId "set_friction" ;
+    insight:isExperimental false .
+
+insight:Intervention_disable_wheel a insight:SimulationIntervention ;
+    rdfs:label "disable wheel"@en ;
+    insight:catalogId "disable_wheel" ;
+    insight:isExperimental false .
+
+insight:Intervention_nominal_replay a insight:SimulationIntervention ;
+    rdfs:label "nominal replay"@en ;
+    rdfs:comment "The replay of the recorded setpoints without any cause; always simulated first."@en ;
+    insight:isExperimental false .
+
+insight:Intervention_override_setpoint a insight:SimulationIntervention ;
+    rdfs:label "override setpoint"@en ;
+    rdfs:comment "Prototype in experiments/: the base does not execute the recorded setpoint (a brake or a jerk nobody ordered)."@en ;
+    insight:isExperimental true .
+
+
+# Qualitative parameters (numbers in contract 2, section 3.4). Only kinds: the magnitudes are the
+# grounding's, over the whole range the catalog can simulate (contract 2, version 1.4).
+
+insight:param_obstacle_shape a insight:QualitativeParameter ;
+    insight:parameterName "shape" ; insight:allowedValue "bump" , "cable" .
+insight:param_push_direction a insight:QualitativeParameter ;
+    insight:parameterName "direction" ; insight:allowedValue "any" , "forward" , "backward" , "left" , "right" .
+insight:param_wheel_side a insight:QualitativeParameter ;
+    insight:parameterName "side" ; insight:allowedValue "left" , "right" , "unknown" .
+insight:param_motion_kind a insight:QualitativeParameter ;
+    insight:parameterName "kind" ; insight:allowedValue "brake" , "jerk" .
+
+
+# Preconditions and contrast rules (contract 2, section 3.6). The thresholds live in the code.
+
+insight:pre_moving_on_segment a insight:Precondition ;
+    insight:ruleId "moving_on_segment" ; insight:ruleEffect "incoherent" ; insight:ruleStatus "fixed" ;
+    rdfs:comment "Mean speed on the anchored segment > 0.05 m/s."@en .
+
+insight:pre_moving_in_interval a insight:Precondition ;
+    insight:ruleId "moving_in_interval" ; insight:ruleEffect "incoherent" ; insight:ruleStatus "fixed" ;
+    rdfs:comment "Mean speed in the anchored interval > 0.05 m/s."@en .
+
+insight:pre_bottle_supported a insight:Precondition ;
+    insight:ruleId "bottle_supported" ; insight:ruleEffect "incoherent" ; insight:ruleStatus "fixed" ;
+    rdfs:comment "The recorded support estimate covers the start of the anchored interval."@en .
+
+insight:rule_obstacle_jolt a insight:ContrastRule ;
+    insight:ruleId "obstacle_jolt" ; insight:ruleEffect "inform" ; insight:ruleStatus "to_calibrate" ;
+    insight:checksProperty insight:pitch_rate_peak , insight:vertical_accel_peak ;
+    rdfs:comment "Reports whether the pitch rate or vertical acceleration peaks exceed 3 times their baseline and an absolute floor (0.2 rad/s, 1 m/s2: half the smallest peaks of the bump recordings before the blind evaluation, since a noiseless IMU has a baseline of about 0). Never discards unless the contrast task shows it never fails on the 5 recordings with a bump."@en .
+
+insight:rule_traction_vs_friction a insight:ContrastRule ;
+    insight:ruleId "traction_vs_friction" ; insight:ruleEffect "discard" ; insight:ruleStatus "fixed" ;
+    insight:checksProperty insight:max_sustained_horizontal_accel ;
+    rdfs:comment "Discards if the sustained horizontal acceleration exceeds 1.1 * mu_max * g: such a floor could not have given that traction."@en .
+
+insight:rule_turn_vs_command a insight:ContrastRule ;
+    insight:ruleId "turn_vs_command" ; insight:ruleEffect "discard" ; insight:ruleStatus "to_calibrate" ;
+    insight:checksProperty insight:speed_ratio , insight:yaw_change , insight:yaw_rate_peak ;
+    rdfs:comment "Discards if |recorded heading change - r * commanded heading change| < 3 deg and the yaw rate peak < 0.3 rad/s. r is the episode's own travelled/ordered ratio in free motion (own_ratio_baseline of speed_ratio): under the Webots clock the robot turns, like it advances, only a fraction of what it is ordered."@en .
+
+insight:rule_setpoint_step a insight:ContrastRule ;
+    insight:ruleId "setpoint_step" ; insight:ruleEffect "explain_or_discard" ; insight:ruleStatus "to_calibrate" ;
+    insight:checksProperty insight:setpoint_step ;
+    rdfs:comment "Explained by memory if the filtered setpoint changes by >= 0.2 m/s within 0.5 s before t_obs; discarded otherwise."@en .
+
+insight:rule_speed_ratio_and_jolt a insight:ContrastRule ;
+    insight:ruleId "speed_ratio_and_jolt" ; insight:ruleEffect "discard" ; insight:ruleStatus "to_calibrate" ;
+    insight:checksProperty insight:speed_ratio , insight:longitudinal_accel_peak ;
+    rdfs:comment "Discards if |speed ratio - 1| <= 0.15 and the longitudinal peak <= 2 times its baseline."@en .
+
+insight:rule_robot_jolt a insight:ContrastRule ;
+    insight:ruleId "robot_jolt" ; insight:ruleEffect "discard" ; insight:ruleStatus "to_calibrate" ;
+    insight:checksProperty insight:lateral_accel_peak , insight:speed_ratio , insight:yaw_change ;
+    rdfs:comment "Discards if the lateral peak <= 2 times its baseline, |speed ratio - 1| <= 0.15 and |recorded heading change - r * commanded heading change| < 3 deg, with r as in turn_vs_command."@en .
+
+insight:rule_person_within_reach a insight:ContrastRule ;
+    insight:ruleId "person_within_reach" ; insight:ruleEffect "discard" ; insight:ruleStatus "fixed" ;
+    insight:checksProperty insight:person_distance_min ;
+    rdfs:comment "Discards if the person was never closer than 1.5 m (1 m reach plus 0.5 m margin)."@en .
+
+insight:rule_bottle_reacquired a insight:ContrastRule ;
+    insight:ruleId "bottle_reacquired" ; insight:ruleEffect "inform" ; insight:ruleStatus "fixed" ;
+    insight:checksProperty insight:bottle_reacquired ;
+    rdfs:comment "Only informs whether the carrying relation was restored within the available recording. Its absence does not refute perception failure; its restoration does not establish uninterrupted physical support. Missing evidence is undetermined. This check neither discards nor confirms a cause."@en .
+
+
+# The ten mechanisms (contract 2, section 3.3).
+
+insight:Mechanism_ObstacleTraversed a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "undetected obstacle driven over"@en ;
+    insight:mechanismId "obstacle_traversed" ;
+    insight:promptDescription "{robot} could drive over an undetected low object on the floor (a bump or a cable); the disturbance could displace {affected_entity} from {supporter}." ;
+    insight:titleTemplate "Undetected {shape} on {segment}" ;
+    insight:family "external" ;
+    insight:inOldCatalog true ;
+    insight:requiresAnchor insight:SegmentAnchor ;
+    insight:admitsParameter insight:param_obstacle_shape ;
+    insight:requires insight:pre_moving_on_segment ;
+    insight:hasContrastRule insight:rule_obstacle_jolt ;
+    insight:entailsObservation insight:pitch_rate_peak , insight:vertical_accel_peak ;
+    insight:realizedBy insight:Intervention_spawn_scaled_dome , insight:Intervention_spawn_static_object ;
+    insight:costInSimulations 1 ;
+    rdfs:comment "A bump is simulated with a dome of unknown size, whose repetitions draw its diameter and height over the range the catalog simulates (spawn_scaled_dome); with a catalog that has no such dome, with every bump asset, one compiled cause each. A cable, with the cable asset."@en ;
+    rdfs:seeAlso soma:Collision .
+
+insight:Mechanism_BottlePush a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "push on the bottle"@en ;
+    insight:mechanismId "bottle_push" ;
+    insight:promptDescription "An external interaction could displace {affected_entity} from {supporter}; this need not disturb the carrier." ;
+    insight:titleTemplate "Push on the bottle during {interval}" ;
+    insight:family "external" ;
+    insight:inOldCatalog true ;
+    insight:requiresAnchor insight:IntervalAnchor ;
+    insight:admitsParameter insight:param_push_direction ;
+    insight:requires insight:pre_bottle_supported ;
+    insight:realizedBy insight:Intervention_apply_external_force ;
+    insight:costInSimulations 1 ;
+    rdfs:seeAlso soma:ForceInteraction .
+
+insight:Mechanism_RobotPush a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "push on the robot"@en ;
+    insight:mechanismId "robot_push" ;
+    insight:promptDescription "An external interaction could push {robot}; the disturbance or deviation could displace {affected_entity}." ;
+    insight:titleTemplate "Push on the robot during {interval}" ;
+    insight:family "external" ;
+    insight:inOldCatalog true ;
+    insight:requiresAnchor insight:IntervalAnchor ;
+    insight:admitsParameter insight:param_push_direction ;
+    insight:hasContrastRule insight:rule_robot_jolt ;
+    insight:entailsObservation insight:lateral_accel_peak , insight:speed_ratio , insight:yaw_change ;
+    insight:realizedBy insight:Intervention_apply_external_force ;
+    insight:costInSimulations 1 ;
+    rdfs:seeAlso soma:ForceInteraction .
+
+insight:Mechanism_SlipperyFloor a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "slippery floor"@en ;
+    insight:mechanismId "slippery_floor" ;
+    insight:promptDescription "A slippery floor could make the carrier slip and displace {affected_entity}." ;
+    insight:titleTemplate "Slippery floor in the whole room" ;
+    insight:family "external" ;
+    insight:inOldCatalog true ;
+    insight:hasContrastRule insight:rule_traction_vs_friction ;
+    insight:entailsObservation insight:max_sustained_horizontal_accel , insight:speed_ratio ;
+    insight:realizedBy insight:Intervention_set_friction ;
+    insight:costInSimulations 1 ;
+    rdfs:seeAlso soma:FrictionAttribute .
+
+insight:Mechanism_WheelFailure a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "drive wheel failure"@en ;
+    insight:mechanismId "wheel_failure" ;
+    insight:promptDescription "A drive wheel of {robot} could stop and remain braked, causing an uncommanded turn that affects {affected_entity}." ;
+    insight:titleTemplate "{side} drive wheel blocked during {interval}" ;
+    insight:family "internal" ;
+    insight:inOldCatalog true ;
+    insight:requiresAnchor insight:IntervalAnchor ;
+    insight:admitsParameter insight:param_wheel_side ;
+    insight:requires insight:pre_moving_in_interval ;
+    insight:hasContrastRule insight:rule_turn_vs_command ;
+    insight:entailsObservation insight:speed_ratio , insight:yaw_change , insight:yaw_rate_peak ;
+    insight:realizedBy insight:Intervention_disable_wheel ;
+    insight:costInSimulations 1 ;
+    rdfs:comment "Side 'unknown' simulates both sides and costs 2."@en ;
+    rdfs:seeAlso soma:HardwareDiagnosis .
+
+insight:Mechanism_CommandedSpeedChange a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "commanded brake or acceleration"@en ;
+    insight:mechanismId "commanded_speed_change" ;
+    insight:promptDescription "A recorded command could change the carrier speed sharply and displace {affected_entity}." ;
+    insight:titleTemplate "Commanded speed change during {interval}" ;
+    insight:family "internal" ;
+    insight:inOldCatalog false ;
+    insight:requiresAnchor insight:IntervalAnchor ;
+    insight:hasContrastRule insight:rule_setpoint_step ;
+    insight:entailsObservation insight:setpoint_step ;
+    insight:realizedBy insight:Intervention_nominal_replay ;
+    insight:costInSimulations 0 .
+
+insight:Mechanism_UncommandedMotion a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "uncommanded motion"@en ;
+    insight:mechanismId "uncommanded_motion" ;
+    insight:promptDescription "The carrier could brake or jerk without a corresponding recorded command, for example because of a driver or power fault." ;
+    insight:titleTemplate "Uncommanded {kind} during {interval}" ;
+    insight:family "internal" ;
+    insight:inOldCatalog false ;
+    insight:requiresAnchor insight:IntervalAnchor ;
+    insight:admitsParameter insight:param_motion_kind ;
+    insight:requires insight:pre_moving_in_interval ;
+    insight:hasContrastRule insight:rule_speed_ratio_and_jolt ;
+    insight:entailsObservation insight:speed_ratio , insight:longitudinal_accel_peak ;
+    insight:realizedBy insight:Intervention_override_setpoint ;
+    insight:costInSimulations 1 ;
+    rdfs:seeAlso soma:HardwareDiagnosis .
+
+insight:Mechanism_BottleRemovedByPerson a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "bottle removed by a person"@en ;
+    insight:mechanismId "bottle_removed_by_person" ;
+    insight:promptDescription "A person within reach could remove {affected_entity} from {supporter}." ;
+    insight:titleTemplate "A person removed the bottle during {interval}" ;
+    insight:family "external" ;
+    insight:inOldCatalog false ;
+    insight:requiresAnchor insight:IntervalAnchor ;
+    insight:hasContrastRule insight:rule_person_within_reach ;
+    insight:entailsObservation insight:person_distance_min ;
+    insight:notSimulableBecause "No removal intervention is implemented: this physical hypothesis is checked against the recording but cannot be reproduced by the available simulator." ;
+    insight:costInSimulations 0 .
+
+insight:Mechanism_PerceptionFailure a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "perception failure"@en ;
+    insight:mechanismId "perception_failure" ;
+    insight:promptDescription "Detection, association or tracking of {affected_entity} could fail while its physical support remains unchanged." ;
+    insight:titleTemplate "False loss of the bottle during {interval}" ;
+    insight:family "internal" ;
+    insight:inOldCatalog false ;
+    insight:requiresAnchor insight:IntervalAnchor ;
+    insight:hasContrastRule insight:rule_bottle_reacquired ;
+    insight:entailsObservation insight:bottle_reacquired ;
+    insight:notSimulableBecause "The available simulator has no detection or tracking model; this hypothesis can only be compared with recorded observations." ;
+    insight:costInSimulations 0 ;
+    rdfs:seeAlso soma:SoftwareDiagnosis .
+
+insight:Mechanism_SuspensionFailure a insight:Mechanism ;
+    insight:appliesToProfile insight:Profile_CarriedObjectRelationLoss ;
+    rdfs:label "suspension failure"@en ;
+    insight:mechanismId "suspension_failure" ;
+    insight:promptDescription "A suspension fault or vibration of the carrier could disturb the support of {affected_entity}." ;
+    insight:titleTemplate "Suspension failure" ;
+    insight:family "internal" ;
+    insight:inOldCatalog false ;
+    insight:notSimulableBecause "The PyBullet URDF has no suspension." ;
+    insight:costInSimulations 0 ;
+    rdfs:seeAlso soma:HardwareDiagnosis .
+
+
+# --------------------------------------------------------------------------------------------- #
+# Contract 3 in the memory: the decision trail of a case and its verification (contracts 1.8)
+#
+# What the LLM proposed, what the memory decided about each hypothesis and with which check and
+# observation, and what the inner simulation made of what was simulated. It goes to the episode's
+# named graph, next to the episode, so that the semantic memory itself answers why each hypothesis
+# was kept or dropped.
+# --------------------------------------------------------------------------------------------- #
+
+insight:Hypothesis a owl:Class ;
+    rdfs:subClassOf dul:Situation ;
+    rdfs:label "hypothesis"@en ;
+    rdfs:comment "A candidate explanation of an observed anomaly, proposed by the LLM: a hypothetical situation framed by a mechanism of the TBox (dul:satisfies), with episode anchors (insight:anchoredTo) and qualitative kinds. Does not assert that the mechanism occurred. The memory records its checks and status; an unlisted mechanism carries insight:newMechanismDescription."@en .
+
+insight:HypothesisGeneration a owl:Class ;
+    rdfs:subClassOf dul:Action ;
+    rdfs:label "hypothesis generation"@en ;
+    rdfs:comment "The request to the LLM that proposed the hypotheses of a case: the model, the attempts it took and the batch it ended in."@en ;
+    rdfs:seeAlso soma:AbductiveReasoning .
+
+insight:Kind a owl:Class ;
+    rdfs:subClassOf dul:Concept ;
+    rdfs:label "kind"@en ;
+    rdfs:comment "One allowed value of a qualitative parameter (e.g. the shape 'bump' of an obstacle): what the LLM may choose in words. build_insight_tbox.py generates one per insight:allowedValue."@en .
+
+insight:HypothesisStatus a owl:Class ;
+    rdfs:subClassOf dul:Concept ;
+    rdfs:label "hypothesis status"@en ;
+    rdfs:comment "What the memory decided about a hypothesis before simulating (contract 3, section 4.3)."@en .
+
+insight:CheckOutcome a owl:Class ;
+    rdfs:subClassOf dul:Situation ;
+    rdfs:label "check outcome"@en ;
+    rdfs:comment "One episode check (a precondition or a contrast rule) applied to one hypothesis: the check (insight:appliesCheck), the observations of the episode it read (insight:readsObservation), its verdict (insight:checkVerdict) and the comparison with its numbers (rdfs:comment)."@en .
+
+insight:SimulationRun a owl:Class ;
+    rdfs:subClassOf dul:Action ;
+    rdfs:label "simulation run"@en ;
+    rdfs:comment "The repetitions the inner simulator ran of the compiled cause of one hypothesis, or of the nominal replay, and what its verdict made of them."@en ;
+    rdfs:seeAlso soma:Simulating , soma:Simulation_Reasoner .
+
+insight:SampledValue a owl:Class ;
+    rdfs:subClassOf dul:Region ;
+    rdfs:label "sampled value"@en ;
+    rdfs:comment "A value the simulator drew in the best repetition of a run (e.g. the diameter of the dome): a magnitude the LLM does not choose, which the memory leaves open over the catalog's range and the simulation samples. dul:hasDataValue holds the number and insight:quantityName what it measures."@en .
+
+
+insight:proposedIn a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:associatedWith ;
+    rdfs:domain insight:Hypothesis ;
+    rdfs:range insight:HypothesisGeneration ;
+    rdfs:label "proposed in"@en .
+
+insight:anchoredTo a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:isSettingFor ;
+    rdfs:domain insight:Hypothesis ;
+    rdfs:label "anchored to"@en ;
+    rdfs:comment "An individual of the episode the hypothesis names: a path segment or a time interval. The grounding turns it into the numbers the simulator needs."@en .
+
+insight:ofParameter a owl:ObjectProperty ;
+    rdfs:domain insight:Kind ;
+    rdfs:range insight:QualitativeParameter ;
+    rdfs:label "of parameter"@en .
+
+insight:checkedBy a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:hasSetting ;
+    rdfs:domain insight:Hypothesis ;
+    rdfs:range insight:CheckOutcome ;
+    rdfs:label "checked by"@en .
+
+insight:appliesCheck a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:satisfies ;
+    rdfs:domain insight:CheckOutcome ;
+    rdfs:range insight:EpisodeCheck ;
+    rdfs:label "applies check"@en ;
+    rdfs:comment "The check whose description frames this outcome; its verdict says what it concluded."@en .
+
+insight:readsObservation a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:isSettingFor ;
+    rdfs:domain insight:CheckOutcome ;
+    rdfs:range sosa:Observation ;
+    rdfs:label "reads observation"@en .
+
+insight:testsHypothesis a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:associatedWith ;
+    rdfs:domain insight:SimulationRun ;
+    rdfs:range insight:Hypothesis ;
+    rdfs:label "tests hypothesis"@en .
+
+insight:verifiedBy a owl:ObjectProperty ;
+    rdfs:subPropertyOf dul:associatedWith ;
+    rdfs:domain insight:VerifiedCause ;
+    rdfs:range insight:SimulationRun ;
+    rdfs:label "verified by"@en ; owl:deprecated true ;
+    rdfs:comment "Legacy link for VerifiedCause. New explanations use supportedBySimulation to avoid inferring an actual causal event."@en .
+
+
+insight:llmModel a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisGeneration ; rdfs:range xsd:string ; rdfs:label "LLM model"@en .
+
+insight:llmAttempts a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisGeneration ; rdfs:range xsd:nonNegativeInteger ; rdfs:label "LLM attempts"@en ;
+    rdfs:comment "Requests to the LLM until a list passed the schema, or all of them if none did."@en .
+
+insight:batchStatus a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisGeneration ; rdfs:range xsd:string ; rdfs:label "batch status"@en ;
+    rdfs:comment "success, or error when no attempt passed the schema: the batch then has no hypotheses."@en .
+
+insight:batchPath a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisGeneration ; rdfs:range xsd:anyURI ; rdfs:label "batch path"@en ;
+    rdfs:comment "The published batch (contract 3b) the hypotheses come from."@en .
+
+insight:rank a owl:DatatypeProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range xsd:positiveInteger ; rdfs:label "rank"@en ;
+    rdfs:comment "Position in the LLM's list, its order of plausibility."@en .
+
+insight:llmRationale a owl:DatatypeProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range xsd:string ; rdfs:label "LLM rationale"@en ;
+    rdfs:comment "Why the LLM proposed it, in its words. Kept as provenance: no check reads it."@en .
+
+insight:statusReason a owl:DatatypeProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range xsd:string ; rdfs:label "status reason"@en ;
+    rdfs:comment "Why the hypothesis is not simulated, in words (the batch's untestable_reason): the check that discarded it, or why it has no realization here."@en .
+
+insight:newMechanismDescription a owl:DatatypeProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range xsd:string ; rdfs:label "new mechanism description"@en ;
+    rdfs:comment "The LLM's description of a mechanism the TBox does not have ('new')."@en .
+
+insight:kindValue a owl:DatatypeProperty ;
+    rdfs:domain insight:Kind ; rdfs:range xsd:string ; rdfs:label "kind value"@en .
+
+insight:statusId a owl:DatatypeProperty ;
+    rdfs:domain insight:HypothesisStatus ; rdfs:range xsd:string ; rdfs:label "status id"@en ;
+    rdfs:comment "The status as written in the published batch."@en .
+
+insight:checkVerdict a owl:DatatypeProperty ;
+    rdfs:domain insight:CheckOutcome ; rdfs:range xsd:string ; rdfs:label "check verdict"@en ;
+    rdfs:comment "holds or fails (a precondition); discards or survives (a rule that discards); explains (a rule that explains or discards); trace_seen or no_trace (a rule that informs); undetermined; not_applicable."@en .
+
+insight:isNominal a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:boolean ; rdfs:label "is nominal"@en ;
+    rdfs:comment "True for the replay of the recorded setpoints without any cause: the null hypothesis, always simulated."@en .
+
+insight:causeName a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:string ; rdfs:label "cause name"@en ;
+    rdfs:comment "The compiled cause the simulator ran (e.g. bump_scaled, external_force; none for the nominal)."@en .
+
+insight:repetitions a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:nonNegativeInteger ; rdfs:label "repetitions"@en .
+
+insight:effectRate a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:decimal ; rdfs:label "effect rate"@en ;
+    rdfs:comment "Fraction of the repetitions in which the bottle falls when the recording saw it fall (within the verdict's span around t_obs)."@en .
+
+insight:mistimedEffects a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:nonNegativeInteger ; rdfs:label "mistimed effects"@en ;
+    rdfs:comment "Repetitions in which the bottle falls, but outside that span: they do not count."@en .
+
+insight:medianTimingErrorS a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:decimal ; rdfs:label "median timing error (s)"@en ;
+    rdfs:comment "Median |simulated fall - t_obs| over the repetitions that reproduce the effect."@en .
+
+insight:passesRule a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:boolean ; rdfs:label "passes rule"@en ;
+    rdfs:comment "Whether the run passes the verdict's decision rule (it reproduces the effect better than the nominal)."@en .
+
+insight:acceptedBySimulation a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:boolean ; rdfs:label "accepted by simulation"@en ;
+    rdfs:comment "True for the one run whose hypothesis the verdict accepted."@en .
+
+insight:quantityName a owl:DatatypeProperty ;
+    rdfs:domain insight:SampledValue ; rdfs:range xsd:string ; rdfs:label "quantity name"@en ;
+    rdfs:comment "What a sampled value measures, as the simulator names it (e.g. diameter_m, height_m, x_m, force_x_n)."@en .
+
+insight:abstentionReason a owl:DatatypeProperty ;
+    rdfs:domain inst:AnomalyCase ; rdfs:range xsd:string ; rdfs:label "abstention reason"@en ;
+    rdfs:comment "Why the verdict accepted no hypothesis (e.g. the nominal run already reproduces the effect)."@en .
+
+insight:verdictPath a owl:DatatypeProperty ;
+    rdfs:domain inst:AnomalyCase ; rdfs:range xsd:anyURI ; rdfs:label "verdict path"@en ;
+    rdfs:comment "The inner simulator's verdict on the case."@en .
+
+
+# What the verification knows (contracts 1.13): written for every verdict, accepted or not. It
+# describes how well each simulated candidate reproduces the robot's record; it never asserts a cause,
+# and an abstention selects no explanation (contracts 1.10-1.11).
+
+insight:VerificationOutcome a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "verification outcome"@en ;
+    rdfs:comment "What the simulation-based verification concluded on a case: its decision (accepted or abstained), the thresholds it decided with, the probability of each simulated mechanism, the 90 % credible set and the ratio of each run to the nominal replay. Describes the support the robot's record gives to the candidates; does not assert that any of them occurred."@en .
+
+insight:NoSimulatedCauseExplainsBetter a owl:Class ;
+    rdfs:subClassOf insight:VerificationOutcome ;
+    rdfs:label "no simulated cause explains the record better than the nominal"@en ;
+    rdfs:comment "An abstention in which no simulated physical cause explains the robot's record clearly better than the nominal replay: every simulated cause leaves more than the verdict's limit (insight:explanationRatioMax) of the nominal's discrepancy. It does not say that nothing happened, nor that a cause that leaves no trace on the robot's record did not happen: those stay as open alternatives."@en .
+
+insight:MechanismProbability a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "mechanism probability"@en ;
+    rdfs:comment "The probability the verification gives to one simulated mechanism given the robot's record: the sum over the runs of its hypotheses. The nominal replay is a mechanism of its own. A probability among the simulated candidates, not of the mechanism having occurred."@en .
+
+insight:mostProbableRun a owl:ObjectProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:SimulationRun ; rdfs:label "most probable run"@en ;
+    rdfs:comment "The run of the most probable hypothesis, or the nominal run when the nominal is the most probable."@en .
+insight:selectsExplanation a owl:ObjectProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:SimulationSupportedExplanation ;
+    rdfs:label "selects explanation"@en ;
+    rdfs:comment "The explanation an accepted verdict selected. An abstention has none."@en .
+insight:assignsProbability a owl:ObjectProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:MechanismProbability ;
+    rdfs:label "assigns probability"@en .
+insight:forMechanism a owl:ObjectProperty ;
+    rdfs:domain insight:MechanismProbability ; rdfs:range insight:Mechanism ; rdfs:label "for mechanism"@en ;
+    rdfs:comment "The TBox mechanism the probability is about (none for the nominal replay)."@en .
+insight:aggregatesRun a owl:ObjectProperty ;
+    rdfs:domain insight:MechanismProbability ; rdfs:range insight:SimulationRun ; rdfs:label "aggregates run"@en ;
+    rdfs:comment "A run whose probability is part of the mechanism's."@en .
+insight:openAlternative a owl:ObjectProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:Hypothesis ; rdfs:label "open alternative"@en ;
+    rdfs:comment "After an abstention, a hypothesis that remains standing: neither the episode checks nor the simulation refuted it. Neither accepted nor refuted."@en .
+insight:openSimulatedAlternative a owl:ObjectProperty ;
+    rdfs:subPropertyOf insight:openAlternative ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:Hypothesis ; rdfs:label "open simulated alternative"@en ;
+    rdfs:comment "Simulated but not enough: its runs do not explain the robot's record clearly better than the nominal. Its probability is on its run."@en .
+insight:openNonSimulableAlternative a owl:ObjectProperty ;
+    rdfs:subPropertyOf insight:openAlternative ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range insight:Hypothesis ; rdfs:label "open non-simulable alternative"@en ;
+    rdfs:comment "Compatible with the episode checks but without a simulation realization (status checked_not_simulable or not_simulable)."@en .
+insight:supportedByObservation a owl:ObjectProperty ;
+    rdfs:domain insight:Hypothesis ; rdfs:range sosa:Observation ; rdfs:label "supported by observation"@en ;
+    rdfs:comment "An observation of the episode that shows the trace the hypothesis's mechanism entails (an informing contrast rule saw it, e.g. the bottle reacquired for a perception failure). Support within the available recording, not confirmation."@en .
+
+insight:verdictDecision a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:string ; rdfs:label "verdict decision"@en ;
+    rdfs:comment "accepted or abstained; the reason of an abstention is the case's insight:abstentionReason."@en .
+insight:posteriorProbability a owl:DatatypeProperty ;
+    rdfs:range xsd:decimal ; rdfs:label "posterior probability"@en ;
+    rdfs:comment "The verdict's probability of a simulation run's hypothesis, or of a mechanism, given the robot's record; relative to the candidates simulated in the case."@en .
+insight:ratioToNominal a owl:DatatypeProperty ;
+    rdfs:domain insight:SimulationRun ; rdfs:range xsd:decimal ; rdfs:label "ratio to nominal"@en ;
+    rdfs:comment "Discrepancy of the run's best repetition with the robot's record over the nominal's: how much of what the nominal leaves unexplained this run still leaves (1 for the nominal)."@en .
+insight:inCredibleSet a owl:DatatypeProperty ;
+    rdfs:domain insight:MechanismProbability ; rdfs:range xsd:boolean ; rdfs:label "in credible set"@en ;
+    rdfs:comment "Whether the mechanism is among the fewest that together hold insight:credibleMass of the probability."@en .
+insight:mechanismName a owl:DatatypeProperty ;
+    rdfs:domain insight:MechanismProbability ; rdfs:range xsd:string ; rdfs:label "mechanism name"@en ;
+    rdfs:comment "The mechanism as the verdict names it (nominal for the replay without any cause)."@en .
+insight:explainedRatio a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "explained ratio"@en ;
+    rdfs:comment "The ratio to the nominal of the most probable hypothesis, the one the verdict's adequacy rule reads."@en .
+insight:bestCauseRatio a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "best cause ratio"@en ;
+    rdfs:comment "The smallest ratio to the nominal among the simulated causes."@en .
+insight:acceptanceThreshold a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "acceptance threshold"@en ;
+    rdfs:comment "The probability the most probable hypothesis needs to be accepted."@en .
+insight:explanationRatioMax a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "explanation ratio limit"@en ;
+    rdfs:comment "The largest ratio to the nominal an accepted hypothesis may leave (the adequacy rule)."@en .
+insight:credibleMass a owl:DatatypeProperty ;
+    rdfs:domain insight:VerificationOutcome ; rdfs:range xsd:decimal ; rdfs:label "credible mass"@en ;
+    rdfs:comment "The probability the credible set holds."@en .
+
+
+# The memory's decisions (contract 3, section 4.3).
+
+insight:Status_to_simulate a insight:HypothesisStatus ; insight:statusId "to_simulate" ;
+    rdfs:comment "Passes coherence and contrast, has a realization and fits the budget: it is simulated."@en .
+insight:Status_over_budget a insight:HypothesisStatus ; insight:statusId "over_budget" ;
+    rdfs:comment "As to_simulate, but the budget ran out (only with a budget k)."@en .
+insight:Status_discarded a insight:HypothesisStatus ; insight:statusId "discarded" ;
+    rdfs:comment "A contrast rule finds the recording contradicts it."@en .
+insight:Status_explained_by_memory a insight:HypothesisStatus ; insight:statusId "explained_by_memory" ;
+    rdfs:comment "The recording already explains it (a commanded brake); the nominal run, always simulated, must reproduce the effect."@en .
+insight:Status_checked_not_simulable a insight:HypothesisStatus ; insight:statusId "checked_not_simulable" ;
+    rdfs:comment "Survives the available recording checks but has no simulation realization. Compatibility is not confirmation, and lack of a realization does not mean the mechanism is non-physical."@en .
+insight:Status_not_simulable a insight:HypothesisStatus ; insight:statusId "not_simulable" ;
+    rdfs:comment "No realization here (no suspension in the URDF, an experimental intervention, a cable parallel to the path) or a 'new' mechanism."@en .
+insight:Status_incoherent a insight:HypothesisStatus ; insight:statusId "incoherent" ;
+    rdfs:comment "An anchor that does not exist in the episode, or a precondition that fails."@en .
+
+
+# --------------------------------------------------------------------------------------------- #
+# The whole episode in the memory, and the provenance of a case (contracts 1.12)
+#
+# The prompt, the vocabulary, the contrast and the grounding read the case from the semantic memory:
+# the episode's named graph and the TBox's. So the episode graph keeps every field of contract 1
+# they read: the frame, the clock, the roles, the order of each list, the ranges of each phase, the
+# recorded change that made the robot look for an explanation, and the hash of the contract-1
+# record it comes from. Each case also says with which TBox, contracts and code it was written,
+# because GraphDB keeps every case (decision of 08/10).
+# --------------------------------------------------------------------------------------------- #
+
+insight:RoleBinding a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "role binding"@en ;
+    rdfs:comment "Which recorded entity plays a named role in the episode (robot, tray, bottle, person, room). The role is the episode's, not a property of the entity."@en .
+
+insight:RecordedChange a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "recorded change"@en ;
+    rdfs:comment "One change of the working memory as it was recorded: an operation (removed, added) on a subject, a relation and an object, written as the working memory names them. It describes the representation, not the world."@en .
+
+insight:StatedUnknown a owl:Class ;
+    rdfs:subClassOf dul:Description ;
+    rdfs:label "stated unknown"@en ;
+    rdfs:comment "Something the record of an observed change states as not known (rdfs:comment holds the statement)."@en .
+
+insight:boundEntity a owl:ObjectProperty ;
+    rdfs:domain insight:RoleBinding ; rdfs:range dul:Entity ; rdfs:label "bound entity"@en .
+insight:recordedAs a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range insight:RecordedChange ; rdfs:label "recorded as"@en ;
+    rdfs:comment "The changes of the working memory in which the anomaly was observed."@en .
+insight:hasStatedUnknown a owl:ObjectProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range insight:StatedUnknown ; rdfs:label "has stated unknown"@en .
+
+insight:listIndex a owl:DatatypeProperty ;
+    rdfs:range xsd:nonNegativeInteger ; rdfs:label "list index"@en ;
+    rdfs:comment "Position of an individual in the ordered list of the episode it belongs to (intervals, phases, segments, evidence, roles, changes, unknowns), from 0."@en .
+
+insight:episodeSchema a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "episode schema"@en .
+insight:recordSha256 a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "record sha256"@en ;
+    rdfs:comment "sha256 of the contract-1 record (canonical JSON) the episode graph was written from, as the batch cites it."@en .
+insight:sourceKind a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "source kind"@en .
+insight:recordingSha256 a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "recording sha256"@en .
+insight:builtBy a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "built by"@en .
+insight:readBy a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "read by"@en ;
+    rdfs:comment "The reader of the episodic memory that gave the signals (the C++ API or the file reader)."@en .
+insight:poseAxes a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "pose axes"@en ;
+    rdfs:comment "Whether the recorded poses had x and y swapped (swapped_xy) or not (recorded)."@en .
+insight:frameName a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "reference frame"@en .
+insight:positionUnits a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "position units"@en .
+insight:headingConvention a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "heading convention"@en .
+insight:timeOrigin a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "time origin"@en ;
+    rdfs:comment "What time zero of the episode is (e.g. first_imu_event)."@en .
+insight:originOffsetS a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:decimal ; rdfs:label "origin offset (s)"@en ;
+    rdfs:comment "Time zero of the episode, in seconds from the start of the recording file."@en .
+insight:observationTimeS a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:decimal ; rdfs:label "observation time (s)"@en ;
+    rdfs:comment "t_obs: when the working memory recorded the change, in seconds from time zero."@en .
+insight:episodeLengthS a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:decimal ; rdfs:label "episode length (s)"@en .
+insight:simulationHorizonS a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:decimal ; rdfs:label "simulation horizon (s)"@en .
+insight:entityNamespace a owl:DatatypeProperty ;
+    rdfs:domain insight:Episode ; rdfs:range xsd:string ; rdfs:label "entity namespace"@en .
+insight:missionDescription a owl:DatatypeProperty ;
+    rdfs:range xsd:string ; rdfs:label "mission description"@en ;
+    rdfs:comment "The recorded mission context of an episode or of an observed change, as recorded."@en .
+
+insight:roleName a owl:DatatypeProperty ;
+    rdfs:domain insight:RoleBinding ; rdfs:range xsd:string ; rdfs:label "role name"@en .
+insight:entityId a owl:DatatypeProperty ;
+    rdfs:domain insight:RoleBinding ; rdfs:range xsd:string ; rdfs:label "entity id"@en ;
+    rdfs:comment "The entity as the episode names it (a local id or an IRI)."@en .
+insight:displayLabel a owl:DatatypeProperty ;
+    rdfs:range xsd:string ; rdfs:label "display label"@en ;
+    rdfs:comment "How the episode labels an entity when it names it to the LLM."@en .
+
+insight:setpointMinMps a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "minimum commanded speed (m/s)"@en .
+insight:setpointMaxMps a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "maximum commanded speed (m/s)"@en .
+insight:headingMinDeg a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "minimum heading (deg)"@en .
+insight:headingMaxDeg a owl:DatatypeProperty ; rdfs:range xsd:decimal ; rdfs:label "maximum heading (deg)"@en .
+insight:stoppedAtS a owl:DatatypeProperty ;
+    rdfs:range xsd:decimal ; rdfs:label "stopped at (s)"@en ;
+    rdfs:comment "When the robot was stopped during a system reaction."@en .
+
+insight:observedAs a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:string ; rdfs:label "observed as"@en ;
+    rdfs:comment "How the change was observed, in the words of the record (e.g. deletion of the robot->bottle RT edge)."@en .
+insight:changeSummary a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:string ; rdfs:label "change summary"@en .
+insight:recordedId a owl:DatatypeProperty ;
+    rdfs:range xsd:string ; rdfs:label "recorded id"@en ;
+    rdfs:comment "The id the record gives to an individual, when it gives one."@en .
+insight:contractSection a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:string ; rdfs:label "contract section"@en ;
+    rdfs:comment "The section of the contract-1 record that holds the observation: change, observation, or the legacy accident. The name of the section does not establish a physical event."@en .
+insight:validatorReason a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:string ; rdfs:label "validator reason"@en ;
+    rdfs:comment "Why the live validator found the change unexplained when it happened."@en .
+insight:declaredAffectedEntityId a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:string ; rdfs:label "declared affected entity id"@en .
+insight:declaredProfileId a owl:DatatypeProperty ;
+    rdfs:domain insight:ObservedAnomaly ; rdfs:range xsd:string ; rdfs:label "declared profile id"@en ;
+    rdfs:comment "An explanation profile the record of the change declares, instead of selecting it from the TBox."@en .
+
+insight:changeOperation a owl:DatatypeProperty ;
+    rdfs:domain insight:RecordedChange ; rdfs:range xsd:string ; rdfs:label "change operation"@en .
+insight:changeSubject a owl:DatatypeProperty ;
+    rdfs:domain insight:RecordedChange ; rdfs:range xsd:string ; rdfs:label "change subject"@en .
+insight:changePredicate a owl:DatatypeProperty ;
+    rdfs:domain insight:RecordedChange ; rdfs:range xsd:string ; rdfs:label "change relation"@en .
+insight:changeObject a owl:DatatypeProperty ;
+    rdfs:domain insight:RecordedChange ; rdfs:range xsd:string ; rdfs:label "change object"@en .
+insight:changeSource a owl:DatatypeProperty ;
+    rdfs:domain insight:RecordedChange ; rdfs:range xsd:string ; rdfs:label "change source"@en ;
+    rdfs:comment "Where the change was recorded: the live validator's delta (removed_triples, added_triples), or the record of the change (change, changes)."@en .
+
+insight:signedValue a owl:DatatypeProperty ;
+    rdfs:domain sosa:Observation ; rdfs:range xsd:decimal ; rdfs:label "signed value"@en ;
+    rdfs:comment "The peak with its sign (sosa:hasSimpleResult holds its magnitude)."@en .
+insight:travelledOverCommanded a owl:DatatypeProperty ;
+    rdfs:domain sosa:Observation ; rdfs:range xsd:decimal ; rdfs:label "travelled over commanded"@en ;
+    rdfs:comment "Distance travelled over distance commanded in the interval of the observation."@en .
+insight:travelledOverCommandedBaseline a owl:DatatypeProperty ;
+    rdfs:domain sosa:Observation ; rdfs:range xsd:decimal ; rdfs:label "travelled over commanded, baseline"@en ;
+    rdfs:comment "The same ratio in free motion (Interval_baseline): the episode's own clock."@en .
+
+insight:tboxVersion a owl:DatatypeProperty ;
+    rdfs:domain [ a owl:Class ; owl:unionOf ( inst:AnomalyCase insight:VerificationOutcome ) ] ;
+    rdfs:range xsd:string ; rdfs:label "TBox version"@en ;
+    rdfs:comment "owl:versionInfo of the INSIGHT TBox the case (or its verification outcome, which may be written later) was written and read with."@en .
+insight:tboxSha256 a owl:DatatypeProperty ;
+    rdfs:domain inst:AnomalyCase ; rdfs:range xsd:string ; rdfs:label "TBox sha256"@en .
+insight:contractsVersion a owl:DatatypeProperty ;
+    rdfs:domain [ a owl:Class ; owl:unionOf ( inst:AnomalyCase insight:VerificationOutcome ) ] ;
+    rdfs:range xsd:string ; rdfs:label "contracts version"@en .
+insight:codeCommit a owl:DatatypeProperty ;
+    rdfs:domain [ a owl:Class ; owl:unionOf ( inst:AnomalyCase insight:VerificationOutcome ) ] ;
+    rdfs:range xsd:string ; rdfs:label "code commit"@en ;
+    rdfs:comment "git commit of the code that wrote the case (or its verification outcome), with '+uncommitted' when the working tree had changes."@en .

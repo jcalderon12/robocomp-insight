@@ -1,0 +1,358 @@
+{
+  "schema_version": "1.0",
+  "status": "success",
+  "case_id": "semantic_unexplained_20260422T102930Z",
+  "trace_id": "trace_8195db47eb5347eb99da393d4056a4a4",
+  "generated_at": "2026-04-22T10:29:30+00:00",
+  "generator": "_invoke_ollama_http",
+  "model": "gpt-oss:120b-cloud",
+  "trigger": {
+    "unexplained_reason": "Bottle moved from robot to room without explicit causal evidence.",
+    "removed_triples": [
+      {
+        "subject": "http://insight.local/instances#Action_Follow",
+        "predicate": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasParticipant",
+        "object": "http://insight.local/instances#Agent_Person"
+      },
+      {
+        "subject": "http://insight.local/instances#Action_Follow",
+        "predicate": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasParticipant",
+        "object": "http://insight.local/instances#Agent_Robot"
+      },
+      {
+        "subject": "http://insight.local/instances#Action_Follow",
+        "predicate": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+        "object": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#Action"
+      }
+    ],
+    "added_triples": []
+  },
+  "context_summary": {
+    "graph_source": "graphdb_mirror",
+    "graph_endpoint": "http://localhost:7200/repositories/insight_prod/statements",
+    "current_triples": [
+      {
+        "subject": "http://insight.local/instances#Agent_Person",
+        "predicate": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasLocation",
+        "object": "http://insight.local/instances#PhysicalPlace_Room"
+      },
+      {
+        "subject": "http://insight.local/instances#Agent_Person",
+        "predicate": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+        "object": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#PhysicalAgent"
+      },
+      {
+        "subject": "http://insight.local/instances#Agent_Robot",
+        "predicate": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasLocation",
+        "object": "http://insight.local/instances#PhysicalPlace_Room"
+      },
+      {
+        "subject": "http://insight.local/instances#Agent_Robot",
+        "predicate": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+        "object": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#PhysicalAgent"
+      },
+      {
+        "subject": "http://insight.local/instances#PhysicalObject_Bottle",
+        "predicate": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasLocation",
+        "object": "http://insight.local/instances#PhysicalPlace_Room"
+      },
+      {
+        "subject": "http://insight.local/instances#PhysicalObject_Bottle",
+        "predicate": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+        "object": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#PhysicalObject"
+      },
+      {
+        "subject": "http://insight.local/instances#PhysicalPlace_Room",
+        "predicate": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+        "object": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#PhysicalPlace"
+      }
+    ],
+    "dsr_nodes": [
+      {
+        "id": 280841474738749444,
+        "name": "follow_me",
+        "type": "affordance"
+      },
+      {
+        "id": 203,
+        "name": "bottle",
+        "type": "bottle"
+      },
+      {
+        "id": 280841468883501059,
+        "name": "imu",
+        "type": "imu"
+      },
+      {
+        "id": 280841486247919616,
+        "name": "unexplained",
+        "type": "intention"
+      },
+      {
+        "id": 300,
+        "name": "person",
+        "type": "person"
+      },
+      {
+        "id": 200,
+        "name": "robot",
+        "type": "robot"
+      },
+      {
+        "id": 100,
+        "name": "room",
+        "type": "room"
+      }
+    ],
+    "robot_description_capsule": {
+      "source": "/home/robolab_practicas/robocomp/components/robocomp-insight/description.md",
+      "available": true,
+      "summary": "# Shadow Robot Self-Model ## Purpose This document defines the technical identity, components, capabilities, and limits of the Shadow robot. It is intended to serve as a grounded self-model for diagnosis, explanation, and hypothesis generation. ## Identity - Shadow is an indoor mobile social robot. - Shadow is designed for human-following, assistance, and operation in human-centered indoor environments. - Shadow is a ground robot. - Shadow is not an industrial manipulator. - Shadow is not a flying robot. - Shadow is not a stationary kiosk. - Shadow is not a telepresence-only platform. ## Core Grounding Rule - Valid reasoning about Shadow must only use components, subsystems, and constraints explicitly described in this document. - If a proposed fault depends on a component not listed here, that proposal is invalid. - Explanations must stay within the real hardware and software limits of Shadow. ## Physical Structure - Maximum width: 625 mm. - Maximum height: 2030 mm. - The chassis is modular and divided into 3 main printed sections. - The chassis is manufactured with FDM printing. - The structural material is TPU HARDNESS+. - The robot is designed to pass through standard indoor doorways. ## Locomotion and Mechanical System - Shadow uses a holonomic omnidirectional mobile base. - Shadow has 4 Mecanum wheels. - Each wheel is driven by an independent 150 W hub motor. - The 4 wheels are controlled through 2 dual-axis drivers. - The robot can move forward, backward, laterally, diagonally, and rotate in place. - The robot includes a micro-adjustable suspension system. - The suspension mechanically decouples the wheels from the main chassis. - The suspension includes steel rods, dampers, and springs. - The minimum operational speed is 3 km/h. ## Power and Electronics - Shadow is powered by a lithium battery. - Battery capacity: 1 kWh. - Nominal battery voltage: 48 V. - Maximum current draw: 22 A. - Expected autonomy: about 7 hours under normal conditions. - The battery is mounted low in the chassis to reduce the center of gravity. - The power electronics are organized in a modular extractable tray. - Defined power rails include 48 V, 24 V, 19 V, 12 V, and 5 V. - Shadow includes a 10 Gb/s Ethernet switch. - Shadow includes an external emergency stop button. ## Compute - Shadow has a single high-level compute platform: NVIDIA Jetson Orin. - Shadow has no redundant high-level compute platform. - Shadow has no secondary onboard AI brain described in this document. ## Internal Sensing - Shadow includes a WT901B AHRS-IMU. - The internal sensing layer monitors orientation and motion state. - Internal monitoring also includes voltmeters. - Internal monitoring also includes ammeters. - Internal monitoring also includes temperature sensors. - These sensors support state monitoring, stability supervision, and fault detection. ## External Perception - Shadow includes a Helios 3D LiDAR. - The Helios LiDAR supports forward mapping and obstacle detection. - Shadow includes a Bpearl 3D LiDAR. - The Bpearl LiDAR supports near-hemispherical volumetric perception around the robot. - Shadow includes a Ricoh Theta Z1 360 RGB camera. - The camera provides 360-degree visual perception using two fisheye views. - The primary visual use is human detection and semantic perception. - Shadow includes a front touch screen as human-machine interface. ## Software Architecture - Shadow uses a two-layer architecture. ### RoboComp Layer - RoboComp is the low-level layer.",
+      "selected_sentences": [
+        "# Shadow Robot Self-Model ## Purpose This document defines the technical identity, components, capabilities, and limits of the Shadow robot.",
+        "It is intended to serve as a grounded self-model for diagnosis, explanation, and hypothesis generation.",
+        "## Identity - Shadow is an indoor mobile social robot.",
+        "- Shadow is designed for human-following, assistance, and operation in human-centered indoor environments.",
+        "- Shadow is a ground robot.",
+        "- Shadow is not an industrial manipulator.",
+        "- Shadow is not a flying robot.",
+        "- Shadow is not a stationary kiosk.",
+        "- Shadow is not a telepresence-only platform.",
+        "## Core Grounding Rule - Valid reasoning about Shadow must only use components, subsystems, and constraints explicitly described in this document.",
+        "- If a proposed fault depends on a component not listed here, that proposal is invalid.",
+        "- Explanations must stay within the real hardware and software limits of Shadow.",
+        "## Physical Structure - Maximum width: 625 mm.",
+        "- Maximum height: 2030 mm.",
+        "- The chassis is modular and divided into 3 main printed sections.",
+        "- The chassis is manufactured with FDM printing.",
+        "- The structural material is TPU HARDNESS+.",
+        "- The robot is designed to pass through standard indoor doorways.",
+        "## Locomotion and Mechanical System - Shadow uses a holonomic omnidirectional mobile base.",
+        "- Shadow has 4 Mecanum wheels.",
+        "- Each wheel is driven by an independent 150 W hub motor.",
+        "- The 4 wheels are controlled through 2 dual-axis drivers.",
+        "- The robot can move forward, backward, laterally, diagonally, and rotate in place.",
+        "- The robot includes a micro-adjustable suspension system.",
+        "- The suspension mechanically decouples the wheels from the main chassis.",
+        "- The suspension includes steel rods, dampers, and springs.",
+        "- The minimum operational speed is 3 km/h.",
+        "## Power and Electronics - Shadow is powered by a lithium battery.",
+        "- Battery capacity: 1 kWh.",
+        "- Nominal battery voltage: 48 V.",
+        "- Maximum current draw: 22 A.",
+        "- Expected autonomy: about 7 hours under normal conditions.",
+        "- The battery is mounted low in the chassis to reduce the center of gravity.",
+        "- The power electronics are organized in a modular extractable tray.",
+        "- Defined power rails include 48 V, 24 V, 19 V, 12 V, and 5 V.",
+        "- Shadow includes a 10 Gb/s Ethernet switch.",
+        "- Shadow includes an external emergency stop button.",
+        "## Compute - Shadow has a single high-level compute platform: NVIDIA Jetson Orin.",
+        "- Shadow has no redundant high-level compute platform.",
+        "- Shadow has no secondary onboard AI brain described in this document.",
+        "## Internal Sensing - Shadow includes a WT901B AHRS-IMU.",
+        "- The internal sensing layer monitors orientation and motion state.",
+        "- Internal monitoring also includes voltmeters.",
+        "- Internal monitoring also includes ammeters.",
+        "- Internal monitoring also includes temperature sensors.",
+        "- These sensors support state monitoring, stability supervision, and fault detection.",
+        "## External Perception - Shadow includes a Helios 3D LiDAR.",
+        "- The Helios LiDAR supports forward mapping and obstacle detection.",
+        "- Shadow includes a Bpearl 3D LiDAR.",
+        "- The Bpearl LiDAR supports near-hemispherical volumetric perception around the robot.",
+        "- Shadow includes a Ricoh Theta Z1 360 RGB camera.",
+        "- The camera provides 360-degree visual perception using two fisheye views.",
+        "- The primary visual use is human detection and semantic perception.",
+        "- Shadow includes a front touch screen as human-machine interface.",
+        "## Software Architecture - Shadow uses a two-layer architecture.",
+        "### RoboComp Layer - RoboComp is the low-level layer."
+      ],
+      "error": ""
+    }
+  },
+  "hypotheses": [
+    {
+      "hypothesis_id": "ext-1",
+      "family": "external",
+      "rank": 1,
+      "title": "Slippery floor caused robot drift",
+      "rationale": "A recent spill created a low\u2011friction patch on the floor, reducing wheel traction and causing the robot to slide into the bottle without intentional contact.",
+      "confidence": 0.68,
+      "grounding": [
+        "Floor material",
+        "Wheel traction"
+      ],
+      "simulation_blueprint": {
+        "action": "adjust_friction_coefficient",
+        "entity": "floor",
+        "reference_frame": "room",
+        "activation_window": {
+          "start_fraction": 0.0,
+          "end_fraction": 0.5
+        },
+        "asset": {
+          "kind": "environment",
+          "hint": "wet floor"
+        }
+      },
+      "expected_observations": [
+        "Wheel encoders report slip",
+        "Visual camera detects wet patch",
+        "LiDAR map remains unchanged"
+      ]
+    },
+    {
+      "hypothesis_id": "ext-2",
+      "family": "external",
+      "rank": 2,
+      "title": "Human inadvertent bottle displacement",
+      "rationale": "The person following the robot may have brushed against the bottle during movement, causing it to shift independently of the robot's actions.",
+      "confidence": 0.55,
+      "grounding": [
+        "Human movement",
+        "Bottle position"
+      ],
+      "simulation_blueprint": {
+        "action": "apply_human_push",
+        "entity": "bottle",
+        "reference_frame": "room",
+        "activation_window": {
+          "start_fraction": 0.1,
+          "end_fraction": 0.2
+        },
+        "asset": {
+          "kind": "human",
+          "hint": "person contact"
+        }
+      },
+      "expected_observations": [
+        "Camera captures hand near bottle",
+        "No robot motion directed toward bottle",
+        "Bottle movement coincides with person's stride"
+      ]
+    },
+    {
+      "hypothesis_id": "ext-3",
+      "family": "external",
+      "rank": 3,
+      "title": "Secondary robot collision",
+      "rationale": "Another autonomous service robot present in the room could have collided with the bottle, moving it without the primary robot's involvement.",
+      "confidence": 0.5,
+      "grounding": [
+        "Auxiliary robot",
+        "Bottle"
+      ],
+      "simulation_blueprint": {
+        "action": "simulate_external_robot_collision",
+        "entity": "bottle",
+        "reference_frame": "room",
+        "activation_window": {
+          "start_fraction": 0.0,
+          "end_fraction": 1.0
+        },
+        "asset": {
+          "kind": "environment",
+          "hint": "auxiliary robot"
+        }
+      },
+      "expected_observations": [
+        "Logs show presence of another robot at same time",
+        "Audible collision detected",
+        "Bottle displacement timestamp matches external robot path"
+      ]
+    },
+    {
+      "hypothesis_id": "int-1",
+      "family": "internal",
+      "rank": 1,
+      "title": "Wheel slip induced lateral push",
+      "rationale": "The mecanum wheels may have experienced slip on the floor surface, causing the robot to drift sideways into the bottle while following the person, unintentionally moving the bottle.",
+      "confidence": 0.72,
+      "grounding": [
+        "Mecanum wheels",
+        "Suspension system",
+        "Wheel driver controller"
+      ],
+      "simulation_blueprint": {
+        "action": "apply_wheel_slip",
+        "entity": "robot_base",
+        "reference_frame": "world",
+        "activation_window": {
+          "start_fraction": 0.3,
+          "end_fraction": 0.6
+        },
+        "asset": {
+          "kind": "hardware",
+          "hint": "wheel slip"
+        }
+      },
+      "expected_observations": [
+        "Robot trajectory shows lateral deviation",
+        "Contact event with bottle logged",
+        "IMU records unexpected lateral acceleration"
+      ]
+    },
+    {
+      "hypothesis_id": "int-2",
+      "family": "internal",
+      "rank": 2,
+      "title": "IMU drift causing path deviation",
+      "rationale": "A bias or drift in the WT901B AHRS-IMU could corrupt the robot's orientation estimate, leading the navigation stack to generate a path that collides with the bottle.",
+      "confidence": 0.65,
+      "grounding": [
+        "WT901B AHRS-IMU",
+        "Navigation stack",
+        "Control algorithms"
+      ],
+      "simulation_blueprint": {
+        "action": "inject_imu_bias",
+        "entity": "robot_base",
+        "reference_frame": "world",
+        "activation_window": {
+          "start_fraction": 0.0,
+          "end_fraction": 0.5
+        },
+        "asset": {
+          "kind": "sensor",
+          "hint": "imu bias"
+        }
+      },
+      "expected_observations": [
+        "Odometry shows yaw error",
+        "Robot path veers toward bottle",
+        "Wheel encoders do not indicate slip"
+      ]
+    },
+    {
+      "hypothesis_id": "int-3",
+      "family": "internal",
+      "rank": 3,
+      "title": "LiDAR ghost obstacle avoidance",
+      "rationale": "Spurious returns from the Bpearl 3D LiDAR could be interpreted as an obstacle near the bottle, triggering an avoidance maneuver that nudged the bottle.",
+      "confidence": 0.6,
+      "grounding": [
+        "Bpearl 3D LiDAR",
+        "Obstacle avoidance module",
+        "Motion planner"
+      ],
+      "simulation_blueprint": {
+        "action": "inject_lidar_noise",
+        "entity": "robot_base",
+        "reference_frame": "world",
+        "activation_window": {
+          "start_fraction": 0.2,
+          "end_fraction": 0.4
+        },
+        "asset": {
+          "kind": "sensor",
+          "hint": "lidar noise"
+        }
+      },
+      "expected_observations": [
+        "Point cloud contains phantom object near bottle",
+        "Avoidance trajectory deviates from intended path",
+        "No collision sensor activation"
+      ]
+    }
+  ],
+  "errors": []
+}

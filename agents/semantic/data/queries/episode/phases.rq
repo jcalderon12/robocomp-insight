@@ -1,0 +1,23 @@
+# The phases: what the robot was doing, and the system's reaction, in the episode's order.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?index ?id ?kind ?interval ?speed ?setpoint_min ?setpoint_max ?heading_min ?heading_max
+       ?reaction ?stopped_at ?note WHERE {
+  ?episode dul:isSettingFor ?phase .
+  ?phase insight:listIndex ?index ; rdfs:label ?id ; dul:hasTimeInterval ?interval_iri .
+  ?interval_iri rdfs:label ?interval .
+  { ?phase a dul:Action } UNION { ?phase a insight:SystemReaction }
+  OPTIONAL { ?phase insight:motionKind ?kind }
+  OPTIONAL { ?phase insight:meanSpeedMps ?speed }
+  OPTIONAL { ?phase insight:setpointMinMps ?setpoint_min ; insight:setpointMaxMps ?setpoint_max }
+  OPTIONAL { ?phase insight:headingMinDeg ?heading_min ; insight:headingMaxDeg ?heading_max }
+  OPTIONAL { ?phase insight:isSystemReaction ?reaction }
+  OPTIONAL { ?phase insight:stoppedAtS ?stopped_at }
+  OPTIONAL { ?phase a insight:SystemReaction ; rdfs:comment ?note }
+}
+ORDER BY ?index

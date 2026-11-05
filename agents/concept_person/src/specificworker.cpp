@@ -209,12 +209,15 @@ std::vector<float> SpecificWorker::get_person_relative_position()
 		auto person_pose = this->webots2robocomp_proxy->getObjectPose(person_def);
 		auto robot_pose  = this->webots2robocomp_proxy->getObjectPose(robot_def);
 
-		std::vector<float> p_pos = {person_pose.position.x / 1000.f,
-						 person_pose.position.y / 1000.f,
-						 person_pose.position.z / 1000.f};
-		std::vector<float> r_pos = {robot_pose.position.x / 1000.f,
-						 robot_pose.position.y / 1000.f,
-						 robot_pose.position.z / 1000.f};
+		Eigen::Vector3f p_pos(person_pose.position.x / 1000.f,
+		                      person_pose.position.y / 1000.f,
+		                      person_pose.position.z / 1000.f);
+		Eigen::Vector3f r_pos(robot_pose.position.x / 1000.f,
+		                      robot_pose.position.y / 1000.f,
+		                      robot_pose.position.z / 1000.f);
+		Eigen::Quaternionf r_quat(robot_pose.orientation.w, robot_pose.orientation.x,
+		                          robot_pose.orientation.y, robot_pose.orientation.z);
+		r_quat.normalize();
 
 		relative_position = {p_pos[0] - r_pos[0], p_pos[1] - r_pos[1], p_pos[2] - r_pos[2]};
 

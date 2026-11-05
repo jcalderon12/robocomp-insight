@@ -1,0 +1,20 @@
+{
+    "name": "friction",
+    "description": "The floor's lateral friction coefficient changes for the whole episode (slippery surface).",
+    "instance_generators":
+    [
+        {
+            "type": "random_uniform_range",
+            "id": "friction"
+        }
+    ],
+    "apply_actions": [
+        {
+            "type": "set_friction",
+            "id": "friction",
+            "value_input_type": "random_uniform_range",
+            "value_input_id": "friction"
+        }
+    ],
+    "apply_compute_actions": []
+}

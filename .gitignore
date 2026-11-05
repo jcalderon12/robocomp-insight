@@ -295,6 +295,7 @@ agents/inner_simulator/output/
 agents/inner_simulator/sim_output*.json
 agents/mission_controller/recorded_missions/*
 agents/inner_simulator/src/sim_scene.json
+agents/inner_simulator/src/sim_channels.json
 agents/inner_simulator/logs/
 
 # Vision SAM

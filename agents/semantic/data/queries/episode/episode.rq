@@ -1,0 +1,31 @@
+# The episode: its record, source, frame and clock. ?episode is bound by the reader.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?id ?schema ?record_sha256 ?path ?kind ?recording_sha256 ?builder ?reader ?pose_axes
+       ?frame ?units ?heading ?origin ?origin_ns ?origin_offset ?t_obs ?length ?horizon ?namespace ?mission WHERE {
+  ?episode a insight:Episode ; rdfs:label ?id .
+  OPTIONAL { ?episode insight:episodeSchema ?schema }
+  OPTIONAL { ?episode insight:recordSha256 ?record_sha256 }
+  OPTIONAL { ?episode insight:recordedIn ?path }
+  OPTIONAL { ?episode insight:sourceKind ?kind }
+  OPTIONAL { ?episode insight:recordingSha256 ?recording_sha256 }
+  OPTIONAL { ?episode insight:builtBy ?builder }
+  OPTIONAL { ?episode insight:readBy ?reader }
+  OPTIONAL { ?episode insight:poseAxes ?pose_axes }
+  OPTIONAL { ?episode insight:frameName ?frame }
+  OPTIONAL { ?episode insight:positionUnits ?units }
+  OPTIONAL { ?episode insight:headingConvention ?heading }
+  OPTIONAL { ?episode insight:timeOrigin ?origin }
+  OPTIONAL { ?episode insight:timeOriginNs ?origin_ns }
+  OPTIONAL { ?episode insight:originOffsetS ?origin_offset }
+  OPTIONAL { ?episode insight:observationTimeS ?t_obs }
+  OPTIONAL { ?episode insight:episodeLengthS ?length }
+  OPTIONAL { ?episode insight:simulationHorizonS ?horizon }
+  OPTIONAL { ?episode insight:entityNamespace ?namespace }
+  OPTIONAL { ?episode insight:missionDescription ?mission }
+}

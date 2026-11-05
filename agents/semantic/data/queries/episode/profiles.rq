@@ -1,0 +1,13 @@
+# The explanation profiles the record of the change declares, if it declares any.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?profile WHERE {
+  ?episode dul:isSettingFor ?observed .
+  ?observed a insight:ObservedAnomaly ; insight:declaredProfileId ?profile .
+}
+ORDER BY ?profile

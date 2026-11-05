@@ -1,0 +1,798 @@
+{
+ "schema_version": "2.0",
+ "case_id": "semantic_unexplained_20261007T080222Z",
+ "trace_id": "trace_2b294135f9684925abd8681706b10901",
+ "generated_at": "2026-10-07T08:02:27+00:00",
+ "status": "success",
+ "errors": [],
+ "trigger": {
+  "unexplained_reason": "Bottle lost location on robot without explicit causal evidence.",
+  "removed_triples": [
+   {
+    "subject": "http://insight.local/instances#PhysicalObject_Bottle",
+    "predicate": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasLocation",
+    "object": "http://insight.local/instances#Agent_Robot"
+   }
+  ],
+  "added_triples": []
+ },
+ "context_summary": {},
+ "arm": "llm_full",
+ "episode": {
+  "id": "rec_mission_Follow_Person_07102026_100057",
+  "path": "/home/javi/robocomp/components/robocomp-insight/agents/semantic/generated_hypotheses/semantic_unexplained_20261007T080222Z_episode.json",
+  "sha256": "bfc3a9fb49d1dd7e1bdd595fa1fbd5596f41f7e462b5253d3b6b4cb23cbecb7a",
+  "recording": {
+   "path": "/home/javi/robocomp/components/robocomp-insight/agents/mission_controller/recorded_missions/mission_Follow_Person_07102026_100057.txt",
+   "sha256": "67d72c2874a077cb0a670e8c4e5e557b106831dfdb3ef84a56f8479007a06e00"
+  }
+ },
+ "mechanisms_version": "00cf61e160e53b7aa7ef6ccd1a79bf1c6172ee57eb30f43e5cf247e4bbbe5ab2",
+ "budget": {
+  "k": null,
+  "used": 8,
+  "unit": "compiled cause; the nominal run is free"
+ },
+ "model": "gemma4:31b-cloud",
+ "prompt_path": "agents/semantic/generated_hypotheses/semantic_unexplained_20261007T080222Z_prompt.md",
+ "attempts": 1,
+ "hypotheses": [
+  {
+   "hypothesis_id": "H01",
+   "rank": 1,
+   "mechanism": "robot_push",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_RobotPush",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {
+    "direction": "left"
+   },
+   "expected_trace": [
+    "lateral_accel_peak",
+    "speed_ratio",
+    "yaw_change"
+   ],
+   "rationale": "There is a very strong lateral acceleration peak (4.564 m/s2) and a significant yaw rate peak during the fall interval, suggesting a side impact.",
+   "llm_title": "Side impact from the right",
+   "title": "Push on the robot during the last 2 s before the fall",
+   "family": "external",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "",
+     "preconditions": []
+    },
+    "contrast": [
+     {
+      "check": "robot_jolt",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "to_calibrate",
+      "reads": [
+       "lateral_accel_peak",
+       "speed_ratio",
+       "yaw_change"
+      ],
+      "conditions": [
+       {
+        "quantity": "lateral_accel_peak",
+        "value": 4.564,
+        "value_expr": null,
+        "op": "<=",
+        "limit": 0.71,
+        "limit_expr": "2 x baseline 0.355",
+        "holds": false
+       },
+       {
+        "quantity": "|speed_ratio - 1|",
+        "value": 0.377,
+        "value_expr": null,
+        "op": "<=",
+        "limit": 0.15,
+        "limit_expr": null,
+        "holds": false
+       },
+       {
+        "quantity": "|yaw_change - r x commanded|",
+        "value": 13.2944,
+        "value_expr": "|-4.52 - 0.598 x (-29.79)|",
+        "op": "<",
+        "limit": 3.0,
+        "limit_expr": null,
+        "holds": false
+       }
+      ],
+      "verdict": "survives",
+      "reason": "lateral_accel_peak 4.564 <= 2 x baseline 0.355 = 0.71 (no) and |speed_ratio - 1| 0.377 <= 0.15 (no) and |yaw_change - r x commanded| |-4.52 - 0.598 x (-29.79)| = 13.294 < 3 (no)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "force_range": "150-500 N (from a light to a strong push), direction left, relative to h = 5.5 deg (heading of Segment_final over Interval_fall), widened by 0.2 x 500 N",
+    "activation_window": "Interval_fall / H = [11.691, 13.691] / 16.691"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "apply_external_force",
+    "parameters": {
+     "target": "robot",
+     "force_range": {
+      "x": [
+       -147.923,
+       85.623
+      ],
+      "y": [
+       49.309,
+       500.0
+      ],
+      "z": [
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "activation_window": {
+     "start_fraction": 0.7,
+     "end_fraction": 0.82
+    }
+   }
+  },
+  {
+   "hypothesis_id": "H02",
+   "rank": 2,
+   "mechanism": "obstacle_traversed",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_ObstacleTraversed",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": "Segment_final",
+    "interval": null
+   },
+   "qualitative_parameters": {
+    "shape": "bump"
+   },
+   "expected_trace": [
+    "pitch_rate_peak",
+    "vertical_accel_peak"
+   ],
+   "rationale": "The recording shows a significant vertical acceleration peak (3.857 m/s2) and a pitch rate peak (0.689 rad/s) during the fall interval.",
+   "llm_title": "Driving over a bump",
+   "title": "Undetected bump on the last 1 m of the path before the fall",
+   "family": "external",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_on_segment: mean speed on Segment_final 0.2 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_on_segment",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed on Segment_final",
+         "value": 0.2,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed on Segment_final 0.2 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "obstacle_jolt",
+      "kind": "contrast_rule",
+      "effect": "inform",
+      "status": "to_calibrate",
+      "reads": [
+       "pitch_rate_peak",
+       "vertical_accel_peak"
+      ],
+      "conditions": [
+       {
+        "quantity": "pitch_rate_peak",
+        "value": 0.689,
+        "value_expr": null,
+        "op": ">",
+        "limit": 0.747,
+        "limit_expr": "3 x baseline 0.249",
+        "holds": false
+       },
+       {
+        "quantity": "vertical_accel_peak",
+        "value": 3.857,
+        "value_expr": null,
+        "op": ">",
+        "limit": 3.828,
+        "limit_expr": "3 x baseline 1.276",
+        "holds": true
+       }
+      ],
+      "verdict": "trace_seen",
+      "reason": "pitch_rate_peak 0.689 > 3 x baseline 0.249 = 0.747 (no) or vertical_accel_peak 3.857 > 3 x baseline 1.276 = 3.828"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "area": "bbox(Segment_final) + 0.35 m (robot footprint); each repetition adds half its drawn diameter",
+    "size": "not chosen: diameter 0.1-1 m and height 0.01-0.1 m, the whole range the catalog simulates"
+   },
+   "cost_in_simulations": 4,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "spawn_scaled_dome",
+    "parameters": {
+     "area": {
+      "x": [
+       -1.31,
+       0.376
+      ],
+      "y": [
+       -0.754,
+       0.041
+      ],
+      "z": [
+       0.0,
+       0.0
+      ]
+     },
+     "diameter_range": [
+      0.1,
+      1.0
+     ],
+     "height_range": [
+      0.01,
+      0.1
+     ]
+    },
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H03_left",
+   "rank": 3,
+   "mechanism": "wheel_failure",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_WheelFailure",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {
+    "side": "unknown"
+   },
+   "expected_trace": [
+    "speed_ratio",
+    "yaw_change",
+    "yaw_rate_peak"
+   ],
+   "rationale": "The yaw change (-4.52 deg) is significantly different from the commanded one (-29.79 deg), and there is a yaw rate peak, which could indicate a wheel locking.",
+   "llm_title": "Drive wheel failure",
+   "title": "Left drive wheel blocked during the last 2 s before the fall",
+   "family": "internal",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_in_interval: mean speed in Interval_fall 0.27 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_in_interval",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed in Interval_fall",
+         "value": 0.27,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed in Interval_fall 0.27 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "turn_vs_command",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "to_calibrate",
+      "reads": [
+       "speed_ratio",
+       "yaw_change",
+       "yaw_rate_peak"
+      ],
+      "conditions": [
+       {
+        "quantity": "|yaw_change - r x commanded|",
+        "value": 13.2944,
+        "value_expr": "|-4.52 - 0.598 x (-29.79)|",
+        "op": "<",
+        "limit": 3.0,
+        "limit_expr": null,
+        "holds": false
+       },
+       {
+        "quantity": "yaw_rate_peak",
+        "value": 1.621,
+        "value_expr": null,
+        "op": "<",
+        "limit": 0.3,
+        "limit_expr": null,
+        "holds": false
+       }
+      ],
+      "verdict": "survives",
+      "reason": "|yaw_change - r x commanded| |-4.52 - 0.598 x (-29.79)| = 13.294 < 3 (no) and yaw_rate_peak 1.621 < 0.3 (no)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "split": "side unknown: each drive wheel is one compiled cause; this one is the left one",
+    "wheel_id": "side left",
+    "activation_window": "Interval_fall / H = [11.691, 13.691] / 16.691"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "disable_wheel",
+    "parameters": {
+     "wheel_id": "left"
+    },
+    "activation_window": {
+     "start_fraction": 0.7,
+     "end_fraction": 0.82
+    }
+   }
+  },
+  {
+   "hypothesis_id": "H03_right",
+   "rank": 3,
+   "mechanism": "wheel_failure",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_WheelFailure",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {
+    "side": "unknown"
+   },
+   "expected_trace": [
+    "speed_ratio",
+    "yaw_change",
+    "yaw_rate_peak"
+   ],
+   "rationale": "The yaw change (-4.52 deg) is significantly different from the commanded one (-29.79 deg), and there is a yaw rate peak, which could indicate a wheel locking.",
+   "llm_title": "Drive wheel failure",
+   "title": "Right drive wheel blocked during the last 2 s before the fall",
+   "family": "internal",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_in_interval: mean speed in Interval_fall 0.27 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_in_interval",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed in Interval_fall",
+         "value": 0.27,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed in Interval_fall 0.27 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "turn_vs_command",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "to_calibrate",
+      "reads": [
+       "speed_ratio",
+       "yaw_change",
+       "yaw_rate_peak"
+      ],
+      "conditions": [
+       {
+        "quantity": "|yaw_change - r x commanded|",
+        "value": 13.2944,
+        "value_expr": "|-4.52 - 0.598 x (-29.79)|",
+        "op": "<",
+        "limit": 3.0,
+        "limit_expr": null,
+        "holds": false
+       },
+       {
+        "quantity": "yaw_rate_peak",
+        "value": 1.621,
+        "value_expr": null,
+        "op": "<",
+        "limit": 0.3,
+        "limit_expr": null,
+        "holds": false
+       }
+      ],
+      "verdict": "survives",
+      "reason": "|yaw_change - r x commanded| |-4.52 - 0.598 x (-29.79)| = 13.294 < 3 (no) and yaw_rate_peak 1.621 < 0.3 (no)"
+     }
+    ]
+   },
+   "grounding_trace": {
+    "split": "side unknown: each drive wheel is one compiled cause; this one is the right one",
+    "wheel_id": "side right",
+    "activation_window": "Interval_fall / H = [11.691, 13.691] / 16.691"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "disable_wheel",
+    "parameters": {
+     "wheel_id": "right"
+    },
+    "activation_window": {
+     "start_fraction": 0.7,
+     "end_fraction": 0.82
+    }
+   }
+  },
+  {
+   "hypothesis_id": "H04",
+   "rank": 4,
+   "mechanism": "bottle_push",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_BottlePush",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {
+    "direction": "any"
+   },
+   "expected_trace": [
+    "nothing the recording measures"
+   ],
+   "rationale": "A push directly to the bottle would cause it to fall without leaving a trace on the robot's IMU.",
+   "llm_title": "External bottle push",
+   "title": "Push on the bottle during the last 2 s before the fall",
+   "family": "external",
+   "status": "to_simulate",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "bottle_supported: start of Interval_fall 11.691 >= support start = 0 and start of Interval_fall 11.691 < support end = 13.691",
+     "preconditions": [
+      {
+       "check": "bottle_supported",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "start of Interval_fall",
+         "value": 11.691,
+         "value_expr": null,
+         "op": ">=",
+         "limit": 0.0,
+         "limit_expr": "support start",
+         "holds": true
+        },
+        {
+         "quantity": "start of Interval_fall",
+         "value": 11.691,
+         "value_expr": null,
+         "op": "<",
+         "limit": 13.691,
+         "limit_expr": "support end",
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "start of Interval_fall 11.691 >= support start = 0 and start of Interval_fall 11.691 < support end = 13.691"
+      }
+     ]
+    },
+    "contrast": []
+   },
+   "grounding_trace": {
+    "force_range": "3-30 N (from a light to a strong push), direction any",
+    "activation_window": "Interval_fall / H = [11.691, 13.691] / 16.691"
+   },
+   "cost_in_simulations": 1,
+   "testable": true,
+   "untestable_reason": "",
+   "simulation_blueprint": {
+    "intervention": "apply_external_force",
+    "parameters": {
+     "target": "bottle",
+     "force_range": {
+      "x": [
+       -30.0,
+       30.0
+      ],
+      "y": [
+       -30.0,
+       30.0
+      ],
+      "z": [
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "activation_window": {
+     "start_fraction": 0.7,
+     "end_fraction": 0.82
+    }
+   }
+  },
+  {
+   "hypothesis_id": "H05",
+   "rank": 5,
+   "mechanism": "bottle_removed_by_person",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_BottleRemovedByPerson",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {},
+   "expected_trace": [
+    "person_distance_min"
+   ],
+   "rationale": "A person could have taken the bottle, although person_distance_min is 3.269 m, which makes this unlikely but possible if the person reached out or the distance is measured to the center.",
+   "llm_title": "Person took the bottle",
+   "title": "A person removed the bottle during the last 2 s before the fall",
+   "family": "external",
+   "status": "discarded",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "",
+     "preconditions": []
+    },
+    "contrast": [
+     {
+      "check": "person_within_reach",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "fixed",
+      "reads": [
+       "person_distance_min"
+      ],
+      "conditions": [
+       {
+        "quantity": "person_distance_min",
+        "value": 3.269,
+        "value_expr": null,
+        "op": ">",
+        "limit": 1.5,
+        "limit_expr": null,
+        "holds": true
+       }
+      ],
+      "verdict": "discards",
+      "reason": "person_distance_min 3.269 > 1.5"
+     }
+    ]
+   },
+   "grounding_trace": {},
+   "cost_in_simulations": 0,
+   "testable": false,
+   "untestable_reason": "Discarded before simulating by person_within_reach: person_distance_min 3.269 > 1.5.",
+   "simulation_blueprint": {
+    "intervention": null,
+    "parameters": {},
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H06",
+   "rank": 6,
+   "mechanism": "uncommanded_motion",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_UncommandedMotion",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {
+    "kind": "jerk"
+   },
+   "expected_trace": [
+    "longitudinal_accel_peak",
+    "speed_ratio"
+   ],
+   "rationale": "The speed ratio is 0.623, indicating the robot did not travel as far as commanded, which could be due to an uncommanded jerk or brake.",
+   "llm_title": "Internal drive jerk",
+   "title": "Uncommanded jerk during the last 2 s before the fall",
+   "family": "internal",
+   "status": "not_simulable",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "moving_in_interval: mean speed in Interval_fall 0.27 > 0.05",
+     "preconditions": [
+      {
+       "check": "moving_in_interval",
+       "kind": "precondition",
+       "effect": "incoherent",
+       "status": "fixed",
+       "reads": [],
+       "conditions": [
+        {
+         "quantity": "mean speed in Interval_fall",
+         "value": 0.27,
+         "value_expr": null,
+         "op": ">",
+         "limit": 0.05,
+         "limit_expr": null,
+         "holds": true
+        }
+       ],
+       "verdict": "holds",
+       "reason": "mean speed in Interval_fall 0.27 > 0.05"
+      }
+     ]
+    },
+    "contrast": [
+     {
+      "check": "speed_ratio_and_jolt",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "to_calibrate",
+      "reads": [
+       "longitudinal_accel_peak",
+       "speed_ratio"
+      ],
+      "conditions": [
+       {
+        "quantity": "|speed_ratio - 1|",
+        "value": 0.377,
+        "value_expr": null,
+        "op": "<=",
+        "limit": 0.15,
+        "limit_expr": null,
+        "holds": false
+       },
+       {
+        "quantity": "longitudinal_accel_peak",
+        "value": 2.407,
+        "value_expr": null,
+        "op": "<=",
+        "limit": 10.176,
+        "limit_expr": "2 x baseline 5.088",
+        "holds": true
+       }
+      ],
+      "verdict": "survives",
+      "reason": "|speed_ratio - 1| 0.377 <= 0.15 (no) and longitudinal_accel_peak 2.407 <= 2 x baseline 5.088 = 10.176"
+     }
+    ]
+   },
+   "grounding_trace": {},
+   "cost_in_simulations": 1,
+   "testable": false,
+   "untestable_reason": "Not simulable: Its realization (Intervention_override_setpoint) is experimental, only in experiments/: it enters the catalog if task B1 shows on 16/10 that it tips the bottle (contract decision 10).",
+   "simulation_blueprint": {
+    "intervention": null,
+    "parameters": {},
+    "activation_window": null
+   }
+  },
+  {
+   "hypothesis_id": "H07",
+   "rank": 7,
+   "mechanism": "perception_failure",
+   "mechanism_iri": "http://insight.local/ontology#Mechanism_PerceptionFailure",
+   "new_mechanism_description": null,
+   "anchors": {
+    "segment": null,
+    "interval": "Interval_fall"
+   },
+   "qualitative_parameters": {},
+   "expected_trace": [
+    "bottle_reacquired"
+   ],
+   "rationale": "The bottle might not have fallen, but the sensor lost it. However, bottle_reacquired is 'no'.",
+   "llm_title": "Perception loss",
+   "title": "False loss of the bottle during the last 2 s before the fall",
+   "family": "internal",
+   "status": "discarded",
+   "checks": {
+    "coherence": {
+     "passed": true,
+     "reason": "",
+     "preconditions": []
+    },
+    "contrast": [
+     {
+      "check": "bottle_reacquired",
+      "kind": "contrast_rule",
+      "effect": "discard",
+      "status": "to_calibrate",
+      "reads": [
+       "bottle_reacquired"
+      ],
+      "conditions": [
+       {
+        "quantity": "bottle_reacquired",
+        "value": false,
+        "value_expr": null,
+        "op": "==",
+        "limit": false,
+        "limit_expr": null,
+        "holds": true
+       }
+      ],
+      "verdict": "discards",
+      "reason": "bottle_reacquired: no"
+     }
+    ]
+   },
+   "grounding_trace": {},
+   "cost_in_simulations": 0,
+   "testable": false,
+   "untestable_reason": "Discarded before simulating by bottle_reacquired: bottle_reacquired: no.",
+   "simulation_blueprint": {
+    "intervention": null,
+    "parameters": {},
+    "activation_window": null
+   }
+  }
+ ],
+ "generation_metrics": {
+  "llm_elapsed_seconds": 3.716,
+  "attempts": [
+   {
+    "attempt": 1,
+    "model": "gemma4:31b-cloud",
+    "elapsed_seconds": 3.713,
+    "ollama_native": {
+     "total_duration_seconds": 3.544,
+     "prompt_eval_count": 3567,
+     "eval_count": 1002
+    },
+    "status": "success"
+   }
+  ]
+ }
+}

@@ -1,0 +1,21 @@
+# CQ10. Which cases does the memory keep, and with which TBox, contracts, code and LLM was each one written?
+# Reads: the provenance of every case (contracts 1.12); GraphDB keeps them all.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?case ?episode_id ?recording ?tbox_version ?tbox_sha256 ?contracts_version ?code_commit ?model WHERE {
+  ?episode a insight:Episode ; rdfs:label ?episode_id ; dul:isSettingFor ?case_iri .
+  ?case_iri a inst:AnomalyCase ; rdfs:label ?case .
+  OPTIONAL { ?episode insight:recordedIn ?recording }
+  OPTIONAL { ?case_iri insight:tboxVersion ?tbox_version }
+  OPTIONAL { ?case_iri insight:tboxSha256 ?tbox_sha256 }
+  OPTIONAL { ?case_iri insight:contractsVersion ?contracts_version }
+  OPTIONAL { ?case_iri insight:codeCommit ?code_commit }
+  OPTIONAL { ?case_iri dul:isSettingFor ?generation . ?generation a insight:HypothesisGeneration ; insight:llmModel ?model }
+}
+ORDER BY ?case

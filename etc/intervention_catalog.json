@@ -1,0 +1,152 @@
+{
+  "schema_version": "1.0",
+  "description": "Closed catalog of executable intervention primitives for the INSIGHT inner simulator. Hypotheses produced by the semantic agent must ground their simulation_blueprint exclusively in these primitives and assets. Each intervention maps to a Cause implementation discoverable by the causes simulator (agents/inner_simulator).",
+  "interventions": {
+    "spawn_static_object": {
+      "description": "Place a static physical object in the environment before the episode replay starts. Models undetected obstacles lying on the floor (bumps, cables, small items) that the robot may drive over or collide with.",
+      "cause_name": "bump",
+      "phase": "setup",
+      "uses_activation_window": false,
+      "parameters": {
+        "asset": {
+          "type": "asset_ref",
+          "required": true,
+          "description": "Identifier of an asset from the 'assets' section."
+        },
+        "position_range": {
+          "type": "range3d",
+          "required": true,
+          "bounds": {"x": [-6.0, 3.0], "y": [-3.0, 3.0], "z": [0.0, 0.3]},
+          "units": "m",
+          "description": "Per-axis [min, max] sampling range (world frame, meters) for the object placement. Propose an x/y range informed by the robot trajectory, not a single point. Objects rest on the floor, so z is not used."
+        }
+      }
+    },
+    "spawn_scaled_dome": {
+      "description": "Place a dome-shaped bump of unknown size on the floor before the episode replay starts. Each repetition draws its diameter and height within the given ranges and places it so that it reaches the given area: its centre is drawn in the area dilated by half the drawn diameter. Models undetected bumps whose size is not known.",
+      "cause_name": "bump_scaled",
+      "phase": "setup",
+      "uses_activation_window": false,
+      "repetitions": 4000,
+      "budget_cost": 4,
+      "mesh": "etc/URDFs/bump/Bump_100x10cm.stl",
+      "mesh_dimensions_m": [1.0, 1.0, 0.0994],
+      "parameters": {
+        "area": {
+          "type": "range3d",
+          "required": true,
+          "bounds": {"x": [-6.0, 3.0], "y": [-3.0, 3.0], "z": [0.0, 0.3]},
+          "units": "m",
+          "description": "The floor area the bump must reach (world frame, meters): the anchored path plus the robot footprint. Objects rest on the floor, so z is not used."
+        },
+        "diameter_range": {
+          "type": "range1d",
+          "required": true,
+          "bounds": [0.10, 1.00],
+          "units": "m",
+          "description": "[min, max] diameter of the dome: from the size of a wheel to the size of the robot; longer is a slope, not a bump."
+        },
+        "height_range": {
+          "type": "range1d",
+          "required": true,
+          "bounds": [0.01, 0.10],
+          "units": "m",
+          "description": "[min, max] height of the dome: up to the drive wheel radius (100 mm); higher is a wall the robot cannot climb."
+        }
+      }
+    },
+    "disable_wheel": {
+      "description": "One of the two drive wheels of the differential base stops at some instant inside the activation window and stays braked. Models a motor, driver or transmission failure in the locomotion subsystem.",
+      "cause_name": "wheel",
+      "phase": "runtime",
+      "uses_activation_window": true,
+      "parameters": {
+        "wheel_id": {
+          "type": "enum",
+          "required": true,
+          "values": ["left", "right"],
+          "description": "Which drive wheel fails. The base has two drive wheels on a common axis plus two passive casters."
+        }
+      }
+    },
+    "apply_external_force": {
+      "description": "An external force is applied to a body while the simulation time is inside the activation window. Models pushes, contacts with people or objects, or strong air flows acting on the robot or on the carried object.",
+      "cause_name": "external_force",
+      "phase": "runtime",
+      "uses_activation_window": true,
+      "parameters": {
+        "target": {
+          "type": "enum",
+          "required": true,
+          "values": ["robot", "bottle"],
+          "description": "Body the force acts on."
+        },
+        "force_range": {
+          "type": "range3d",
+          "required": true,
+          "bounds": {"x": [-500.0, 500.0], "y": [-500.0, 500.0], "z": [-200.0, 200.0]},
+          "units": "N",
+          "description": "Per-axis [min, max] sampling range for the force vector (world frame, Newtons). Use small magnitudes (1-50 N) for the bottle and larger ones for the robot."
+        }
+      }
+    },
+    "set_friction": {
+      "description": "Change the lateral friction coefficient of the floor for the whole episode. Models slippery or wet surfaces that degrade traction.",
+      "cause_name": "friction",
+      "phase": "setup",
+      "uses_activation_window": false,
+      "parameters": {
+        "target": {
+          "type": "enum",
+          "required": true,
+          "values": ["floor"],
+          "description": "Surface whose friction changes."
+        },
+        "lateral_friction_range": {
+          "type": "range1d",
+          "required": true,
+          "bounds": [0.005, 2.0],
+          "description": "[min, max] sampling range for the lateral friction coefficient (PyBullet default floor friction is ~1.0; slippery is < 0.3)."
+        }
+      }
+    }
+  },
+  "assets": {
+    "bump_25x2cm": {
+      "urdf": "etc/URDFs/bump/bump_25x2cm.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Small dome-shaped bump, 25 cm in diameter and 2 cm tall.",
+      "approx_dimensions_m": [0.25, 0.25, 0.02]
+    },
+    "bump_25x5cm": {
+      "urdf": "etc/URDFs/bump/bump_25x5cm.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Small dome-shaped bump, 25 cm in diameter and 5 cm tall.",
+      "approx_dimensions_m": [0.25, 0.25, 0.05]
+    },
+    "bump_100x5cm": {
+      "urdf": "etc/URDFs/bump/bump_100x5cm.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Low dome-shaped bump, 1 m in diameter and 5 cm tall. Hard to detect for obstacle classifiers.",
+      "approx_dimensions_m": [1.0, 1.0, 0.05]
+    },
+    "bump_100x10cm": {
+      "urdf": "etc/URDFs/bump/bump_100x10cm.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Dome-shaped bump, 1 m in diameter and 10 cm tall.",
+      "approx_dimensions_m": [1.0, 1.0, 0.1]
+    },
+    "cylinder_bump_10m": {
+      "urdf": "etc/URDFs/bump/cylinder_bump_10m.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Long half-round bump (cable-like), 20 m long, 20 cm wide and 5 cm tall. It always lies along the world x axis: it cannot be rotated.",
+      "approx_dimensions_m": [20.0, 0.2, 0.05]
+    },
+    "cylinder": {
+      "urdf": "etc/URDFs/cylinder/cylinder.urdf",
+      "ontology_class": "dul:PhysicalObject",
+      "description": "Standing cylinder obstacle, 20 cm in diameter and 2 m tall.",
+      "approx_dimensions_m": [0.2, 0.2, 2.0]
+    }
+  }
+}

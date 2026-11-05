@@ -1,0 +1,372 @@
+{
+ "schema": "insight.episode/1.0",
+ "episode_id": "rec_mission_follow_person_20102026_130956",
+ "source": {
+  "kind": "recording",
+  "path": "/home/javi/robocomp/components/robocomp-insight/agents/mission_controller/recorded_missions/mission_follow_person_20102026_130956.txt",
+  "sha256": "f43ebf39680e64e4df24406944676d576152b74980038b406c50cf12a6e624bd",
+  "builder": "episode_builder 1.2",
+  "reader": "episodic_memory_api",
+  "pose_axes": "swapped_xy"
+ },
+ "frame": {
+  "name": "room",
+  "units": "m",
+  "heading": "deg, room frame, 0 = +x, counter-clockwise"
+ },
+ "time": {
+  "origin": "first_imu_event",
+  "origin_ns": 1792494598008093886,
+  "origin_offset_from_file_start_s": 0.013,
+  "t_obs_s": 19.888,
+  "episode_length_s": 25.984,
+  "simulation_horizon_s": 22.888
+ },
+ "entities": {
+  "robot": "Agent_Robot",
+  "tray": "PhysicalObject_Tray",
+  "bottle": "PhysicalObject_Bottle",
+  "person": "Agent_Person",
+  "room": "PhysicalPlace_Room"
+ },
+ "intervals": [
+  {
+   "id": "Interval_fall",
+   "start_s": 17.888,
+   "end_s": 19.888
+  },
+  {
+   "id": "Interval_baseline",
+   "start_s": 1.0,
+   "end_s": 17.888
+  },
+  {
+   "id": "Interval_Phase_1",
+   "start_s": 0.079,
+   "end_s": 19.888
+  },
+  {
+   "id": "Interval_Segment_final",
+   "start_s": 13.543,
+   "end_s": 19.888
+  },
+  {
+   "id": "Interval_Segment_prev_1",
+   "start_s": 9.335,
+   "end_s": 13.543
+  },
+  {
+   "id": "Interval_Segment_prev_2",
+   "start_s": 5.549,
+   "end_s": 9.335
+  },
+  {
+   "id": "Interval_Segment_prev_3",
+   "start_s": 2.177,
+   "end_s": 5.549
+  },
+  {
+   "id": "Interval_Segment_prev_4",
+   "start_s": 0.079,
+   "end_s": 2.177
+  },
+  {
+   "id": "Interval_reaction",
+   "start_s": 20.0,
+   "end_s": 25.984
+  }
+ ],
+ "phases": [
+  {
+   "id": "Phase_1",
+   "kind": "advance_straight",
+   "interval": "Interval_Phase_1",
+   "mean_speed_mps": 0.233,
+   "setpoint_mps": [
+    0.07,
+    0.59
+   ],
+   "heading_deg_range": [
+    -0.8,
+    0.0
+   ]
+  },
+  {
+   "id": "Phase_reaction",
+   "kind": "system_reaction",
+   "interval": "Interval_reaction",
+   "is_system_reaction": true,
+   "stopped_at_s": 20.047,
+   "note": "setpoint to 0 at 20.00 s (0.11 s after t_obs); robot stopped at 20.05 s"
+  }
+ ],
+ "segments": [
+  {
+   "id": "Segment_final",
+   "order_back_from_fall": 1,
+   "interval": "Interval_Segment_final",
+   "from_xy": [
+    -0.091,
+    -0.3
+   ],
+   "to_xy": [
+    0.909,
+    -0.301
+   ],
+   "bbox": {
+    "x": [
+     -0.091,
+     0.909
+    ],
+    "y": [
+     -0.301,
+     -0.298
+    ]
+   },
+   "length_m": 1.0,
+   "heading_deg": -0.1,
+   "mean_speed_mps": 0.158
+  },
+  {
+   "id": "Segment_prev_1",
+   "order_back_from_fall": 2,
+   "interval": "Interval_Segment_prev_1",
+   "from_xy": [
+    -1.091,
+    -0.3
+   ],
+   "to_xy": [
+    -0.091,
+    -0.3
+   ],
+   "bbox": {
+    "x": [
+     -1.091,
+     -0.091
+    ],
+    "y": [
+     -0.3,
+     -0.3
+    ]
+   },
+   "length_m": 1.0,
+   "heading_deg": 0.0,
+   "mean_speed_mps": 0.238
+  },
+  {
+   "id": "Segment_prev_2",
+   "order_back_from_fall": 3,
+   "interval": "Interval_Segment_prev_2",
+   "from_xy": [
+    -2.091,
+    -0.3
+   ],
+   "to_xy": [
+    -1.091,
+    -0.3
+   ],
+   "bbox": {
+    "x": [
+     -2.091,
+     -1.091
+    ],
+    "y": [
+     -0.3,
+     -0.3
+    ]
+   },
+   "length_m": 1.0,
+   "heading_deg": 0.0,
+   "mean_speed_mps": 0.264
+  },
+  {
+   "id": "Segment_prev_3",
+   "order_back_from_fall": 4,
+   "interval": "Interval_Segment_prev_3",
+   "from_xy": [
+    -3.091,
+    -0.3
+   ],
+   "to_xy": [
+    -2.091,
+    -0.3
+   ],
+   "bbox": {
+    "x": [
+     -3.091,
+     -2.091
+    ],
+    "y": [
+     -0.3,
+     -0.3
+    ]
+   },
+   "length_m": 1.0,
+   "heading_deg": 0.0,
+   "mean_speed_mps": 0.297
+  },
+  {
+   "id": "Segment_prev_4",
+   "order_back_from_fall": 5,
+   "interval": "Interval_Segment_prev_4",
+   "from_xy": [
+    -3.699,
+    -0.3
+   ],
+   "to_xy": [
+    -3.091,
+    -0.3
+   ],
+   "bbox": {
+    "x": [
+     -3.699,
+     -3.091
+    ],
+    "y": [
+     -0.3,
+     -0.3
+    ]
+   },
+   "length_m": 0.608,
+   "heading_deg": 0.0,
+   "mean_speed_mps": 0.29
+  }
+ ],
+ "support": {
+  "id": "Support_bottle",
+  "supporter": "PhysicalObject_Tray",
+  "supported": "PhysicalObject_Bottle",
+  "start_s": 0.0,
+  "end_s": 19.888,
+  "ended_by": "Accident_1"
+ },
+ "accident": {
+  "id": "Accident_1",
+  "time_s": 19.888,
+  "place": "Segment_final",
+  "robot_pose": {
+   "xy": [
+    0.909,
+    -0.301
+   ],
+   "heading_deg": -0.6
+  },
+  "participants": [
+   "Agent_Robot",
+   "PhysicalObject_Bottle"
+  ],
+  "cause": "unknown",
+  "observed_as": "deletion of the robot->bottle RT edge"
+ },
+ "evidence": [
+  {
+   "id": "Ev_pitch_rate_peak",
+   "property": "pitch_rate_peak",
+   "interval": "Interval_fall",
+   "value": 1.403,
+   "unit": "rad/s",
+   "at_s": 19.343,
+   "signed_value": -1.403,
+   "baseline": 0.006
+  },
+  {
+   "id": "Ev_vertical_accel_peak",
+   "property": "vertical_accel_peak",
+   "interval": "Interval_fall",
+   "value": 2.938,
+   "unit": "m/s2",
+   "at_s": 17.889,
+   "signed_value": 2.938,
+   "baseline": 0.001
+  },
+  {
+   "id": "Ev_longitudinal_accel_peak",
+   "property": "longitudinal_accel_peak",
+   "interval": "Interval_fall",
+   "value": 4.823,
+   "unit": "m/s2",
+   "at_s": 18.352,
+   "signed_value": -4.823,
+   "baseline": 3.523
+  },
+  {
+   "id": "Ev_lateral_accel_peak",
+   "property": "lateral_accel_peak",
+   "interval": "Interval_fall",
+   "value": 0.895,
+   "unit": "m/s2",
+   "at_s": 17.889,
+   "signed_value": -0.895,
+   "baseline": 0.0
+  },
+  {
+   "id": "Ev_yaw_change",
+   "property": "yaw_change",
+   "interval": "Interval_fall",
+   "value": -0.57,
+   "unit": "deg",
+   "commanded": -0.86
+  },
+  {
+   "id": "Ev_yaw_rate_peak",
+   "property": "yaw_rate_peak",
+   "interval": "Interval_fall",
+   "value": 0.28,
+   "unit": "rad/s",
+   "at_s": 19.829,
+   "signed_value": 0.28,
+   "baseline": 0.071
+  },
+  {
+   "id": "Ev_setpoint_step",
+   "property": "setpoint_step",
+   "interval": "Interval_fall",
+   "value": 0.026,
+   "unit": "m/s"
+  },
+  {
+   "id": "Ev_speed_ratio",
+   "property": "speed_ratio",
+   "interval": "Interval_fall",
+   "value": 1.055,
+   "unit": "1",
+   "own_ratio_fall": 0.562,
+   "own_ratio_baseline": 0.532
+  },
+  {
+   "id": "Ev_sustained_accel",
+   "property": "max_sustained_horizontal_accel",
+   "interval": "Interval_Phase_1",
+   "value": 3.529,
+   "unit": "m/s2",
+   "at_s": 0.112
+  },
+  {
+   "id": "Ev_person_distance",
+   "property": "person_distance_min",
+   "interval": "Interval_fall",
+   "value": 2.391,
+   "unit": "m"
+  },
+  {
+   "id": "Ev_bottle_reacquired",
+   "property": "bottle_reacquired",
+   "value": false
+  },
+  {
+   "id": "Ev_reaction_onset",
+   "property": "reaction_onset",
+   "value": 20.0,
+   "unit": "s"
+  },
+  {
+   "id": "Ev_reaction_braking",
+   "property": "longitudinal_accel_peak",
+   "interval": "Interval_reaction",
+   "value": -3.758,
+   "unit": "m/s2",
+   "at_s": 20.048,
+   "is_system_reaction": true
+  }
+ ]
+}

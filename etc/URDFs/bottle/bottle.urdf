@@ -15,9 +15,12 @@
                 <mesh filename="bottle.stl" scale="1 1 1"/>
             </geometry>
         </collision>
+        <!-- The MedicineBottle of the Webots world: its Physics has the default density (1000 kg/m^3),
+             so Webots derives 0.183 kg from the bounding cylinders. The inertia is that of this mesh
+             (its centre of mass is the origin) at that mass; Webots gives 1.69e-4 and 5.48e-5. -->
         <inertial>
-            <mass value="0.5"/>
-            <inertia ixx="0.0041667" ixy="0.0" ixz="0.0" iyy="0.0041667" iyz="0.0" izz="0.0020833"/>
+            <mass value="0.183"/>
+            <inertia ixx="1.664e-4" ixy="0.0" ixz="0.0" iyy="1.664e-4" iyz="0.0" izz="5.45e-5"/>
             <origin xyz="0 0 0"/>
         </inertial>
     </link>

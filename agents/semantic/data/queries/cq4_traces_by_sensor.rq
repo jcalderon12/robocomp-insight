@@ -1,0 +1,17 @@
+# CQ4. On which sensors does each mechanism leave a trace? Those with none cannot be checked
+# against the recording, only simulated.
+# Reads: the TBox (mechanisms, observable properties, the robot's sensors).
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT DISTINCT ?mechanism ?sensor WHERE {
+  ?m a insight:Mechanism ; insight:mechanismId ?mechanism .
+  OPTIONAL { ?m insight:entailsObservation ?p . ?s a sosa:Sensor ; sosa:observes ?p ; rdfs:label ?label .
+             BIND(STR(?label) AS ?sensor) }
+}
+ORDER BY ?mechanism ?sensor

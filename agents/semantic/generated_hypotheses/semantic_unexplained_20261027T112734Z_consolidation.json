@@ -1,0 +1,21 @@
+{
+ "case_id": "semantic_unexplained_20261027T112734Z",
+ "verdict_path": "/home/javi/robocomp/components/robocomp-insight/agents/inner_simulator/logs/verdicts/verdict_semantic_unexplained_20261027T112734Z.json",
+ "batch_path": "/home/javi/robocomp/components/robocomp-insight/agents/semantic/generated_hypotheses/semantic_unexplained_20261027T112734Z.json",
+ "unexplained_at": 1793100407.504,
+ "verdict_seen_at": 1793100596.355,
+ "graphs_built_s": 0.187,
+ "triples": {
+  "summary": 6,
+  "runs": 119,
+  "explanation": 11,
+  "verification": 50
+ },
+ "queued_at": 1793100596.542,
+ "graphdb_started_at": 1793100596.543,
+ "attempts": 1,
+ "status": "written",
+ "finished_at": 1793100596.729,
+ "graphdb_s": 0.186,
+ "total_s": 189.225
+}

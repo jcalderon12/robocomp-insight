@@ -11,8 +11,11 @@
   <material name="caster_grey"><color rgba="0.25 0.25 0.25 1.0"/></material>
 
   <!-- ===================== BASE ===================== -->
+  <!-- Links without <inertial> get 1 kg and 1 kg*m^2 in PyBullet: the eight below would add 8 kg
+       and some 30 times the roll inertia. In Webots the devices have no mass (robot: 54.4 kg),
+       so they carry a negligible one, like the caster joint links. -->
   <!-- Proyeccion en el suelo (el Robot de Webots esta a z = 0.033) -->
-  <link name="base_footprint"/>
+  <link name="base_footprint"><inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial></link>
 
   <link name="base_link">
     <inertial>
@@ -45,6 +48,10 @@
 
   <!-- ===================== RUEDAS MOTRICES ===================== -->
   <!-- Radio 0.1, ancho 0.05, masa 2 kg, eje de giro (-1 0 0), anchor (+-0.259, 0, 0.067) -->
+  <!-- The collision is a sphere of the wheel radius: Bullet's cylinder-plane contact makes the
+       chassis shake all the time (0.04-0.09 rad/s, also at 1/120 s), and with the wheels held the
+       robot never comes to rest. On the floor a sphere rolls like the cylinder; it only differs
+       where the tread (5 cm wide) meets an obstacle off its middle plane. -->
   <link name="wheel_left">
     <inertial>
       <mass value="2"/>
@@ -56,8 +63,7 @@
       <material name="tire"/>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 1.5707963 0"/>
-      <geometry><cylinder radius="0.1" length="0.05"/></geometry>
+      <geometry><sphere radius="0.1"/></geometry>
     </collision>
   </link>
 
@@ -80,8 +86,7 @@
       <material name="tire"/>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 1.5707963 0"/>
-      <geometry><cylinder radius="0.1" length="0.05"/></geometry>
+      <geometry><sphere radius="0.1"/></geometry>
     </collision>
   </link>
 
@@ -95,6 +100,9 @@
 
   <!-- ===================== RUEDAS LOCAS (BallJoint -> 3 joints continuos) ===================== -->
   <!-- URDF no tiene joint esferico: se emula con roll/pitch/yaw encadenados. Esfera r=0.04, masa 0.2 -->
+  <!-- The three joints are fixed and the simulator gives the spheres no friction (causes_simulator,
+       FRICTIONLESS_LINKS): an ideal caster, which only carries load. Free, the chain of 1 g links
+       made the chassis vibrate (0.06 rad/s of pitch at 1/250 s) and only settled at 1/500 s. -->
   <link name="caster_front_roll"><inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial></link>
   <link name="caster_front_pitch"><inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial></link>
   <link name="caster_front">
@@ -110,15 +118,15 @@
       <geometry><sphere radius="0.04"/></geometry>
     </collision>
   </link>
-  <joint name="caster_front_roll_joint" type="continuous">
+  <joint name="caster_front_roll_joint" type="fixed">
     <parent link="base_link"/><child link="caster_front_roll"/>
     <origin xyz="0 0.18 0.007" rpy="0 0 0"/><axis xyz="1 0 0"/>
   </joint>
-  <joint name="caster_front_pitch_joint" type="continuous">
+  <joint name="caster_front_pitch_joint" type="fixed">
     <parent link="caster_front_roll"/><child link="caster_front_pitch"/>
     <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
   </joint>
-  <joint name="caster_front_yaw_joint" type="continuous">
+  <joint name="caster_front_yaw_joint" type="fixed">
     <parent link="caster_front_pitch"/><child link="caster_front"/>
     <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 0 1"/>
   </joint>
@@ -138,21 +146,21 @@
       <geometry><sphere radius="0.04"/></geometry>
     </collision>
   </link>
-  <joint name="caster_back_roll_joint" type="continuous">
+  <joint name="caster_back_roll_joint" type="fixed">
     <parent link="base_link"/><child link="caster_back_roll"/>
     <origin xyz="0 -0.18 0.007" rpy="0 0 0"/><axis xyz="1 0 0"/>
   </joint>
-  <joint name="caster_back_pitch_joint" type="continuous">
+  <joint name="caster_back_pitch_joint" type="fixed">
     <parent link="caster_back_roll"/><child link="caster_back_pitch"/>
     <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
   </joint>
-  <joint name="caster_back_yaw_joint" type="continuous">
+  <joint name="caster_back_yaw_joint" type="fixed">
     <parent link="caster_back_pitch"/><child link="caster_back"/>
     <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 0 1"/>
   </joint>
 
   <!-- ===================== IMU (Accelerometer + Gyro en el origen del robot) ===================== -->
-  <link name="imu"/>
+  <link name="imu"><inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial></link>
   <joint name="base_link_to_imu" type="fixed">
     <parent link="base_link"/>
     <child link="imu"/>
@@ -160,14 +168,14 @@
   </joint>
 
   <!-- ===================== ZED (Camera 1280x720, fov 1.9198 + RangeFinder "zed-ranger") ===================== -->
-  <link name="zed"/>
+  <link name="zed"><inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial></link>
   <joint name="base_link_to_zed" type="fixed">
     <parent link="base_link"/>
     <child link="zed"/>
     <origin xyz="0 -0.075 0.945" rpy="0 0 1.57"/>
   </joint>
   <!-- RangeFinder hijo de la camara, misma pose -->
-  <link name="zed_ranger"/>
+  <link name="zed_ranger"><inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial></link>
   <joint name="zed_to_zed_ranger" type="fixed">
     <parent link="zed"/>
     <child link="zed_ranger"/>
@@ -176,7 +184,7 @@
 
   <!-- ===================== RICOH THETA: 2 camaras 960x960, fov 3.14, cilindricas ===================== -->
   <!-- camera_360_2: rotation 0 0 1 -pi/2 -->
-  <link name="camera_360_2"/>
+  <link name="camera_360_2"><inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial></link>
   <joint name="base_link_to_camera_360_2" type="fixed">
     <parent link="base_link"/>
     <child link="camera_360_2"/>
@@ -185,6 +193,7 @@
 
   <!-- camera_360_1: rotation 0 0 -1 -pi/2  (= +pi/2 sobre z). Lleva las dos lentes (+-0.0115 en x local) -->
   <link name="camera_360_1">
+    <inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial>
     <visual>
       <origin xyz="0.0115 0 0" rpy="0 0 0"/>
       <geometry><sphere radius="0.0105"/></geometry>
@@ -205,6 +214,7 @@
   <!-- ===================== HELIOS (RS-Helios H32F70), montado invertido ===================== -->
   <!-- Webots: rotation 1 1 0 pi  ==  Rz(+90) * Rx(180)  ->  rpy = (pi, 0, pi/2) -->
   <link name="helios">
+    <inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial>
     <visual>
       <origin xyz="-0.0125 0 0" rpy="0 0 0"/>
       <geometry><cylinder radius="0.055" length="0.10"/></geometry>
@@ -220,6 +230,7 @@
   <!-- ===================== BPEARL (invertido) ===================== -->
   <!-- Webots: rotation -1 -1 0 pi  ->  misma matriz que helios: rpy = (pi, 0, pi/2) -->
   <link name="bpearl">
+    <inertial><mass value="0.001"/><inertia ixx="1e-7" iyy="1e-7" izz="1e-7" ixy="0" ixz="0" iyz="0"/></inertial>
     <visual>
       <geometry><sphere radius="0.05"/></geometry>
       <material name="black_housing"/>

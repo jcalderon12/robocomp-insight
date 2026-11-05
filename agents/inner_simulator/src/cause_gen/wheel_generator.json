@@ -1,10 +1,10 @@
 {
     "name": "wheel",
-    "description": "A wheel that stops working.",
-    "instance_generators": 
+    "description": "A wheel that stops working at an instant sampled inside the activation window.",
+    "instance_generators":
     [
         {
-            "type": "simple_random",
+            "type": "random_uniform_range",
             "id": "wheel"
         }
     ],
@@ -13,7 +13,7 @@
         {
             "type": "stop_robot_wheel",
             "id": "wheel",
-            "time_input_type": "simple_random",
+            "time_input_type": "random_uniform_range",
             "time_input_id": "wheel"
         }
     ]

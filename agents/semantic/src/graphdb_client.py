@@ -1,0 +1,187 @@
+from dataclasses import dataclass
+from typing import Any, Iterable
+import requests
+from rdflib import Dataset, Graph, URIRef
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_float(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+
+
+@dataclass(frozen=True)
+class GraphDBConfig:
+    enabled: bool
+    endpoint: str
+    repository: str
+    named_graph: str
+    timeout_seconds: float
+    user: str = ""
+    password: str = ""
+    # The INSIGHT TBox, in a named graph of its own: the reset of each case never touches it.
+    ontology_graph: str = "http://insight.local/ontology"
+
+
+    @classmethod
+    def from_config(cls, config_data: dict[str, Any]) -> 'GraphDBConfig':
+        graphdb_cfg = config_data.get("graphDB", {})
+        return cls(
+            enabled=_as_bool(graphdb_cfg.get("Enabled"), True),
+            endpoint=str(graphdb_cfg.get("Endpoint", "http://localhost:7200")).strip(),
+            repository=str(graphdb_cfg.get("Repository", "insight_prod")).strip(),
+            named_graph=str(graphdb_cfg.get("NamedGraph", "urn:insight:semantic:live")).strip(),
+            timeout_seconds=_as_float(graphdb_cfg.get("TimeoutSeconds"), 5.0),
+            user=str(graphdb_cfg.get("User", "")).strip(),
+            password=str(graphdb_cfg.get("Password", "")).strip(),
+            ontology_graph=str(graphdb_cfg.get("OntologyGraph", "http://insight.local/ontology")).strip(),
+        )
+    
+
+    @property
+    def statements_url(self) -> str:
+        endpoint = self.endpoint.rstrip('/')
+        return f"{endpoint}/repositories/{self.repository}/statements"
+    
+
+
+
+class GraphDBClient:
+    def __init__(self,  config: GraphDBConfig):
+        self.config = config
+        self.session = requests.Session()
+
+    def get_graph_triples(self) -> set[tuple[str, str, str]]:
+        response = self.session.get(
+            self.config.statements_url,
+            params={"context": f"<{self.config.named_graph}>"},
+            headers={"Accept": "application/n-triples"},
+            auth=self._auth(),
+            timeout=self.config.timeout_seconds,
+        )
+        response.raise_for_status()
+
+        payload = response.text.strip()
+        if not payload:
+            return set()
+
+        graph = Graph()
+        graph.parse(data=payload, format="nt")
+        return {(str(subj), str(pred), str(obj)) for subj, pred, obj in graph}
+
+    def read_graphs(self, graphs: Iterable[str]) -> Dataset:
+        """The named graphs, read as they are now, in one dataset (one request each)."""
+        dataset = Dataset()
+        for graph in graphs:
+            response = self.session.get(
+                self.config.statements_url,
+                params={"context": f"<{graph}>"},
+                headers={"Accept": "application/n-triples"},
+                auth=self._auth(),
+                timeout=self.config.timeout_seconds,
+            )
+            response.raise_for_status()
+            dataset.graph(URIRef(graph)).parse(data=response.text, format="nt")
+        return dataset
+
+    def apply_delta(self, *, added, removed) -> None:
+        removed = tuple(sorted(removed))
+        added = tuple(sorted(added))
+
+        if not removed and not added:
+            return
+        
+        parts = []
+
+        if removed:
+            parts.append(self._build_data_update("DELETE DATA", removed))
+
+        if added:
+            parts.append(self._build_data_update("INSERT DATA", added))
+
+        combined_update = ";\n".join(parts)
+        self._execute_update(combined_update)
+
+
+    def replace_graph(self, turtle_payload: str, graph: str | None = None) -> None:
+        """Replace a named graph (the live one by default) with the Turtle payload."""
+        self._send_graph("put", turtle_payload, graph)
+
+    def add_to_graph(self, turtle_payload: str, graph: str) -> None:
+        """Add the Turtle payload to a named graph, keeping what it already holds."""
+        self._send_graph("post", turtle_payload, graph)
+
+    def replace_with_triples(self, triples, graph: str | None = None) -> None:
+        """Replace a named graph (the live one by default) with exactly these triples."""
+        self.replace_graph("\n".join(self._triple_to_ntriple(triple) for triple in sorted(triples)), graph)
+
+    def drop_graphs(self, prefix: str) -> None:
+        """Empty every named graph whose IRI starts with the prefix."""
+        self._execute_update(
+            f'DELETE {{ GRAPH ?g {{ ?s ?p ?o }} }} WHERE {{ GRAPH ?g {{ ?s ?p ?o }} '
+            f'FILTER(STRSTARTS(STR(?g), "{prefix}")) }}'
+        )
+
+    def _send_graph(self, method: str, turtle_payload: str, graph: str | None) -> None:
+        response = getattr(self.session, method)(
+            self.config.statements_url,
+            params={"context": f"<{graph or self.config.named_graph}>"},
+            data=turtle_payload.encode('utf-8'),
+            headers={"Content-Type": "text/turtle; charset=utf-8"},
+            auth=self._auth(),
+            timeout=self.config.timeout_seconds
+        )
+        response.raise_for_status()
+
+    def _execute_update(self, update_query: str) -> None:
+        response = self.session.post(
+            self.config.statements_url,
+            data=update_query.encode("utf-8"),
+            headers={"Content-Type": "application/sparql-update; charset=utf-8"},
+            auth=self._auth(),
+            timeout=self.config.timeout_seconds,
+        )
+        response.raise_for_status()
+
+    def _build_data_update(
+        self,
+        operation: str,
+        triples: Iterable[tuple[str, str, str]],
+    ) -> str:
+        triple_block = "\n".join(self._triple_to_ntriple(triple) for triple in triples)
+        return (
+            f"{operation} {{\n"
+            f"  GRAPH <{self.config.named_graph}> {{\n"
+            f"{triple_block}\n"
+            f"  }}\n"
+            f"}}"
+        )
+
+    @staticmethod
+    def _triple_to_ntriple(triple: tuple[str, str, str]) -> str:
+        subj, pred, obj = triple
+        if obj.startswith("http://") or obj.startswith("urn:"):
+            obj_str = f"<{obj}>"
+        elif obj.startswith('"'):
+            obj_str = obj
+        else:
+            obj_str = f"<{obj}>"
+        return f"    <{subj}> <{pred}> {obj_str} ."
+
+    def _auth(self):
+        return (self.config.user, self.config.password) if self.config.user else None
+
+    

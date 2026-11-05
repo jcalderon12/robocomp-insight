@@ -1,0 +1,77 @@
+"""Offline test: semantic batch -> hypothesis compiler -> CauseWrapper validation.
+
+Run from the repo root:  python3 tests/offline/test_hypothesis_compiler.py
+(imports the causes simulator module, so pybullet must be installed)
+"""
+import json
+import os
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "agents" / "semantic"))
+
+from src.hypothesis_service import validate_hypothesis_batch
+from src.intervention_catalog import InterventionCatalog
+
+from test_blueprint_grounding import hypothesis, make_batch
+
+
+def main():
+    catalog = InterventionCatalog.from_file(REPO / "etc" / "intervention_catalog.json")
+    batch = make_batch([
+            hypothesis("EXT_001", "external", 1, {
+                "intervention": "spawn_static_object",
+                "parameters": {"asset": "bump_100x5cm",
+                               "position_range": {"x": [-3.4, -2.8], "y": [-0.5, -0.1], "z": [0.0, 0.01]}},
+                "activation_window": {"start_fraction": 0, "end_fraction": 1}}),
+            hypothesis("INT_001", "internal", 1, {
+                "intervention": "disable_wheel", "parameters": {"wheel_id": "left"},
+                "activation_window": {"start_fraction": 0.2, "end_fraction": 0.8}}),
+            hypothesis("INT_002", "internal", 2,
+                       {"intervention": None, "parameters": {}, "activation_window": None},
+                       {"untestable_reason": "untestable"}),
+    ], case_id="compiler_test")
+    validated = validate_hypothesis_batch(batch=batch, internal_count=2, external_count=1, catalog=catalog)
+
+    # Simulator side: compile and validate against the dynamic cause union
+    inner_root = REPO / "agents" / "inner_simulator"
+    os.chdir(inner_root)
+    sys.path.insert(0, str(inner_root))
+    sys.path.insert(0, str(inner_root / "src"))
+    from hypothesis_compiler import NOMINAL_HYPOTHESIS_ID, compile_batch
+    from causes_simulator import CauseWrapper
+
+    compiled = compile_batch(validated)
+    assert compiled["entries"][0]["hypothesis_id"] == NOMINAL_HYPOTHESIS_ID
+    assert len(compiled["entries"]) == 3, compiled  # nominal + 2 testables
+    assert len(compiled["skipped"]) == 1, compiled["skipped"]
+
+    for entry in compiled["entries"]:
+        CauseWrapper.model_validate_json(json.dumps({"cause": entry["cause"]}))
+
+    # The wheel cause must carry the activation window
+    wheel = next(e["cause"] for e in compiled["entries"] if e["cause"]["name"] == "wheel")
+    assert wheel["wheel_min"] == 0.2 and wheel["wheel_max"] == 0.8, wheel
+    # A drive wheel of the differential base maps to the same drive wheel of the simulated base
+    assert wheel["wheel_wheel"] == "L", wheel
+    from causes_simulator import CausesSimulator
+    simulator = CausesSimulator.__new__(CausesSimulator)
+    simulator.initialze_wheel_simplified_names_map()
+    simulator.initialize_wheels_movement_map()
+    simulator.set_robot_wheel_moving("L", False)
+    stopped = sorted(name for name, moving in simulator.wheel_movement.items() if not moving)
+    assert stopped == ["wheel_left_joint"], stopped
+    # The bump cause must resolve the asset to an absolute existing URDF
+    bump = next(e["cause"] for e in compiled["entries"] if e["cause"]["name"] == "bump")
+    assert Path(bump["bump_file"]).exists(), bump["bump_file"]
+    # Spawned objects rest on the floor whatever z range was proposed (meters, like the scene)
+    assert bump["bump_z_origin"] == 0.001 and bump["bump_z_range"] == 0.0, bump
+    # The origin is in meters (room coordinates); CauseBump takes the grid ranges in millimeters
+    assert all(abs(bump[f"bump_{axis}_origin"]) < 20.0 for axis in ("x", "y")), bump
+
+    print("test_hypothesis_compiler OK")
+
+
+if __name__ == "__main__":
+    main()

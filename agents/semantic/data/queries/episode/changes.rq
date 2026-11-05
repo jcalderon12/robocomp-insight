@@ -1,0 +1,18 @@
+# The changes of the working memory in which the anomaly was observed, in their order, with where each was recorded.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?index ?source ?operation ?subject ?predicate ?object WHERE {
+  ?episode dul:isSettingFor ?observed .
+  ?observed a insight:ObservedAnomaly ; insight:recordedAs ?change .
+  ?change insight:listIndex ?index ; insight:changeSource ?source .
+  OPTIONAL { ?change insight:changeOperation ?operation }
+  OPTIONAL { ?change insight:changeSubject ?subject }
+  OPTIONAL { ?change insight:changePredicate ?predicate }
+  OPTIONAL { ?change insight:changeObject ?object }
+}
+ORDER BY ?index

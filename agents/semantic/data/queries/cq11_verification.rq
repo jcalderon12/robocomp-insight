@@ -1,0 +1,60 @@
+# CQ11. Did the verification accept or abstain on each case, and which alternatives remain, with which evidence?
+# Reads: the verification outcome (contracts 1.13). Lists are unordered: their items are separated by ", ".
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX soma: <http://www.ease-crc.org/ont/SOMA.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?case ?decision ?reason ?no_simulated_cause_better ?explained_ratio ?best_cause_ratio ?ratio_limit
+       ?most_probable ?most_probable_probability ?credible_set ?accepted
+       ?simulated_alternatives ?not_simulable_alternatives ?evidence WHERE {
+  ?case_iri a inst:AnomalyCase ; rdfs:label ?case ; dul:isSettingFor ?v .
+  ?v a insight:VerificationOutcome ; insight:verdictDecision ?decision .
+  OPTIONAL { ?case_iri insight:abstentionReason ?reason }
+  BIND(EXISTS { ?v a insight:NoSimulatedCauseExplainsBetter } AS ?no_simulated_cause_better)
+  OPTIONAL { ?v insight:explainedRatio ?explained_ratio }
+  OPTIONAL { ?v insight:bestCauseRatio ?best_cause_ratio }
+  OPTIONAL { ?v insight:explanationRatioMax ?ratio_limit }
+  OPTIONAL { ?v insight:mostProbableRun ?top ; insight:assignsProbability ?top_probability .
+             ?top_probability insight:aggregatesRun ?top ; insight:mechanismName ?most_probable ;
+                              insight:posteriorProbability ?most_probable_probability }
+  OPTIONAL { ?v insight:selectsExplanation ?explanation . ?explanation dul:isDescribedBy ?m .
+             ?m insight:mechanismId ?accepted }
+  OPTIONAL {
+    SELECT ?v (GROUP_CONCAT(DISTINCT ?name; separator=", ") AS ?credible_set) WHERE {
+      ?v insight:assignsProbability ?p . ?p insight:inCredibleSet true ; insight:mechanismName ?name .
+    } GROUP BY ?v
+  }
+  # Simulated, but none explains the record clearly better than the nominal (abstentions only).
+  OPTIONAL {
+    SELECT ?v (GROUP_CONCAT(DISTINCT ?item; separator=", ") AS ?simulated_alternatives) WHERE {
+      ?v insight:openSimulatedAlternative ?h . ?h insight:hypothesisId ?id .
+      OPTIONAL { ?h dul:satisfies ?hm . ?hm insight:mechanismId ?mechanism }
+      BIND(CONCAT(COALESCE(?mechanism, "new"), " (", ?id, ")") AS ?item)
+    } GROUP BY ?v
+  }
+  # Compatible with the episode checks, without a simulation realization: open after an abstention,
+  # unresolved next to an accepted explanation.
+  OPTIONAL {
+    SELECT ?v (GROUP_CONCAT(DISTINCT ?item; separator=", ") AS ?not_simulable_alternatives) WHERE {
+      { ?v insight:openNonSimulableAlternative ?h }
+      UNION { ?v insight:selectsExplanation ?e . ?e insight:hasUnresolvedAlternative ?h }
+      ?h insight:hypothesisId ?id .
+      OPTIONAL { ?h dul:satisfies ?hm . ?hm insight:mechanismId ?mechanism }
+      BIND(CONCAT(COALESCE(?mechanism, "new"), " (", ?id, ")") AS ?item)
+    } GROUP BY ?v
+  }
+  # Episode observations in which an informing rule saw an alternative's trace.
+  OPTIONAL {
+    SELECT ?v (GROUP_CONCAT(DISTINCT ?item; separator=", ") AS ?evidence) WHERE {
+      { ?v insight:openSimulatedAlternative ?h } UNION { ?v insight:openNonSimulableAlternative ?h }
+      UNION { ?v insight:selectsExplanation ?e . ?e insight:hasUnresolvedAlternative ?h }
+      ?h insight:hypothesisId ?id ; insight:supportedByObservation ?o . ?o rdfs:label ?observation .
+      BIND(CONCAT(?id, ": ", ?observation) AS ?item)
+    } GROUP BY ?v
+  }
+}
+ORDER BY ?case

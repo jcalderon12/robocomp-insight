@@ -1,0 +1,14 @@
+# The time intervals of the episode's list, in its order (the support estimate's own interval is not one).
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?index ?id ?start ?end ?reaction WHERE {
+  ?episode dul:isSettingFor ?interval .
+  ?interval a dul:TimeInterval ; rdfs:label ?id ; insight:listIndex ?index ; insight:startS ?start ; insight:endS ?end .
+  OPTIONAL { ?interval insight:isSystemReaction ?reaction }
+}
+ORDER BY ?index

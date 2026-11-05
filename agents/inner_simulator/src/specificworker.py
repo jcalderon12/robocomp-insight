@@ -23,6 +23,14 @@ JSON_FILE = "src/causes.json"
 AGENTS_FOLDER = "agents/"
 EM_HISTORY_FILE = "src/mission_Follow Path_25032026_120505.txt"
 
+# DSR contract with the semantic agent (work graph)
+UNEXPLAINED_NODE = "unexplained"
+HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
+VERDICT_FILEPATH_ATTR = "verdict_filepath"
+# Default of Simulation.BatchWaitSeconds. The batch came 4 s after the closed recording in
+# Webots (06/10); one LLM attempt takes 2-6 s and the semantic agent makes up to 3.
+BATCH_WAIT_DEFAULT_S = 120.0
+
 # Keys of IMU history dictionary
 TIMESTAMP = "timestamp"
 ACCELEROMETER = "accelerometer"
@@ -37,6 +45,9 @@ ROBOT_POS = [-3.700, -0.300, 0.0325]
 PROBLEM_POS = [0.0, 0.040, 0.001]
 BOTTLE_POS = [0.0, 0.050, 0.795]
 
+MM_TO_M = 0.001
+M_TO_MM = 1000.0
+
 import os
 import sys
 import matplotlib.pyplot as plt
@@ -50,9 +61,9 @@ import matplotlib
 import pandas as pd
 import time
 import subprocess
+import hashlib
+import zlib
 from dtaidistance import dtw
-
-matplotlib.use("TkAgg")
 
 sys.path.append('/opt/robocomp/lib')
 
@@ -74,6 +85,17 @@ if agents_root not in sys.path:
 
 from src.simulation_scene import SimulationScene
 from src.logger import Logger
+from src.episode_scene import (
+    build_simulation_scene,
+    commanded_speed_history,
+    episode_length_s,
+    real_imu_history,
+    real_record,
+)
+from src.hypothesis_compiler import anchor_to_footprint, compile_batch
+from src.verdict import (build_verdict, channels_to_json, save_comparison_plots, save_real_imu_plot,
+                         scene_channels, simulated_runs, write_simulations, write_verdict)
+from src import search_rounds
 
 import pybullet as p
 import json
@@ -82,7 +104,7 @@ import numpy as np
 import locale
 import math
 
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from agent_generation.agent_generator import *
 
 from pybullet_imu import IMU
@@ -183,6 +205,31 @@ class SpecificWorker(GenericWorker):
         self.logger = Logger(f"logs/specific_worker/specific_worker_{time.strftime('%Y%m%d_%H%M%S')}.log")
 
         self.state = "IDLE" # Possible states: "IDLE", "SIMULATE_REASON", "TERMINATED"
+
+        # Simulation visualization (config: Simulation.Gui / Simulation.RealTime).
+        # Off by default so the pipeline stays headless and runs every cause in
+        # parallel; enable to watch each cause in its own PyBullet window.
+        sim_cfg = configData.get("Simulation", {})
+        self.sim_gui = bool(sim_cfg.get("Gui", False))
+        self.sim_real_time = bool(sim_cfg.get("RealTime", False))
+        self.sim_processes = int(sim_cfg.get("Processes", 0)) or os.cpu_count() or 1
+        # How long to wait for the semantic agent's batch before the static causes (see waiting_for_batch).
+        self.batch_wait_s = float(sim_cfg.get("BatchWaitSeconds", BATCH_WAIT_DEFAULT_S))
+        self.batch_wait_started = {}
+
+        # Hypothesis-driven mode state (set when the semantic agent publishes a batch)
+        self.hypotheses_compiled = None
+        self.hypotheses_batch = None
+        self.hypotheses_path = None
+        self.processed_hypotheses_paths = set()
+        self.processed_episode_paths = set()
+        self.mem_api_path = None
+        # When the recording saw the bottle leave the robot (seconds, IMU time base).
+        self.observed_effect_time = None
+        # The instant the current batch was found and how long each stage took, for its verdict (stage_done).
+        self.case_timings = None
+        # Where the verdicts and their plots go (the agent runs from agents/inner_simulator).
+        self.output_root = "logs"
 
         # Clear terminal
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -322,38 +369,55 @@ class SpecificWorker(GenericWorker):
         file.close()
 
 
-    # DEBUG: Write fake JSON file
     def writeSimulationScene(self) -> None:
-       # Fake SIM_SCENE JSON file
+       # Build the scene from the episodic recording; scene constants remain as fallback.
        self.logger.log("Writing simulation scene to sim_scene.json...", style="bold purple")
-       
-       robot_positions = self.get_robot_positions_relative_to_problem()
-       if robot_positions is not None and robot_positions.get("last_position_before_problem") is not None:
-           lpbp = robot_positions["last_position_before_problem"]
-           problem_position_fixed = [lpbp[1] , lpbp[0] , lpbp[2] ]
-           self.sim_scene.problem_position = problem_position_fixed
-       else:
-           self.sim_scene.problem_position = PROBLEM_POS
-
-       self.sim_scene.problem_orientation = [0,0,0,1]
-
-       if robot_positions is not None and robot_positions.get("first_position") is not None:
-           fp = robot_positions["first_position"]
-           robot_position_fixed = [fp[1] , fp[0] , fp[2]]
-           self.sim_scene.initial_robot_position = robot_position_fixed
-       else:
-           self.sim_scene.initial_robot_position = ROBOT_POS
-       
-       self.sim_scene.initial_robot_orientation = self.robot_initial_orientation
-       self.sim_scene.simulation_length = self.get_simulation_length_from_episodic_memory()
-       self.sim_scene.list_of_target_velocities = self.get_robot_adv_speed_history() if self.get_robot_adv_speed_history() is not None else []
-       self.sim_scene.bottle_position = BOTTLE_POS
-       self.sim_scene.bottle_orientation = [0,0,0,0]
+       # The anomaly interval comes from the episode the semantic memory built (the batch links it
+       # with its sha256); without a batch the scene applies the same rule to the recording.
+       scene, info = build_simulation_scene(self.mem_api, ROBOT_POS, PROBLEM_POS,
+                                            episode_intervals=self.episode_intervals())
+       self.logger.log(f"Simulation seeded at {scene['start_time_s']:.2f} s, anomaly interval "
+                       f"{scene['anomaly_interval']} ({info['anomaly_interval_source']}).", style="purple")
+       if self.hypotheses_compiled is not None:
+           # Obstacles only where they can touch the robot during the anomaly interval.
+           self.hypotheses_compiled = anchor_to_footprint(self.hypotheses_compiled, scene.get("anomaly_footprint"))
+           self.causes_data = [entry["cause"] for entry in self.hypotheses_compiled["entries"]]
+       self.logger.log(f"Scene poses reconstructed from episode: {info['pose_sources']}", style="purple")
+       if len(info["effect_times"]) > 1:
+           self.logger.log(
+               f"Bottle detached {len(info['effect_times'])} times at "
+               f"{[round(t, 2) for t in info['effect_times']]} s; using the first.", style="yellow")
+       self.observed_effect_time = scene["observed_effect_time"]
+       self.logger.log(
+           f"Observed effect at {self.observed_effect_time} s; simulating {scene['simulation_length']} s "
+           f"of a {info['episode_length']} s recording.", style="purple")
+       for field_name, value in scene.items():
+           setattr(self.sim_scene, field_name, value)
        self.sim_scene.model_validate(self.sim_scene.__dict__)
        file = open("src/sim_scene.json", "w")
        file.write(self.sim_scene.model_dump_json(indent=4))
        file.close()
 
+
+    def episode_intervals(self) -> list | None:
+        """The intervals of the episode the current batch was generated from (contract 1), read from
+        the episode file the batch links, if its sha256 matches; None otherwise. The batch cites the
+        sha256 of the episode's canonical JSON (sorted keys, no spaces: hypothesis_pipeline.episode_sha256),
+        not of the indented file."""
+        episode = (getattr(self, "hypotheses_batch", None) or {}).get("episode") or {}
+        path = episode.get("path")
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            recorded = json.loads(open(path, "rb").read())
+            canonical = json.dumps(recorded, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            if episode.get("sha256") and hashlib.sha256(canonical.encode("utf-8")).hexdigest() != episode["sha256"]:
+                self.logger.log(f"Episode file {path} does not match the batch's sha256; not used.", style="yellow")
+                return None
+            return recorded.get("intervals")
+        except Exception as e:
+            self.logger.log(f"Cannot read the episode file {path}: {e}", style="yellow")
+            return None
 
     def loadCausesJson(self) -> None:
         """Load the causes JSON file and store it in self.causes_data."""
@@ -365,6 +429,89 @@ class SpecificWorker(GenericWorker):
             self.logger.log(f"> [loadCausesJson] {JSON_FILE} content: \n{causes_data}", style="bold blue")
         except Exception as e:
             self.logger.log(f"> [loadCausesJson] Error while reading from {JSON_FILE}: " + str(e), style="bold blue")
+
+    def load_hypotheses_causes(self) -> bool:
+        """Compile the hypotheses batch published on the intention node of the work
+        graph. False means there is nothing new: fall back to the static causes.json."""
+        self.hypotheses_compiled = None
+        self.hypotheses_batch = None
+        self.case_timings = None
+        try:
+            unexplained_node = self.graphs["work"].get_node(UNEXPLAINED_NODE)
+        except Exception as e:
+            self.logger.log(f"Cannot read work graph for hypotheses: {e}", style="yellow")
+            return False
+        if unexplained_node is None or HYPOTHESES_FILEPATH_ATTR not in unexplained_node.attrs:
+            return False
+
+        hypotheses_path = unexplained_node.attrs[HYPOTHESES_FILEPATH_ATTR].value
+        if not hypotheses_path or hypotheses_path in self.processed_hypotheses_paths:
+            return False
+        if not os.path.exists(hypotheses_path):
+            self.logger.log(f"Hypotheses path '{hypotheses_path}' not readable.", style="yellow")
+            return False
+
+        try:
+            with open(hypotheses_path, "r") as f:
+                batch = json.load(f)
+            compiled = compile_batch(batch)
+        except Exception as e:
+            self.logger.log(f"Failed to compile hypotheses batch '{hypotheses_path}': {e}", style="bold red")
+            return False
+
+        self.hypotheses_compiled = compiled
+        self.hypotheses_path = hypotheses_path
+        self.hypotheses_batch = batch
+        self.case_timings = {"batch_found_at": time.time(), "stages_s": {}}
+        self.causes_data = [entry["cause"] for entry in compiled["entries"]]
+        self.logger.log(
+            f"Hypotheses batch '{compiled.get('case_id', '')}' compiled: "
+            f"{len(compiled['entries'])} causes (incl. nominal), {len(compiled['skipped'])} skipped.",
+            style="bold green",
+        )
+        return True
+
+    def publish_verdict_filepath(self, verdict_path: str) -> bool:
+        """Expose the verdict path on the intention node so the semantic agent
+        can close the loop."""
+        try:
+            unexplained_node = self.graphs["work"].get_node(UNEXPLAINED_NODE)
+            if unexplained_node is None:
+                self.logger.log("Cannot publish verdict: intention node not found.", style="yellow")
+                return False
+            unexplained_node.attrs[VERDICT_FILEPATH_ATTR] = Attribute(str(verdict_path), self.agent_id)
+            self.graphs["work"].update_node(unexplained_node)
+            self.logger.log(f"Published {VERDICT_FILEPATH_ATTR}='{verdict_path}' on intention node.", style="bold green")
+            return True
+        except Exception as e:
+            self.logger.log(f"Cannot publish {VERDICT_FILEPATH_ATTR}: {e}", style="bold red")
+            return False
+
+    def retire_batch(self) -> None:
+        """Forget the current batch so it is not retried, and re-arm IDLE."""
+        if self.hypotheses_path:
+            self.processed_hypotheses_paths.add(self.hypotheses_path)
+        self.hypotheses_compiled = None
+        self.hypotheses_batch = None
+        self.hypotheses_path = None
+        self.state = "IDLE"
+
+    def stage_done(self, stage: str, started: float) -> None:
+        """Keep how long a stage of the current batch took since `started` (time.perf_counter)."""
+        if self.case_timings is not None:
+            self.case_timings["stages_s"][stage] = round(time.perf_counter() - started, 3)
+
+    def verdict_timings(self) -> dict:
+        """The timings the verdict carries (docs_output/diseno/evaluacion.md, 4.3): when the batch was found
+        (epoch seconds), each stage in seconds, when the verdict is written and the total between both."""
+        timings = dict(self.case_timings or {"batch_found_at": None, "stages_s": {}})
+        written_at = time.time()
+        found_at = timings.get("batch_found_at")
+        timings.update(batch_found_at=round(found_at, 3) if found_at is not None else None,
+                       verdict_written_at=round(written_at, 3),
+                       total_s=round(written_at - found_at, 3) if found_at is not None else None,
+                       processes=self.sim_processes)
+        return timings
 
 
     def __del__(self) -> None:
@@ -382,158 +529,306 @@ class SpecificWorker(GenericWorker):
             match self.state:
         
                 case "IDLE":
-                    self.wait_for_mission_start()
-        
+                    # Pending episodes / hypotheses batches are handled even when the live
+                    # mirror is not running: the semantic agent may publish its batch after
+                    # the follow mission has already stopped.
+                    if self.check_for_problems():
+                        self.logger.log("Problem detected, trying to find a solution...", style="bold red")
+                        self.state = "SIMULATE_REASON"
+                    else:
+                        self.wait_for_mission_start()
+
                 case "INNER_SIMULATOR":
                     if self.check_for_problems():
                         self.logger.log("Problem detected, trying to find a solution...", style="bold red")
                         self.state = "SIMULATE_REASON"
-                    
+
                     self.inner_simulator()
 
                 case "SIMULATE_REASON":
+                    # Causes were already selected in check_for_problems: hypothesis-driven if
+                    # available, static causes.json otherwise.
+                    if self.hypotheses_compiled is None:
+                        self.loadCausesJson()
 
-                    length = self.get_simulation_length_from_episodic_memory()
-                    print(type(length), repr(length))
-
-                    self.set_simulation_scene(self.get_simulation_length_from_episodic_memory(), self.get_robot_adv_speed_history())
-
-                    # return True # We return here to let the simulation run for a while and the robot to reach the problem position, so we can get a more accurate history from the episodic memory. We will return to SIMULATE_REASON state in the next compute calls.
-
-                    # Read JSON to get causes
-                    self.loadCausesJson()
-
-                    # Launch subprocesses for simulation
-                    self.logger.log("Launching subprocesses...", style="bold blue")                
-                    pids = []
-                    historicals = {}
-                    for cause in self.causes_data:
-                        rpipe, wpipe = os.pipe()
-                        json_data = {"cause": cause}
-                        json_data = json.dumps(json_data)
-                        pids.append([subprocess.Popen([str(sys.executable), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe)], pass_fds=(wpipe,)), rpipe])
-                        # Close wpipe descriptor to prevent deadlocks
-                        os.close(wpipe)
-                    
-                    # Wait for subprocesses and collect pipe data
-                    self.logger.log("Waiting for subprocesses...", style="blue")
-                    while (True):
-                        # pid[0] is the Popen class itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
-                        for pid in pids:
-                            if pid[0] not in historicals:
-                                pipe = os.fdopen(pid[1])
-                                self.logger.log(f"Now reading pipe of process {pid[0]}...", style="blue")
-                                historicals[pid[0]] = pipe.read()
-                                pipe.close()
-                                self.logger.log(f"Pipe for {pid[0]} has been read!")
-                                
-                        if len(historicals) == len(pids): break
-
-                    # Transform pipe data from JSON string to dictionary
-                    for pid in pids:
-                        if pid[0] in historicals and historicals[pid[0]] is not None and historicals[pid[0]] != "":
-                            historicals[pid[0]] = json.loads(historicals[pid[0]])
-                        else:
-                            raise ValueError(f"There was no data received from finalized process {pid[0]} or data was empty! Did the process crash?")
-        
-                    self.logger.log(f"Received historicals from {len(historicals)} simulations.", style="bold blue")
-                    i = 0
-                    for h in historicals:
-                        self.logger.log(f"    Historical {i} recordings: {len(historicals[h])}", style=" blue")
-                        i += 1
+                    # A batch of the semantic memory, headless, on a seeded episode scene: the fast
+                    # repetitions, scored in the simulator processes (docs_output/resultados/41).
+                    scene_data = self.sim_scene.model_dump()
+                    fast = (self.hypotheses_compiled is not None and not self.sim_gui
+                            and scene_data.get("observed_effect_time") is not None and scene_data.get("anomaly_interval"))
+                    started = time.perf_counter()
+                    record = real_record(self.mem_api) if self.hypotheses_compiled is not None else None
+                    self.stage_done("record", started)
+                    started = time.perf_counter()
+                    if fast:
+                        ordered_historicals = self.run_fast_simulations(record, scene_data)
+                    else:
+                        ordered_historicals = self.run_simulations()
+                    self.stage_done("simulation", started)
+                    simulated_at = time.perf_counter()
 
                     # Convert episodic memory history to IMU history given one of the historicals ts list as an example.
-                    list_of_ts = historicals[pids[0][0]][0][HISTORY][TIMESTAMP]
+                    list_of_ts = ordered_historicals[0][0][HISTORY][TIMESTAMP]
                     self.convert_episodic_to_imu_history(list_of_ts)
                     print("Historical INNER frames:", len(self.imu_history[TIMESTAMP]))
 
-                    self.plot_imu_series(
-                        self.imu_history[TIMESTAMP],
-                        self.imu_history[ACCELEROMETER],
-                        self.imu_history[GYROSCOPE],
-                        show=False)
-
-                    # ---- score EVERY recording of EVERY cause (normalized DTW), in parallel ----
-                    cause_defs = list(self.causes_data)
-                    recordings_by_cause = [historicals[pids[i][0]] for i in range(len(pids))]
-                    with ProcessPoolExecutor(max_workers=2) as executor:
-                        score_futures = [executor.submit(score_all_recordings_worker, self.imu_history, recs)
-                                         for recs in recordings_by_cause]
-                        all_scores = [f.result() for f in score_futures]
-
-                    sim_out = {"sim_scene": self.sim_scene.model_dump(), "registers": []}
-                    causes_for_selection = []
-                    for i, recs in enumerate(recordings_by_cause):
-                        scores = all_scores[i]
-                        order = sorted(range(len(scores)), key=lambda r: scores[r])
-                        top_ids = order[:5]
-                        top_five = [recs[r] for r in top_ids]
-                        print(f"Top 5 recordings for cause {cause_defs[i]['name']}: "
-                              + ", ".join(f"{r}({scores[r]:.4f})" for r in top_ids))
-                        sim_out["registers"].append({
-                            "cause_definition": cause_defs[i],
-                            "scores": scores,                       # normalized DTW per recording id
-                            "top": [[r, scores[r]] for r in top_ids],
-                            "top_five": top_five,
-                        })
-                        causes_for_selection.append({"cause_definition": cause_defs[i],
-                                                     "recordings": recs, "scores": scores})
-
-                    # ---- gates -> ranking -> confidence -> location ----
-                    selection = self.select_best_cause(causes_for_selection, SELECTION_CFG)
-                    # Medidas reales del cuerpo que instancia la causa ganadora, tal como las midio
-                    # el simulador del propio modelo. None si esa causa no instancia nada (wheel).
-                    selection["concept_size"] = self._concept_size_of(sim_out["registers"], selection.get("cause"))
-                    sim_out["selection"] = selection
-                    self.logger.log(
-                        "[selection] "
-                        + json.dumps({k: v for k, v in selection.items() if k != "per_cause"},
-                                     default=str),
-                        style="bold magenta")
-
-                    # Show a graph comparing the real IMU history with the best recording of the top for each cause (a graph per cause)
-                    for i, cause in enumerate(self.causes_data):
-                        top_five = sim_out["registers"][i]["top_five"]
-                        if not top_five:
-                            continue
-                        best_history = top_five[0][HISTORY]  # Best recording for this cause
-
+                    if self.hypotheses_compiled is None:
+                        # Static causes (no batch from the semantic memory): the UEx cause
+                        # selection (scores, gates, ranking), persisted in the DSR.
                         self.plot_imu_series(
                             self.imu_history[TIMESTAMP],
                             self.imu_history[ACCELEROMETER],
                             self.imu_history[GYROSCOPE],
-                            sim_timestamps=best_history[TIMESTAMP],
-                            sim_accelerometer=best_history[ACCELEROMETER],
-                            sim_gyroscope=best_history[GYROSCOPE],
-                            title=f"Comparison of real IMU history with best recording of cause: {cause['name']}",
                             show=False)
 
-                    # Write the full result to a timestamped file (+ refresh stable sim_output.json),
-                    # fully flushed before we touch the DSR so semantic never opens a half file.
-                    sim_output_path = self._write_sim_output_file(sim_out)
-                    self.logger.log(f"Simulations finished. Results -> {sim_output_path}", style="bold blue")
+                        # ---- score EVERY recording of EVERY cause (normalized DTW), in parallel ----
+                        cause_defs = list(self.causes_data)
+                        recordings_by_cause = ordered_historicals
+                        with ProcessPoolExecutor(max_workers=2) as executor:
+                            score_futures = [executor.submit(score_all_recordings_worker, self.imu_history, recs)
+                                             for recs in recordings_by_cause]
+                            all_scores = [f.result() for f in score_futures]
 
-                    # Persist onto 'problem': always sim_output_path (semantic's trigger; verdict +
-                    # detail live in the file). Phase-1 back-compat: also problem_position +
-                    # cause_confirmed unless enforce_verdict withholds them on an "unknown" verdict.
-                    self.persist_selection_in_dsr(selection, sim_output_path)
+                        sim_out = {"sim_scene": self.sim_scene.model_dump(), "registers": []}
+                        causes_for_selection = []
+                        for i, recs in enumerate(recordings_by_cause):
+                            scores = all_scores[i]
+                            order = sorted(range(len(scores)), key=lambda r: scores[r])
+                            top_ids = order[:5]
+                            top_five = [recs[r] for r in top_ids]
+                            print(f"Top 5 recordings for cause {cause_defs[i]['name']}: "
+                                  + ", ".join(f"{r}({scores[r]:.4f})" for r in top_ids))
+                            sim_out["registers"].append({
+                                "cause_definition": cause_defs[i],
+                                "scores": scores,                       # normalized DTW per recording id
+                                "top": [[r, scores[r]] for r in top_ids],
+                                "top_five": top_five,
+                            })
+                            causes_for_selection.append({"cause_definition": cause_defs[i],
+                                                         "recordings": recs, "scores": scores})
 
-                    self.state = "IDLE"
+                        # ---- gates -> ranking -> confidence -> location ----
+                        selection = self.select_best_cause(causes_for_selection, SELECTION_CFG)
+                        # Medidas reales del cuerpo que instancia la causa ganadora, tal como las midio
+                        # el simulador del propio modelo. None si esa causa no instancia nada (wheel).
+                        selection["concept_size"] = self._concept_size_of(sim_out["registers"], selection.get("cause"))
+                        sim_out["selection"] = selection
+                        self.logger.log(
+                            "[selection] "
+                            + json.dumps({k: v for k, v in selection.items() if k != "per_cause"},
+                                         default=str),
+                            style="bold magenta")
+
+                        # Show a graph comparing the real IMU history with the best recording of the top for each cause (a graph per cause)
+                        for i, cause in enumerate(self.causes_data):
+                            top_five = sim_out["registers"][i]["top_five"]
+                            if not top_five:
+                                continue
+                            best_history = top_five[0][HISTORY]  # Best recording for this cause
+
+                            self.plot_imu_series(
+                                self.imu_history[TIMESTAMP],
+                                self.imu_history[ACCELEROMETER],
+                                self.imu_history[GYROSCOPE],
+                                sim_timestamps=best_history[TIMESTAMP],
+                                sim_accelerometer=best_history[ACCELEROMETER],
+                                sim_gyroscope=best_history[GYROSCOPE],
+                                title=f"Comparison of real IMU history with best recording of cause: {cause['name']}",
+                                show=False)
+
+                        # Write the full result to a timestamped file (+ refresh stable sim_output.json),
+                        # fully flushed before we touch the DSR so semantic never opens a half file.
+                        sim_output_path = self._write_sim_output_file(sim_out)
+                        self.logger.log(f"Simulations finished. Results -> {sim_output_path}", style="bold blue")
+
+                        # Persist onto 'problem': always sim_output_path (semantic's trigger; verdict +
+                        # detail live in the file). Phase-1 back-compat: also problem_position +
+                        # cause_confirmed unless enforce_verdict withholds them on an "unknown" verdict.
+                        self.persist_selection_in_dsr(selection, sim_output_path)
+
+                        self.retire_batch()
+                    else:
+                        # Hypotheses of the semantic memory: the contrastive verdict, published for the memory.
+                        self.write_batch_verdict(record, ordered_historicals, simulated_at)
 
                 case "TERMINATED":
                     pass
                 
-        except Exception as e:            
-            self.logger.log(f"Fatal exception occurred: {e} at line {sys.exc_info()[-1].tb_lineno}", style="bold red")
-            # print traceback
+        except Exception as e:
+            self.logger.log(f"Exception during '{self.state}': {e} at line {sys.exc_info()[-1].tb_lineno}", style="bold red")
             import traceback
-            traceback_str = traceback.format_exc()
-            self.logger.log(traceback_str, style="red")
-            exit(1)
-            
+            self.logger.log(traceback.format_exc(), style="red")
+            self.retire_batch()
+
         return True
-    
-        
+
+
+
+    def write_batch_verdict(self, record: dict, historicals: list, simulated_at: float) -> str:
+        """The verdict on the batch of the semantic memory (verdict.py), its plots and the agent templates of the
+        accepted causes. What the campaign keeps with it (docs_output/diseno/evaluacion.md, 4.3): the simulations
+        file (the scene, the record and the repetition of each hypothesis closest to it) and the timings of every
+        stage, so the verdict is written last, then published. `simulated_at` (time.perf_counter) is when the
+        simulations ended. Returns the verdict's path."""
+        case_id = self.hypotheses_compiled.get("case_id", "") or "hypotheses_case"
+        plots_dir = os.path.join(self.output_root, "plots", case_id)
+        verdicts_dir = os.path.join(self.output_root, "verdicts")
+        os.makedirs(plots_dir, exist_ok=True)
+        save_real_imu_plot(self.imu_history, os.path.join(plots_dir, "real_imu_history.png"))
+
+        # ============ CONTRASTIVE VERDICT ============
+        # Nominal baseline + symbolic effect (bottle off the tray) + IMU score.
+        scene = self.sim_scene.model_dump()
+        started = time.perf_counter()
+        verdict = build_verdict(
+            case_id=case_id,
+            record=record,
+            entries=self.hypotheses_compiled["entries"],
+            historicals=historicals,
+            scene=scene,
+            skipped=self.hypotheses_compiled["skipped"],
+        )
+        verdict_s = time.perf_counter() - started
+        verdict["simulations_path"] = os.path.abspath(
+            write_simulations(simulated_runs(verdict, historicals, scene, record), verdicts_dir))
+        save_comparison_plots(self.imu_history, verdict["hypotheses"], historicals, plots_dir)
+
+        # Synthesize detector agent templates only for accepted causes
+        accepted_causes = {
+            e["cause"]["name"] for e in verdict["hypotheses"] if e.get("accepted")
+        }
+        for cause_name in accepted_causes:
+            if not generate_agent(cause_name, AGENTS_FOLDER):
+                print("Error while generating agent template for cause", cause_name)
+        if accepted_causes:
+            print("Agent templates generated at folder", AGENTS_FOLDER)
+
+        if self.case_timings is not None:
+            self.case_timings["stages_s"]["verdict"] = round(verdict_s, 3)
+            self.case_timings["stages_s"]["outputs"] = round(time.perf_counter() - simulated_at - verdict_s, 3)
+        verdict["timings"] = self.verdict_timings()
+        verdict_path = os.path.abspath(write_verdict(verdict, verdicts_dir))
+
+        accepted_id = verdict.get("accepted_hypothesis_id")
+        top_id = verdict.get("most_probable_hypothesis_id")
+        top = next((h for h in verdict["hypotheses"] if h["hypothesis_id"] == top_id), {})
+        self.logger.log(
+            f"Verdict written to {verdict_path}. Accepted hypothesis: {accepted_id}. "
+            f"Most probable: {top_id} (posterior {top.get('posterior')}). "
+            f"Robust to the Monte Carlo error: {verdict.get('acceptance_robust')}. "
+            f"90 % set: {[m['mechanism'] for m in (verdict.get('credible_set') or {}).get('mechanisms', [])]}. "
+            f"Anomaly interval: {verdict.get('anomaly_interval')}. "
+            f"{verdict['timings']['total_s']} s since the batch was found.",
+            style="bold green" if accepted_id else "bold yellow",
+        )
+        if verdict.get("abstention_reason"):
+            self.logger.log(f"Verdict abstained: {verdict['abstention_reason']}.", style="bold red")
+
+        self.publish_verdict_filepath(verdict_path)
+        # Back to IDLE: the processed-episode guard avoids re-simulating the same
+        # episode, while a later hypotheses batch for it is still picked up.
+        self.retire_batch()
+        return verdict_path
+
+    def run_simulations(self) -> list:
+        """One causes_simulator process per cause, every repetition with its history: the static causes,
+        and a batch watched in the PyBullet GUI. Returns the repetitions of every cause, in order."""
+        self.logger.log("Launching subprocesses...", style="bold blue")
+        pids = []
+        historicals = {}
+        # Watch the simulations in the PyBullet GUI (one window per cause)
+        # when enabled in etc/config; headless otherwise (see __init__).
+        gui_flags = []
+        if self.sim_gui:
+            gui_flags = ["--gui"]
+            if self.sim_real_time:
+                gui_flags.append("--real_time")
+        for cause in self.causes_data:
+            rpipe, wpipe = os.pipe()
+            json_data = {"cause": cause}
+            json_data = json.dumps(json_data)
+            pids.append([subprocess.Popen([str(sys.executable), "src/causes_simulator.py", "-c", json_data, "-s", "src/sim_scene.json", "-p", str(wpipe), *gui_flags], pass_fds=(wpipe,)), rpipe])
+            # Close wpipe descriptor to prevent deadlocks
+            os.close(wpipe)
+
+        # Wait for subprocesses and collect pipe data
+        self.logger.log("Waiting for subprocesses...", style="blue")
+        while (True):
+            # pid[0] is the Popen class itself, and pid[1] is the (read) pipe which the process uses to communicate with inner simulator
+            for pid in pids:
+                if pid[0] not in historicals:
+                    pipe = os.fdopen(pid[1])
+                    self.logger.log(f"Now reading pipe of process {pid[0]}...", style="blue")
+                    historicals[pid[0]] = pipe.read()
+                    pipe.close()
+                    self.logger.log(f"Pipe for {pid[0]} has been read!")
+
+            if len(historicals) == len(pids): break
+
+        # Transform pipe data from JSON string to dictionary
+        for pid in pids:
+            if pid[0] in historicals and historicals[pid[0]] is not None and historicals[pid[0]] != "":
+                historicals[pid[0]] = json.loads(historicals[pid[0]])
+            else:
+                raise ValueError(f"There was no data received from finalized process {pid[0]} or data was empty! Did the process crash?")
+
+        self.logger.log(f"Received historicals from {len(historicals)} simulations.", style="bold blue")
+        i = 0
+        for h in historicals:
+            self.logger.log(f"    Historical {i} recordings: {len(historicals[h])}", style=" blue")
+            i += 1
+        return [historicals[pid[0]] for pid in pids]
+
+    def run_fast_simulations(self, record: dict, scene: dict) -> list:
+        """The batch's causes searched in rounds (search_rounds.search: draws from each cause's prior, then rounds
+        around the best ones, with importance weights), every repetition through causes_simulator --channels
+        (doFastSimulations), Simulation.Processes processes at a time, each scoring its repetitions against the
+        real channels of the verdict. Returns the repetitions of every cause, in order: the nominal and each
+        chunk's best keep their history (docs_output/resultados/41, 46)."""
+        work = os.path.abspath("logs/search")
+        os.makedirs(work, exist_ok=True)
+        channels_path = os.path.abspath("src/sim_channels.json")
+        with open(channels_path, "w") as f:
+            json.dump(channels_to_json(scene_channels(record, scene)), f)
+        case_id = (self.hypotheses_compiled or {}).get("case_id") or "case"
+        seed = zlib.crc32(case_id.encode()) % (2 ** 31)
+
+        def run(spec):
+            rpipe, wpipe = os.pipe()
+            command = [str(sys.executable), "src/causes_simulator.py", "-c", json.dumps({"cause": spec["cause"]}),
+                       "-s", "src/sim_scene.json", "-p", str(wpipe), "--channels", channels_path,
+                       "--first", str(spec["first"]), "--count", str(spec["count"])]
+            if spec.get("seed") is not None:
+                command += ["--seed", str(spec["seed"])]
+            if spec.get("draws") is not None:
+                draws_path = os.path.join(work, f"draws_{os.getpid()}_{id(spec)}.json")
+                with open(draws_path, "w") as f:
+                    json.dump(spec["draws"], f)
+                command += ["--draws", draws_path]
+            process = subprocess.Popen(command, pass_fds=(wpipe,))
+            os.close(wpipe)
+            with os.fdopen(rpipe) as pipe:
+                data = pipe.read()
+            process.wait()
+            if spec.get("draws") is not None:
+                os.remove(draws_path)
+            if not data:
+                raise ValueError(f"No data from cause {spec['index']}, repetitions {spec['first']}-"
+                                 f"{spec['first'] + spec['count'] - 1}: did the process crash?")
+            return json.loads(data)
+
+        def launch(specs):
+            with ThreadPoolExecutor(max_workers=self.sim_processes) as pool:
+                return list(pool.map(run, specs))
+
+        started = time.time()
+        ordered = search_rounds.search(
+            self.causes_data,
+            lambda cause: int(cause.get("num_of_repetitions") or scene["num_of_repetitions"]),
+            launch, self.sim_processes, seed, log=lambda line: self.logger.log(line, style="blue"))
+        self.logger.log(f"{sum(len(r) for r in ordered)} repetitions of {len(ordered)} causes in "
+                        f"{time.time() - started:.1f} s ({self.sim_processes} processes).", style="bold blue")
+        return ordered
 
     def startup_check(self) -> None:
         """Perform startup checks and quit the application after a short delay."""
@@ -747,48 +1042,101 @@ class SpecificWorker(GenericWorker):
 
     def check_for_problems(self) -> bool:
         """Checks for problems in the episodic graph and initializes simulation if needed.
-        Returns True if a problem was detected and the state should transition to SIMULATE_REASON.
+        Returns True when there is something new to simulate (an unprocessed episode or a new
+        hypotheses batch from the semantic agent) and the state should transition to SIMULATE_REASON.
         """
         spc_node = None
         fp_node = None
         for node in self.graphs["episodic"].get_nodes():
-            # mission_controller names episodic mission nodes after the mission's
-            # customName ("search_cause_attempt_N" / "follow_person_attempt_N"),
-            # not its type string - match on that instead.
-            if node.name.startswith("search_cause_attempt"):  # TODO: Should be a better way to identify the correct node.
+            # mission_controller names episodic mission nodes after the mission's customName:
+            # "Search Problem Cause" / "Follow Person" in older runs, "search_cause_attempt_N" /
+            # "follow_person_attempt_N" since 08/10. The semantic agent matches them the same way
+            # (episode_memory_reader.mission_kind), so both read the same recording.
+            normalized = node.name.strip().lower().replace(" ", "_")
+            if normalized.startswith(("search_problem_cause", "search_cause")):
                 spc_node = node
-            if node.name.startswith("follow_person_attempt"):  # TODO: Should be a better way to identify the correct node.
+            if normalized.startswith("follow_person"):
                 fp_node = node
 
-        if (spc_node is not None 
-                and "status" in spc_node.attrs 
-                and spc_node.attrs["status"].value == "running" 
-                and fp_node is not None 
-                and "filepath" in fp_node.attrs 
+        if not (spc_node is not None
+                and "status" in spc_node.attrs
+                and spc_node.attrs["status"].value == "running"
+                and fp_node is not None
+                and "filepath" in fp_node.attrs
                 and fp_node.attrs["filepath"].value is not None):
-            
+            return False
+
+        episode_path = fp_node.attrs["filepath"].value
+        has_new_hypotheses = self.load_hypotheses_causes()
+        if not has_new_hypotheses and episode_path in self.processed_episode_paths:
+            return False
+        if not has_new_hypotheses and self.waiting_for_batch(episode_path):
+            return False
+
+        self.logger.log(
+            "Search Problem Cause node found with status 'running' and Follow Person node found with non-empty filepath.",
+            style="bold blue"
+        )
+        self.actual_time = time.time()
+        started = time.perf_counter()
+        if self.mem_api_path != episode_path:
+            self.logger.log("MemoryAPI will be initialized with filepath: " + episode_path, style="blue")
+            self.mem_api = mem.EpisodicMemoryAPI(episode_path)
+            self.mem_api_path = episode_path
+
+        # Wait for mem_api.is_ready() to be True, with a timeout of 10 seconds
+        timeout = 10
+        start_time = time.time()
+        while not self.mem_api.is_ready():
+            if time.time() - start_time > timeout:
+                self.logger.log(
+                    f"Timeout of {timeout} seconds reached while waiting for Episodic Memory API to be ready!",
+                    style="bold red"
+                )
+                break
+            time.sleep(0.1)
+        self.processed_episode_paths.add(episode_path)
+        self.stage_done("episodic_memory", started)
+
+        if not self.mem_api.is_ready():
             self.logger.log(
-                "Search Problem Cause node found with status 'running' and Follow Person node found with non-empty filepath.",
-                style="bold blue"
+                f"Episode recording '{episode_path}' could not be indexed "
+                f"(no keyframes / malformed). Skipping this episode. "
+                f"Hint: decimal commas in the file indicate a locale problem "
+                f"in the recorder agent.",
+                style="bold red",
             )
-            self.actual_time = time.time()
-            self.logger.log("MemoryAPI will be initialized with filepath: " + fp_node.attrs["filepath"].value, style="blue")
-            self.mem_api = mem.EpisodicMemoryAPI(fp_node.attrs["filepath"].value)
+            self.retire_batch()
+            return False
 
-            # Wait for mem_api.is_ready() to be True, with a timeout of 10 seconds
-            timeout = 10
-            start_time = time.time()
-            while not self.mem_api.is_ready():
-                if time.time() - start_time > timeout:
-                    self.logger.log(
-                        f"Timeout of {timeout} seconds reached while waiting for Episodic Memory API to be ready!",
-                        style="bold red"
-                    )
-                    break
-                time.sleep(0.1)
+        started = time.perf_counter()
+        self.writeSimulationScene()
+        self.stage_done("scene", started)
+        return True
 
+    def waiting_for_batch(self, episode_path: str) -> bool:
+        """Whether to hold the static causes back for this closed recording: the semantic
+        agent is explaining it (its 'unexplained' intention node is in the work graph) and
+        has not published its hypotheses batch yet. It sees the recording closed when this
+        agent does, and simulating causes.json meanwhile only delays the cycle: the agent
+        ignores that verdict (another case_id). The wait counts from the first time the
+        closed recording is seen and lasts up to batch_wait_s; past it, the static causes
+        run as before, and a batch that comes later is still simulated."""
+        try:
+            explaining = self.graphs["work"].get_node(UNEXPLAINED_NODE) is not None
+        except Exception:
+            explaining = False
+        if not explaining:
+            return False
+        if episode_path not in self.batch_wait_started:
+            self.batch_wait_started[episode_path] = time.time()
+            self.logger.log(
+                f"Recording closed while the semantic agent explains it: waiting up to "
+                f"{self.batch_wait_s:.0f} s for its hypotheses batch.", style="blue")
+        if time.time() - self.batch_wait_started[episode_path] < self.batch_wait_s:
             return True
-
+        self.logger.log(
+            f"No hypotheses batch after {self.batch_wait_s:.0f} s: simulating the static causes.", style="yellow")
         return False
 
     def get_velocities_from_dsr(self):
@@ -901,7 +1249,9 @@ class SpecificWorker(GenericWorker):
         bo = recording.get("bottle_orientation")
         if bp is None or len(bp) < 3:
             return None
-        disp_mm = float(np.hypot(float(bp[0]) - BOTTLE_POS[0], float(bp[1]) - BOTTLE_POS[1]))
+        # The simulator records the bottle in millimeters; the scene starts it in meters.
+        start_mm = [v * M_TO_MM for v in self.sim_scene.bottle_position]
+        disp_mm = float(np.hypot(float(bp[0]) - start_mm[0], float(bp[1]) - start_mm[1]))
         tilt = _quat_tilt_rad(bo) if bo is not None else 0.0
         return SELECTION_CFG["w_disp_m"] * (disp_mm / 1000.0) + SELECTION_CFG["w_tilt_rad"] * tilt
 
@@ -1171,52 +1521,12 @@ class SpecificWorker(GenericWorker):
                 - dict: with keys "timestamp" and "adv_speed", each one with a list of values for each timestamp found in the episodic memory.
                 - None: if episodic memory is not ready.
         """
-        self.robot_adv_speed_history = {}
-        self.robot_adv_speed_history[TIMESTAMP] = []
-        self.robot_adv_speed_history[ADV_SPEED] = []
-        if self.mem_api.is_ready():
-            robot_events = self.mem_api.get_node_history_by_name("robot")
-            initial_ts = robot_events[0].timestamp
-            
-            # # Print statistics of type of events in robot history
-            # event_types = {}
-            # for event in robot_events:
-            #     if event.modification_type not in event_types:
-            #         event_types[event.modification_type] = 1
-            #     else:
-            #         event_types[event.modification_type] += 1
-            # self.logger.log(f"Robot events in episodic memory by modification type:", style="bold blue")
-            # for mod_type in event_types:
-            #     self.logger.log(f"    Type {mod_type}: {event_types[mod_type]} events", style="blue")
-                      
-            # # Filter by modification type "K" (Keyframe)
-            # robot_events = [event for event in robot_events if event.modification_type == "K" and "robot_ref_adv_speed" in event.attributes]
-            # self.logger.log(f"Found {len(robot_events)} robot events in episodic memory with modification type K related to robot_ref_adv_speed.", style="bold blue")
-            # for event in robot_events:
-            #     corrected_ts = event.timestamp - initial_ts
-            #     event.timestamp = corrected_ts
-            #     if event.attributes.get("robot_ref_adv_speed") is not None:
-            #         self.robot_adv_speed_history[TIMESTAMP].append(corrected_ts * 1e-9)
-            #         self.robot_adv_speed_history[ADV_SPEED].append(event.attributes["robot_ref_adv_speed"].value)
-            #     break
-            
-            # Filter by modification type "MNA" (Modified Node Attribute)
-            robot_events = self.mem_api.get_node_history_by_name("robot")
-            robot_events = [event for event in robot_events if event.modification_type == "MNA" and "robot_ref_adv_speed" in event.attributes]
-            for event in robot_events:
-                corrected_ts = event.timestamp - initial_ts
-                event.timestamp = corrected_ts
-                if event.attributes.get("robot_ref_adv_speed") is not None:
-                    self.robot_adv_speed_history[TIMESTAMP].append(corrected_ts * 1e-9)
-                    self.robot_adv_speed_history[ADV_SPEED].append(event.attributes["robot_ref_adv_speed"].value)
-
-            
-            self.logger.log(f"Robot speeds loaded from epidodic memory",style="bold blue")
-                    
-            return self.robot_adv_speed_history
-        else:
+        self.robot_adv_speed_history = commanded_speed_history(self.mem_api)
+        if self.robot_adv_speed_history is None:
             self.logger.log("Episodic Memory API is not ready!", style="bold red")
             return None
+        self.logger.log(f"Robot speeds loaded from epidodic memory",style="bold blue")
+        return self.robot_adv_speed_history
 
     
     def convert_episodic_to_imu_history(self, list_of_ts: list) -> dict | None:
@@ -1227,65 +1537,24 @@ class SpecificWorker(GenericWorker):
                 - dict: with keys "timestamp", "accelerometer" and "gyroscope", each one with a list of values for each timestamp in the list_of_ts.
                 - None: if episodic memory is not ready.
         """
-        self.imu_history = {}
-        self.imu_history[TIMESTAMP] = []
-        self.imu_history[ACCELEROMETER] = []
-        self.imu_history[GYROSCOPE] = []
-        
-        if self.mem_api.is_ready():
-            # Download the event list
-            imu_events = self.mem_api.get_node_history_by_name("imu")
-            initial_ts = imu_events[0].timestamp
-            # Filter by modification type "MNA" (Modified Node Attribute)
-            imu_events = [event for event in imu_events if event.modification_type == "MNA"]
-            initial_acc = [0.0,0.0,0.0]
-            initial_gyro = [0.0,0.0,0.0]
-            
-            self.logger.log(f"Found {len(imu_events)} IMU events in episodic memory with modification type MNA.", style="bold blue")
-            # Correct each ts of the event list
-            for event in imu_events:
-                corrected_ts = event.timestamp - initial_ts
-                event.timestamp = corrected_ts
-
-
-            # Recreate event history to imy history format
-            for ts in list_of_ts:
-                # Convert ts (seconds) to nanoseconds
-                ts = int(ts * 1e9)
-                # Get the value of acc and gyro from the closest timestamp before ts (using lambda function)
-                candidates = [event for event in imu_events if event.timestamp <= ts]
-                closest_event = min(candidates, key=lambda event: abs(event.timestamp - ts), default=None)
-                if closest_event is not None:
-                    acc = closest_event.attributes["imu_accelerometer"].value if "imu_accelerometer" in closest_event.attributes else initial_acc
-                    gyro = closest_event.attributes["imu_gyroscope"].value if "imu_gyroscope" in closest_event.attributes else initial_gyro
-                    self.logger.log(f"Bonding IMU history ts:{ts} <==> episodic event ts:{closest_event.timestamp+initial_ts} USING acc {acc} // gyro {gyro} (there were {len(candidates)} candidates).", style="purple")
-                    initial_acc = acc
-                    initial_gyro = gyro
-                    self.imu_history[TIMESTAMP].append(ts * 1e-9) # Convert back to seconds for easier handling
-                    self.imu_history[ACCELEROMETER].append(acc)
-                    self.imu_history[GYROSCOPE].append(gyro)
-                else:
-                    acc = initial_acc
-                    gyro = initial_gyro
-                    self.logger.log(f"No IMU event found in episodic memory for or before timestamp {ts}. Using last known values: acc {acc} and gyro {gyro}.", style="yellow")
-             
-    
-            os.makedirs("logs/imu_raw", exist_ok=True)
-            timestamp = time.strftime('%Y%m%d_%H%M%S')
-            filepath = f"logs/imu_raw/episodic_imu_{timestamp}.json"
-            history_to_save = {
-                k: [v.tolist() if isinstance(v, np.ndarray) else v for v in values]
-                for k, values in self.imu_history.items()
-            }
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(history_to_save, f)
-            self.logger.log(f"Episodic IMU history saved to '{filepath}'", style="bold cyan")
-
-
-            self.logger.log(f"Converted {len(imu_events)} imu events to IMU history format ({len(self.imu_history[TIMESTAMP])} frames).", style="bold blue")
-        else:
+        self.imu_history = real_imu_history(self.mem_api, list_of_ts)
+        if self.imu_history is None:
+            self.imu_history = {TIMESTAMP: [], ACCELEROMETER: [], GYROSCOPE: []}
             self.logger.log("Episodic Memory API is not ready! WTF?", style="bold red")
             return
+
+        os.makedirs("logs/imu_raw", exist_ok=True)
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        filepath = f"logs/imu_raw/episodic_imu_{timestamp}.json"
+        history_to_save = {
+            k: [v.tolist() if isinstance(v, np.ndarray) else v for v in values]
+            for k, values in self.imu_history.items()
+        }
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(history_to_save, f)
+        self.logger.log(f"Episodic IMU history saved to '{filepath}'", style="bold cyan")
+        self.logger.log(f"Converted episodic IMU to IMU history format ({len(self.imu_history[TIMESTAMP])} frames).", style="bold blue")
+        return self.imu_history
 
 
     def get_simulation_length_from_episodic_memory(self) -> float | None:
@@ -1294,21 +1563,15 @@ class SpecificWorker(GenericWorker):
                 - float: length of the simulation in seconds.
                 - None: if not available.
         """
-        if self.mem_api.is_ready():
-            imu_events = self.mem_api.get_node_history_by_name("imu")
-            if len(imu_events) > 0:
-                last_ts = imu_events[-1].timestamp
-                initial_ts = imu_events[0].timestamp
-                simulation_length = (last_ts - initial_ts) * 1e-9 # Convert from nanoseconds to seconds
-                self.logger.log(f"Simulation length obtained from episodic memory:{simulation_length} seconds.",style="bold blue")
-                return simulation_length
-            else:
-                self.logger.log("No IMU events found in episodic memory!",style="bold red")
-
-                return None
-        else:
+        if not self.mem_api.is_ready():
             self.logger.log("Episodic Memory API is not ready! WTF?", style="bold red")
-            return None   
+            return None
+        simulation_length = episode_length_s(self.mem_api)
+        if simulation_length is None:
+            self.logger.log("No IMU events found in episodic memory!",style="bold red")
+            return None
+        self.logger.log(f"Simulation length obtained from episodic memory:{simulation_length} seconds.",style="bold blue")
+        return simulation_length
         
     def get_robot_positions_relative_to_problem(self) -> dict[str, list[float]] | None:
         """

@@ -1,0 +1,24 @@
+# The evidence: one observation per recorded measurement, in the episode's order.
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX dul: <http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#>
+PREFIX sosa: <http://www.w3.org/ns/sosa/>
+PREFIX insight: <http://insight.local/ontology#>
+PREFIX inst: <http://insight.local/instances#>
+
+SELECT ?index ?id ?property ?value ?unit ?at ?interval ?baseline ?commanded ?signed ?ratio ?ratio_baseline
+       ?reaction WHERE {
+  ?episode dul:isSettingFor ?observation .
+  ?observation a sosa:Observation ; insight:listIndex ?index ; rdfs:label ?id ; sosa:observedProperty ?property .
+  OPTIONAL { ?observation sosa:hasSimpleResult ?value }
+  OPTIONAL { ?observation insight:unit ?unit }
+  OPTIONAL { ?observation insight:atTimeS ?at }
+  OPTIONAL { ?observation sosa:phenomenonTime ?interval_iri . ?interval_iri rdfs:label ?interval }
+  OPTIONAL { ?observation insight:baselineValue ?baseline }
+  OPTIONAL { ?observation insight:commandedValue ?commanded }
+  OPTIONAL { ?observation insight:signedValue ?signed }
+  OPTIONAL { ?observation insight:travelledOverCommanded ?ratio }
+  OPTIONAL { ?observation insight:travelledOverCommandedBaseline ?ratio_baseline }
+  OPTIONAL { ?observation insight:isSystemReaction ?reaction }
+}
+ORDER BY ?index
