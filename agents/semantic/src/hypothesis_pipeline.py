@@ -268,6 +268,14 @@ def check_schema(proposal: Any, vocabulary: dict[str, MechanismTerms]) -> list[d
 # --------------------------------------------------------------------------- #
 # Step 1b: the anchors exist and are the ones the mechanism admits
 # --------------------------------------------------------------------------- #
+def _canonical_anchor(anchor: Optional[str], known: dict[str, Any]) -> Optional[str]:
+    """The episode id the anchor names, ignoring case (small models write `segment_final` for
+    `Segment_final`); the anchor unchanged if it names none."""
+    if anchor is None or anchor in known:
+        return anchor
+    return next((name for name in known if name.lower() == anchor.lower()), anchor)
+
+
 def _anchor_problems(hypothesis: dict[str, Any], terms: Optional[MechanismTerms], view: EpisodeView) -> list[str]:
     """Why the anchors are not coherent with the episode (empty if they are).
 
@@ -590,6 +598,8 @@ def process_hypothesis(hypothesis: dict[str, Any], rank: int, view: EpisodeView,
     coherence, contrast and grounding. Their status is final, or PENDING until the budget."""
     mechanism_id = hypothesis["mechanism"]
     terms = vocabulary.get(mechanism_id)
+    hypothesis = {**hypothesis, "segment": _canonical_anchor(hypothesis["segment"], view.segments),
+                  "interval": _canonical_anchor(hypothesis["interval"], view.intervals)}
     anchors = {"segment": hypothesis["segment"], "interval": hypothesis["interval"]}
     base = {
         "hypothesis_id": f"H{rank:02d}", "rank": rank,

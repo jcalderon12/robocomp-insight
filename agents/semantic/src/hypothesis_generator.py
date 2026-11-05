@@ -68,14 +68,16 @@ SELF_MODEL_CHAR_LIMIT = 12000
 LLM = Callable[[list[dict[str, str]]], tuple[str, dict[str, Any]]]
 
 
-def ollama_chat(model: str, base_url: str = "http://localhost:11434", timeout_s: float = 300.0) -> LLM:
+def ollama_chat(model: str, base_url: str = "http://localhost:11434", timeout_s: float = 300.0,
+                think: bool = False, num_ctx: int = 16384) -> LLM:
     """The Ollama chat endpoint at temperature 0, as production calls it (_invoke_ollama_http)."""
     session = requests.Session()
     endpoint = base_url.rstrip("/") + "/api/chat"
 
     def chat(messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
         response = session.post(endpoint, timeout=timeout_s, json={
-            "model": model, "messages": messages, "stream": False, "options": {"temperature": 0}})
+            "model": model, "messages": messages, "stream": False, "think": think,
+            "options": {"temperature": 0, "num_ctx": num_ctx}})
         response.raise_for_status()
         data = response.json()
         return _normalize_message_content((data.get("message") or {}).get("content", "")), _ollama_native_metrics(data)
@@ -319,12 +321,13 @@ def _neutral_ids(text: str, display_ids: dict[str, str]) -> str:
 
 def _recorded_ids(proposal: Any, display_ids: dict[str, str]) -> Any:
     """The anchors of an answer read back from the neutral ids to the recorded ones."""
-    recorded = {shown: original for original, shown in display_ids.items()}
+    # Sin distinguir mayusculas: los modelos pequenos escriben `interval_before_observation`.
+    recorded = {shown.lower(): original for original, shown in display_ids.items()}
     hypotheses = proposal.get("hypotheses") if isinstance(proposal, dict) else None
     for hypothesis in hypotheses if isinstance(hypotheses, list) else []:
         for anchor in ("segment", "interval"):
             if isinstance(hypothesis, dict) and isinstance(hypothesis.get(anchor), str):
-                hypothesis[anchor] = recorded.get(hypothesis[anchor], hypothesis[anchor])
+                hypothesis[anchor] = recorded.get(hypothesis[anchor].lower(), hypothesis[anchor])
     return proposal
 
 

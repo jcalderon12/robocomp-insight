@@ -109,6 +109,10 @@ class HypothesisGeneratorConfig:
     #: can be simulated) and LLM attempts.
     budget: Optional[int] = None
     max_attempts: int = 3
+    #: Razonamiento de los modelos que piensan (gemma4, qwen3); con el activado agotan el contexto sin responder.
+    think: bool = False
+    #: Contexto de Ollama en tokens; el de por defecto (4096) se queda corto para prompt mas respuesta.
+    num_ctx: int = 16384
 
     @classmethod
     def from_config(
@@ -160,4 +164,6 @@ class HypothesisGeneratorConfig:
             generation=generation,
             budget=_as_budget(section.get("Budget")),
             max_attempts=max(1, _as_int(section.get("MaxAttempts"), 3)),
+            think=_as_bool(section.get("Think"), False),
+            num_ctx=max(2048, _as_int(section.get("NumCtx"), 16384)),
         )

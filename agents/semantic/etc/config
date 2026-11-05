@@ -63,6 +63,10 @@ hypothesisGenerator.RequestTimeoutSeconds = 300
 hypothesisGenerator.InternalCount = 3
 hypothesisGenerator.ExternalCount = 3
 hypothesisGenerator.PreferredClient = "ollama_http"
+# Sin razonamiento: con el, gemma4 agota el contexto pensando y devuelve el contenido vacio.
+hypothesisGenerator.Think = false
+# Contexto de Ollama (tokens); el de por defecto (4096) se queda corto para prompt (~3.4k) mas respuesta.
+hypothesisGenerator.NumCtx = 16384
 # The whole robot self-model (description.md, ~6 KB) must reach the prompt: its grounding
 # rules, diagnostic regions and invalid-fault examples come last and were being cut at 3500.
 hypothesisGenerator.DescriptionCharLimit = 12000

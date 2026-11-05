@@ -378,6 +378,8 @@ class SemanticHypothesisService:
             model=model_name,
             base_url=self.config.ollama_base_url,
             temperature=0,
+            reasoning=self.config.think,
+            num_ctx=self.config.num_ctx,
             client_kwargs={"timeout": self.config.request_timeout_seconds},
         )
         response = chat.invoke(prompt)
@@ -407,8 +409,10 @@ class SemanticHypothesisService:
                 }
             ],
             "stream": False,
+            "think": self.config.think,
             "options": {
                 "temperature": 0,
+                "num_ctx": self.config.num_ctx,
             },
         }
         response = self.session.post(

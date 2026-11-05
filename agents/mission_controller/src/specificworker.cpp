@@ -1517,9 +1517,9 @@ void SpecificWorker::monitor_mission_execution_state()
 
 	// A change the semantic agent cannot explain closes follow_person and opens the search, once the
 	// recording holds loss_recording_seconds after it: the robot's stop and what it perceives next (an
-	// occluded bottle is seen again 1.7-2.5 s later). The mission is completed, not stopped, so the
-	// scheduler does not resume it after the search.
-	if (active_type == "follow_person" && unexplained_node_exists()) {
+	// occluded bottle is seen again 1.7-2.5 s later). Se para (no se completa), como antes del merge:
+	// el scheduler la reanuda tras la busqueda; con "bump" ya creado no se vuelve a cerrar.
+	if (active_type == "follow_person" && unexplained_node_exists() && !G->get_node("bump").has_value()) {
 		const auto now = std::chrono::steady_clock::now();
 		if (!unexplained_seen_at.has_value()) {
 			unexplained_seen_at = now;
@@ -1529,8 +1529,7 @@ void SpecificWorker::monitor_mission_execution_state()
 		if (std::chrono::duration<double>(now - *unexplained_seen_at).count() >= loss_recording_seconds) {
 			std::cout << "[AUTOPILOT] Closing follow_person and starting the search." << std::endl;
 			create_search_problem_cause_mission();
-			mission_scheduler.requestMissionCompletion(active_id);
-			follow_person_active = false;
+			stop_active_mission();
 		}
 		return;
 	}

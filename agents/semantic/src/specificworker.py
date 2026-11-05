@@ -151,7 +151,8 @@ class SpecificWorker(GenericWorker):
         # verified mechanism and to recognise the verdict that answers it).
         self.llm = (
             ollama_chat(self.hypothesis_config.primary_model, self.hypothesis_config.ollama_base_url,
-                        self.hypothesis_config.request_timeout_seconds)
+                        self.hypothesis_config.request_timeout_seconds,
+                        self.hypothesis_config.think, self.hypothesis_config.num_ctx)
             if enabled and v2
             else None
         )
