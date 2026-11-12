@@ -65,6 +65,18 @@ Install the dependencies from the requirements file:
 pip install -r requirements.txt
 ```
 
+### Ollama (semantic agent)
+
+The `semantic` agent generates hypotheses with a local Ollama model (`agents/semantic/etc/config`).
+Ollama keeps a model on the GPU for 5 min after each request, which leaves no room for SAM in the
+photos mission (CUDA out of memory). Unload it right after each answer:
+
+```bash
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+printf '[Service]\nEnvironment="OLLAMA_KEEP_ALIVE=0"\n' | sudo tee /etc/systemd/system/ollama.service.d/keep_alive.conf
+sudo systemctl daemon-reload && sudo systemctl restart ollama
+```
+
 ### Program manager installation and configuration
 
 Clone the repository in the software dir:

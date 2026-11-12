@@ -44,6 +44,13 @@ Simulation.Processes = 0
 # Seconds to wait, once the recording is closed, for the semantic agent's hypotheses batch
 # while its "unexplained" intention node exists; past them, the static causes (src/causes.json).
 Simulation.BatchWaitSeconds = 120
+# Repetitions: repeticiones por causa (0 = 4000, el valor calibrado). 1000 para pruebas de integracion:
+#      la busqueda baja de ~7 a ~2 min, pero llega peor a baches pequenos fuera de la trayectoria.
+Simulation.Repetitions = 1000
+# AcceptMostProbable: si el veredicto se abstiene, se confirma igualmente la hipotesis mas probable (si
+#      no es la nominal) para que siga el flujo (bump -> fotos). Queda como provisional en el veredicto y
+#      semantic no la guarda como explicacion. Solo para pruebas.
+Simulation.AcceptMostProbable = true
 
 Component.Debug.Verbose = true
 

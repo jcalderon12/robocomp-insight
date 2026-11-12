@@ -1564,7 +1564,9 @@ void SpecificWorker::monitor_mission_execution_state()
 
 		// Losing the bottle also turns follow_me off (semantic, fake_castilla_la_mancha), maybe before the
 		// "unexplained" node appears: that ends follow_person through the unexplained case, not here.
-		const bool bottle_lost = active_type == "follow_person" && !bottle_rt_exists();
+		// Con 'bump' ya creado la botella sigue en el suelo: el true->false es el final de la mision.
+		const bool bottle_lost = active_type == "follow_person" && !bottle_rt_exists()
+		                         && !G->get_node("bump").has_value();
 
 		// Detect change from true to false - mission complete
 		if (last_aff_interacting_state && !current_state && !bottle_lost) {

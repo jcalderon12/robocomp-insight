@@ -33,6 +33,13 @@ El agente del concepto se genera desde las plantillas Jinja2 de
 `agents/agent_generation/templates/`. **Editar siempre la plantilla**: `generate_agent()` hace
 `rmtree` del agente generado y lo rehace entero.
 
+# Revisión de flujos
+
+- Program Manager guarda la salida de cada terminal en `logs/<nombre>.log` (sin colores, se
+  sobrescribe en cada lanzamiento; no se sube al repo). Al analizar un flujo, mirar primero si
+  existe `logs/` y usarlo junto a las grabaciones de `recorded_missions/`.
+- Registro de la integración con la rama semántica: `semantic_integration.md`.
+
 # Convenciones y trampas
 
 - **El avance es la SEGUNDA coordenada** del vector (la "y" habitual). El rumbo se mide

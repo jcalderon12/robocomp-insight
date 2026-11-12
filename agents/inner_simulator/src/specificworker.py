@@ -86,6 +86,7 @@ if agents_root not in sys.path:
 from src.simulation_scene import SimulationScene
 from src.logger import Logger
 from src.episode_scene import (
+    DEFAULT_REPETITIONS,
     build_simulation_scene,
     commanded_speed_history,
     episode_length_s,
@@ -95,6 +96,7 @@ from src.episode_scene import (
 from src.hypothesis_compiler import anchor_to_footprint, compile_batch
 from src.verdict import (build_verdict, channels_to_json, save_comparison_plots, save_real_imu_plot,
                          scene_channels, simulated_runs, write_simulations, write_verdict)
+from src.hypothesis_compiler import NOMINAL_HYPOTHESIS_ID
 from src import search_rounds
 
 import pybullet as p
@@ -215,6 +217,10 @@ class SpecificWorker(GenericWorker):
         self.sim_processes = int(sim_cfg.get("Processes", 0)) or os.cpu_count() or 1
         # How long to wait for the semantic agent's batch before the static causes (see waiting_for_batch).
         self.batch_wait_s = float(sim_cfg.get("BatchWaitSeconds", BATCH_WAIT_DEFAULT_S))
+        # Repeticiones por causa (0: DEFAULT_REPETITIONS de episode_scene, 4000); menos acorta la busqueda.
+        self.sim_repetitions = int(sim_cfg.get("Repetitions", 0)) or DEFAULT_REPETITIONS
+        # Si el veredicto se abstiene, confirmar igualmente la hipotesis mas probable (provisional).
+        self.accept_most_probable = bool(sim_cfg.get("AcceptMostProbable", False))
         self.batch_wait_started = {}
 
         # Hypothesis-driven mode state (set when the semantic agent publishes a batch)
@@ -375,6 +381,7 @@ class SpecificWorker(GenericWorker):
        # The anomaly interval comes from the episode the semantic memory built (the batch links it
        # with its sha256); without a batch the scene applies the same rule to the recording.
        scene, info = build_simulation_scene(self.mem_api, ROBOT_POS, PROBLEM_POS,
+                                            num_of_repetitions=self.sim_repetitions,
                                             episode_intervals=self.episode_intervals())
        self.logger.log(f"Simulation seeded at {scene['start_time_s']:.2f} s, anomaly interval "
                        f"{scene['anomaly_interval']} ({info['anomaly_interval_source']}).", style="purple")
@@ -470,6 +477,25 @@ class SpecificWorker(GenericWorker):
             style="bold green",
         )
         return True
+
+    def confirm_hypothesis_in_dsr(self, hypothesis: dict) -> None:
+        """Confirma en 'problem' la hipotesis del veredicto (aceptada o provisional), como hace
+        persist_selection_in_dsr con las causas estaticas: con un bache, su posicion y medidas en la
+        mejor repeticion (metros de PyBullet); sin posicion, fake_castilla_la_mancha descarta 'problem'."""
+        problem_node = self.graphs["work"].get_node("problem")
+        if problem_node is None:
+            self.logger.log("'problem' node not found; cannot confirm the hypothesis.", style="bold red")
+            return
+        sample = (hypothesis.get("best_generated_instances") or {}).get("sample")
+        if sample:
+            problem_node.attrs["problem_position"] = Attribute(
+                [float(sample["x_m"]), float(sample["y_m"]), 0.0], self.agent_id)
+            # [ancho, largo, alto]: el bache es una cupula de base circular
+            problem_node.attrs["concept_size"] = Attribute(
+                [float(sample["diameter_m"]), float(sample["diameter_m"]), float(sample["height_m"])], self.agent_id)
+        problem_node.attrs["cause_confirmed"] = Attribute(True, self.agent_id)
+        self.graphs["work"].update_node(problem_node)
+        self.logger.log(f"Confirmed {hypothesis['hypothesis_id']} on 'problem': sample={sample}.", style="bold green")
 
     def publish_verdict_filepath(self, verdict_path: str) -> bool:
         """Expose the verdict path on the intention node so the semantic agent
@@ -707,6 +733,11 @@ class SpecificWorker(GenericWorker):
             self.case_timings["stages_s"]["verdict"] = round(verdict_s, 3)
             self.case_timings["stages_s"]["outputs"] = round(time.perf_counter() - simulated_at - verdict_s, 3)
         verdict["timings"] = self.verdict_timings()
+        # Abstencion con AcceptMostProbable: la mas probable queda como provisional, sin tocar
+        # accepted_hypothesis_id, asi semantic no la consolida como explicacion verificada.
+        if (self.accept_most_probable and verdict.get("accepted_hypothesis_id") is None
+                and verdict.get("most_probable_hypothesis_id") not in (None, NOMINAL_HYPOTHESIS_ID)):
+            verdict["provisional_hypothesis_id"] = verdict["most_probable_hypothesis_id"]
         verdict_path = os.path.abspath(write_verdict(verdict, verdicts_dir))
 
         accepted_id = verdict.get("accepted_hypothesis_id")
@@ -723,6 +754,14 @@ class SpecificWorker(GenericWorker):
         )
         if verdict.get("abstention_reason"):
             self.logger.log(f"Verdict abstained: {verdict['abstention_reason']}.", style="bold red")
+
+        # Confirmar en 'problem' antes de publicar el veredicto: semantic borra 'unexplained' al leerlo
+        # y mission_controller cierra la busqueda; 'bump' tiene que existir ya para seguir a las fotos.
+        confirmed_id = accepted_id or verdict.get("provisional_hypothesis_id")
+        if confirmed_id is not None:
+            if not accepted_id:
+                self.logger.log(f"Provisionally accepting {confirmed_id} (AcceptMostProbable).", style="bold yellow")
+            self.confirm_hypothesis_in_dsr(next(h for h in verdict["hypotheses"] if h["hypothesis_id"] == confirmed_id))
 
         self.publish_verdict_filepath(verdict_path)
         # Back to IDLE: the processed-episode guard avoids re-simulating the same

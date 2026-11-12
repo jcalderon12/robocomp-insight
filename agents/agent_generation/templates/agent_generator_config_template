@@ -44,12 +44,17 @@ Photo_save_dir = "photos"
 Expected_size_m = 0.25
 Label_margin_factor = 1.0
 
-# Verificacion con SAM antes de hacer las fotos: pesos del modelo y los tres criterios sobre la
-# mascara (tamaño fisico, dispersion de la profundidad y coherencia con la distancia esperada).
+# Verificacion con SAM antes de hacer las fotos: la mascara se reconstruye en 3D (marco root) con la
+# profundidad y se mide. Pasa si tiene puntos suficientes, diametro y altura dentro de rango (los del
+# catalogo de intervenciones) y su centro esta cerca de simulated_position. Si pasa, su medida corrige
+# la huella con la que se etiquetan las fotos.
 Sam_weights = "/home/robolab/robocomp/components/robocomp-insight/agents/vision_sam/sam2.1_l.pt"
-Verify_size_tolerance = 0.5
-Verify_depth_sigma_max = 0.15
-Verify_distance_tolerance = 0.3
+Verify_min_points = 50
+Verify_diameter_min_m = 0.10
+Verify_diameter_max_m = 1.00
+Verify_height_min_m = 0.01
+Verify_height_max_m = 0.10
+Verify_max_shift_m = 0.3
 # Si es true, se dispara aunque la verificacion sea negativa (pruebas del clasificador). Tiene que
 # coincidir con Force_photos de concept_robot, que es quien decide si hace el giro.
 Force_photos = false

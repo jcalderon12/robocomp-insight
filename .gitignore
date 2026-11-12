@@ -337,3 +337,4 @@ test_api.h
 agents/episodic_memory/*_test.txt
 agents/episodic_memory/python/example_*.py
 agents/episodic_memory/python/test_*.py   
+logs/

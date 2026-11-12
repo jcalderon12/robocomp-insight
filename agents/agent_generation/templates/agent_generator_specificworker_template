@@ -118,9 +118,13 @@ class SpecificWorker(GenericWorker):
         self.stage = Stage.IDLE
         self.sam = None
         self.sam_weights = configData["Sam_weights"]
-        self.verify_size_tolerance = configData["Verify_size_tolerance"]
-        self.verify_depth_sigma_max = configData["Verify_depth_sigma_max"]
-        self.verify_distance_tolerance = configData["Verify_distance_tolerance"]
+        # Criterios de la validacion sobre la mascara reconstruida en 3D (marco root, metros).
+        self.verify_min_points = configData["Verify_min_points"]
+        self.verify_diameter_range_m = (configData["Verify_diameter_min_m"], configData["Verify_diameter_max_m"])
+        self.verify_height_range_m = (configData["Verify_height_min_m"], configData["Verify_height_max_m"])
+        self.verify_max_shift_m = configData["Verify_max_shift_m"]
+        # Huella corregida por la validacion (centro root, diametro, altura); None = la simulada.
+        self.footprint = None
         self.force_photos = configData.get("Force_photos", False)
         self.verify_answered = False
         self.verify_verdict = None    # "ok" / "fail": contestada no es lo mismo que correcta
@@ -137,7 +141,7 @@ class SpecificWorker(GenericWorker):
         self.photo_log_path = os.path.join(self.photo_session_dir, "shots.csv")
         with open(self.photo_log_path, "w") as log:
             log.write("label,u,v,depth_m,real_rel_x,real_rel_y,real_rel_z,"
-                      "real_world_x,real_world_y,real_world_z,path\n")
+                      "real_world_x,real_world_y,real_world_z,footprint,path\n")
         console.print(f"Fotos de esta sesión en: {self.photo_session_dir}", style="cyan")
 
         # concept classifier: trained on the fly with the photos of the mission
@@ -502,17 +506,25 @@ class SpecificWorker(GenericWorker):
             self.verify_waiting_logged = True
 
         diag = {"verify_pixel": [float(u), float(v)]}
-        best = self.best_mask_for_point(concept_node, rgb, depth_m, image, u, v, projection["depth_m"])
+        candidates = self.mask_candidates_for_point(concept_node, rgb, depth_m, image, u, v)
+        accepted = [c for c in candidates if c["ok"]]
+        best = min(accepted, key=lambda c: c["shift_m"]) if accepted else None
+        self.save_verification_images(rgb, image, (u, v), candidates, best)
         if best is None:
+            self.footprint = None
             diag["verify_result"] = "fail"
             console.print("Verificacion NEGATIVA: ninguna mascara de SAM encaja con el concepto.", style="bold red")
         else:
+            # Pasa la validacion: su medida corrige la huella con la que se etiquetan las fotos.
+            self.footprint = {k: best[k] for k in ("center_m", "diameter_m", "height_m")}
             diag["verify_result"] = "ok"
-            diag["verify_size_m"] = best["size_m"]
-            diag["verify_depth_m"] = best["z_med"]
-            diag["verify_depth_sigma"] = best["sigma"]
-            console.print(f"Verificacion OK: tamaño {best['size_m']:.3f} m, profundidad "
-                          f"{best['z_med']:.2f} m, sigma {best['sigma']:.3f}", style="bold green")
+            diag["verify_size_m"] = best["diameter_m"]
+            diag["verify_height_m"] = best["height_m"]
+            diag["verify_shift_m"] = best["shift_m"]
+            diag["verify_corrected_position"] = [float(v) for v in best["center_m"]] + [0.0]
+            console.print(f"Verificacion OK: diametro {best['diameter_m']:.3f} m, altura {best['height_m']:.3f} m, "
+                          f"desplazamiento {best['shift_m']:.3f} m -> huella corregida a "
+                          f"({best['center_m'][0]:.3f}, {best['center_m'][1]:.3f})", style="bold green")
 
         # La verdad va en la misma escritura que el veredicto, y tambien cuando es "fail": son
         # los casos que hay que explicar (creencia desplazada vs. SAM segmentando otra cosa).
@@ -521,10 +533,10 @@ class SpecificWorker(GenericWorker):
         self.publish_concept_attrs(diag)
         return True
 
-    def best_mask_for_point(self, concept_node, rgb, depth_m, image, u, v, z_expected):
-        """Segmenta con SAM en (u, v) y devuelve la candidata que mejor encaja con el concepto, o
-        None si ninguna pasa los tres criterios. Con multimask_output SAM da hasta tres mascaras
-        del mismo punto (parte / objeto / grupo) y el criterio es quien elige entre ellas."""
+    def mask_candidates_for_point(self, concept_node, rgb, depth_m, image, u, v):
+        """Segmenta con SAM en (u, v), reconstruye cada mascara en 3D (marco root) y la mide:
+        centro en el suelo, diametro y altura. Devuelve todas las candidatas, con "ok" si pasan
+        los criterios; lista vacia si SAM falla o falta la pose de la camara."""
         try:
             if self.sam is None:
                 from ultralytics import SAM   # import aqui: tarda y solo hace falta al verificar
@@ -537,50 +549,105 @@ class SpecificWorker(GenericWorker):
                                device=self.device_name, verbose=False)
         except Exception as e:
             console.print(f"Fallo ejecutando SAM: {e}", style="bold red")
-            return None
+            return []
 
         if not results or results[0].masks is None:
-            return None
+            return []
 
-        expected = self.expected_size(concept_node)
-        accepted = []
+        root_to_camera = self.get_root_to_camera_transform()
+        if root_to_camera is None or "simulated_position" not in concept_node.attrs:
+            console.print("Sin pose de la camara o sin simulated_position: no se puede medir la mascara.", style="bold red")
+            return []
+        simulated_xy = np.array([float(c) for c in concept_node.attrs["simulated_position"].value[:2]])
+
+        candidates = []
         for mask in results[0].masks.data.cpu().numpy():
             mask_uint8 = (mask > 0).astype(np.uint8)
             if mask_uint8.shape != depth_m.shape:
                 mask_uint8 = cv2.resize(mask_uint8, (depth_m.shape[1], depth_m.shape[0]),
                                         interpolation=cv2.INTER_NEAREST)
-            inside = depth_m[mask_uint8 > 0]
-            inside = inside[np.isfinite(inside) & (inside > 0)]
-            if inside.size < 20:
+            candidate = {"mask": mask_uint8, "ok": False, "shift_m": float("inf")}
+            candidates.append(candidate)
+
+            # Sin el borde: sus pixeles mezclan la profundidad del objeto con la del fondo.
+            vs, us = np.nonzero(cv2.erode(mask_uint8, np.ones((3, 3), np.uint8)))
+            d = depth_m[vs, us]
+            valid = np.isfinite(d) & (d > 0)
+            if valid.sum() < self.verify_min_points:
+                console.print(f"  candidata: {int(valid.sum())} puntos con profundidad -> descartada", style="cyan")
                 continue
+            us, vs, d = us[valid].astype(np.float64), vs[valid].astype(np.float64), d[valid].astype(np.float64)
 
-            # Mediana y no media: la profundidad trae ceros y valores sueltos muy lejanos.
-            z_med = float(np.median(inside))
-            sigma = float(np.std(inside))
-            # Caja de area minima, no la alineada con los ejes: la proyeccion de un objeto en el
-            # suelo visto de lado aparece girada en la imagen, y la caja vertical que la envuelve
-            # llega a ser raiz(2) veces mas ancha que el objeto.
-            points = cv2.findNonZero(mask_uint8)
-            if points is None:
-                continue
-            (_, (w_px, h_px), _) = cv2.minAreaRect(points)
-            size_m = max(w_px, h_px) * z_med / float(image.focalx)
+            # Inversa de project_root_point: camara +X avance, +Y izquierda, +Z arriba.
+            points_camera = np.stack([d, (image.width / 2 - us) * d / image.focalx,
+                                      (image.height / 2 - vs) * d / image.focaly, np.ones_like(d)])
+            points_root = (root_to_camera @ points_camera)[:3].T
 
-            size_off = abs(size_m - expected) / expected
-            dist_off = abs(z_med - z_expected) / max(z_expected, 1e-3)
-            ok = (size_off <= self.verify_size_tolerance
-                  and sigma <= self.verify_depth_sigma_max
-                  and dist_off <= self.verify_distance_tolerance)
+            # Medidas en ejes de la vista: la parte trasera del objeto queda oculta, asi que el
+            # diametro sale del ancho lateral y el centro del borde cercano + radio (huella
+            # circular). Percentiles 0.5/99.5: la profundidad trae valores sueltos.
+            forward = root_to_camera[:2, 0] / max(np.linalg.norm(root_to_camera[:2, 0]), 1e-6)
+            lateral = np.array([-forward[1], forward[0]])
+            along, across = points_root[:, :2] @ forward, points_root[:, :2] @ lateral
+            across_lo, across_hi = np.percentile(across, [0.5, 99.5])
+            diameter = float(across_hi - across_lo)
+            center = (np.percentile(along, 0.5) + diameter / 2.0) * forward + (across_lo + across_hi) / 2.0 * lateral
+            # Altura desde z = 0 de root, que es el suelo.
+            height = float(np.percentile(points_root[:, 2], 98))
+            shift = float(np.linalg.norm(center - simulated_xy))
 
-            console.print(f"  candidata: tamaño {size_m:.3f} m (desvio {size_off:.0%}), "
-                          f"z {z_med:.2f} m (desvio {dist_off:.0%}), sigma {sigma:.3f} -> "
-                          f"{'aceptada' if ok else 'descartada'}", style="cyan")
-            if ok:
-                accepted.append({"size_m": size_m, "z_med": z_med, "sigma": sigma, "size_off": size_off})
+            checks = {
+                "diametro": self.verify_diameter_range_m[0] <= diameter <= self.verify_diameter_range_m[1],
+                "altura": self.verify_height_range_m[0] <= height <= self.verify_height_range_m[1],
+                "desplazamiento": shift <= self.verify_max_shift_m,
+            }
+            candidate.update({"center_m": center, "diameter_m": diameter, "height_m": height,
+                              "shift_m": shift, "ok": all(checks.values())})
 
-        if not accepted:
-            return None
-        return min(accepted, key=lambda c: c["size_off"])
+            # concept_size solo como referencia en el log: es lo que se quiere corregir.
+            failed = [name for name, passed in checks.items() if not passed]
+            console.print(f"  candidata: {int(valid.sum())} puntos, diametro {diameter:.3f} m "
+                          f"(simulado {self.expected_size(concept_node):.3f}), altura {height:.3f} m, "
+                          f"desplazamiento {shift:.3f} m -> "
+                          f"{'aceptada' if candidate['ok'] else 'descartada por ' + ', '.join(failed)}", style="cyan")
+
+        return candidates
+
+    def save_verification_images(self, rgb, image, simulated_uv, candidates, best):
+        """Deja en la carpeta de la sesion el apoyo visual de la validacion: el centro simulado
+        antes de corregir, y despues el corregido (o las mascaras rechazadas si no pasa)."""
+        folder = os.path.join(self.photo_session_dir, "verificacion")
+        os.makedirs(folder, exist_ok=True)
+        base = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        su, sv = int(round(simulated_uv[0])), int(round(simulated_uv[1]))
+
+        # Antes de corregir: solo el centro de la huella simulada (rojo).
+        pre = base.copy()
+        cv2.drawMarker(pre, (su, sv), (0, 0, 255), cv2.MARKER_CROSS, 30, 2)
+        cv2.putText(pre, "centro simulado", (su + 12, sv - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.imwrite(os.path.join(folder, "pre_correccion.jpg"), pre)
+
+        # Despues: contorno de la mascara aceptada (amarillo) y centro corregido (verde); si no
+        # hay aceptada, los contornos rechazados (magenta) para ver que segmento SAM.
+        post = base.copy()
+        for c in ([best] if best is not None else candidates):
+            contours, _ = cv2.findContours(c["mask"], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(post, contours, -1, (0, 255, 255) if best is not None else (255, 0, 255), 2)
+        cv2.drawMarker(post, (su, sv), (0, 0, 255), cv2.MARKER_CROSS, 30, 2)
+        if best is None:
+            cv2.putText(post, "validacion NEGATIVA", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 255), 2)
+            cv2.imwrite(os.path.join(folder, "post_rechazada.jpg"), post)
+            return
+
+        corrected = self.project_root_point([best["center_m"][0], best["center_m"][1], 0.0], image)
+        if corrected is not None and not corrected["behind"]:
+            cu, cv_ = int(round(corrected["u"])), int(round(corrected["v"]))
+            cv2.drawMarker(post, (cu, cv_), (0, 255, 0), cv2.MARKER_CROSS, 30, 2)
+            cv2.putText(post, "centro corregido", (cu + 12, cv_ + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(post, f"diametro {best['diameter_m']:.3f} m  altura {best['height_m']:.3f} m  "
+                          f"desplazamiento {best['shift_m']:.3f} m",
+                    (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.imwrite(os.path.join(folder, "post_correccion.jpg"), post)
 
     def get_current_rgbd(self):
         """Frame RGB y profundidad en metros del mismo instante, más el struct de imagen con las
@@ -635,8 +702,18 @@ class SpecificWorker(GenericWorker):
         if "simulated_position" not in concept_node.attrs:
             return None
         wp = concept_node.attrs["simulated_position"].value
-        point_root_m = [float(wp[0]), float(wp[1]), float(wp[2])]
+        return self.project_root_point([float(wp[0]), float(wp[1]), float(wp[2])], image)
 
+    def project_footprint_center(self, concept_node, image):
+        """Proyecta el centro de la huella con la que se etiqueta: el corregido por la validacion
+        si la hubo y paso, y si no simulated_position."""
+        if self.footprint is None:
+            return self.project_simulated_position(concept_node, image)
+        return self.project_root_point([float(self.footprint["center_m"][0]),
+                                        float(self.footprint["center_m"][1]), 0.0], image)
+
+    def project_root_point(self, point_root_m, image):
+        """Proyecta un punto del marco root (metros) en la imagen; None si falta la pose."""
         root_to_camera = self.get_root_to_camera_transform()
         if root_to_camera is None:
             return None
@@ -661,7 +738,8 @@ class SpecificWorker(GenericWorker):
             return "sin_bache"
 
         # margin calculated based on the expected size of the concept and the focal length of the camera
-        r_px = (self.expected_size_m / 2.0) * image.focalx / max(projection["depth_m"], 1e-3)
+        size_m = self.expected_size_m if self.footprint is None else self.footprint["diameter_m"]
+        r_px = (size_m / 2.0) * image.focalx / max(projection["depth_m"], 1e-3)
         margin = r_px * self.label_margin_factor
 
         u, v = projection["u"], projection["v"]
@@ -672,16 +750,16 @@ class SpecificWorker(GenericWorker):
         return None
 
     def take_labelled_photo(self, concept_node):
-        """Captura el frame actual, lo etiqueta proyectando simulated_position y lo guarda en la
-        carpeta de su etiqueta. El robot está parado y asentado cuando se llama."""
+        """Captura el frame actual, lo etiqueta proyectando el centro de la huella (corregido por la
+        validacion o simulado) y lo guarda en la carpeta de su etiqueta. El robot está parado."""
         rgb, _, image = self.get_current_rgbd()
         if rgb is None:
             console.print("Disparo descartado: sin imagen de la cámara.", style="bold red")
             return
 
-        projection = self.project_simulated_position(concept_node, image)
+        projection = self.project_footprint_center(concept_node, image)
         if projection is None:
-            console.print("Disparo descartado: no se pudo proyectar simulated_position.", style="bold red")
+            console.print("Disparo descartado: no se pudo proyectar el centro de la huella.", style="bold red")
             return
 
         label = self.label_for_projection(projection, image)
@@ -708,7 +786,8 @@ class SpecificWorker(GenericWorker):
         real = self.real_reference()
         real_txt = ",,,,," if real is None else ",".join(f"{v:.3f}" for v in real["relative"] + real["world"])
         with open(self.photo_log_path, "a") as log:
-            log.write(f"{label},{u_txt},{v_txt},{projection['depth_m']:.3f},{real_txt},{path}\n")
+            footprint = "simulacion" if self.footprint is None else "sam"
+            log.write(f"{label},{u_txt},{v_txt},{projection['depth_m']:.3f},{real_txt},{footprint},{path}\n")
 
     # Concept classifier
     def run_training(self):

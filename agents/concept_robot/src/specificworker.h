@@ -291,10 +291,10 @@ private:
 	// Holgura sobre desired_distance: la aproximacion es asintotica y los ultimos centimetros se
 	// recorren a milimetros por segundo, asi que exigir la distancia exacta puede no cumplirse nunca.
 	static constexpr float FOLLOW_REACHED_MARGIN = 0.1f;   // metros
-	// Tope de avance en follow_person: 0.6 m/s, lo que daba el PD de antes del DWA. A mas velocidad
+	// Tope de avance en follow_person: 0.825 m/s; a 0.6 m/s la botella no llegaba a caer. A mas velocidad
 	// el bache 1 se pisa mas fuerte y el robot recorre mas hasta que aparece 'problem'.
-	static constexpr float FOLLOW_SPEED_FACTOR = 0.4f;
-	static constexpr float FOLLOW_BRAKE_GAIN = 0.8f;       // m/s, el Kp_lin del PD antiguo
+	static constexpr float FOLLOW_SPEED_FACTOR = 0.55f;
+	static constexpr float FOLLOW_BRAKE_GAIN = 1.2f;       // m/s, el Kp_lin del PD antiguo
 	// Deriva de la distancia durante la espera que se interpreta como que la persona se ha movido.
 	static constexpr float FOLLOW_HOLD_DRIFT     = 0.25f;  // metros
 	float follow_hold_seconds;           // segundos que hay que aguantar a la distancia deseada

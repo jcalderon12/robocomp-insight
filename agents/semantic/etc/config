@@ -54,11 +54,11 @@ hypothesisGenerator.OutputDir = "generated_hypotheses"
 hypothesisGenerator.DescriptionPath = "../../description.md"
 # Closed catalog of executable simulation interventions (shared contract with inner_simulator)
 hypothesisGenerator.CatalogPath = "../../etc/intervention_catalog.json"
-hypothesisGenerator.PrimaryModel = "gemma4:12b"
+hypothesisGenerator.PrimaryModel = "gemma4:31b"
 
 # Local fallback model. Must be downloaded beforehand with: ollama pull qwen3:14b
 hypothesisGenerator.FallbackModel = "qwen3:14b"
-hypothesisGenerator.OllamaBaseUrl = "http://localhost:11434"
+hypothesisGenerator.OllamaBaseUrl = "http://158.49.247.149:11434"
 hypothesisGenerator.RequestTimeoutSeconds = 300
 hypothesisGenerator.InternalCount = 3
 hypothesisGenerator.ExternalCount = 3
