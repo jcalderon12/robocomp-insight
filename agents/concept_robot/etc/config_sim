@@ -48,7 +48,7 @@ Ice.MessageSizeMax = "20004800"
 
 Simulated = True
 print_extra_info = false
-Desired_distance = 1800.0
+Desired_distance = 1000.0
 
 # Fin de follow_person: segundos seguidos a la distancia deseada
 Follow_hold_seconds = 3.0
