@@ -338,3 +338,14 @@ agents/episodic_memory/*_test.txt
 agents/episodic_memory/python/example_*.py
 agents/episodic_memory/python/test_*.py   
 logs/
+
+# Tests y salidas de los flujos (lo que se quiera conservar se sube a mano con git add -f)
+tests/
+agents/semantic/generated_hypotheses/
+
+# Codigo generado por robocompdsl/cmake (lo ya seguido sigue en el repo)
+**/generated/
+
+# Agentes de concepto generados por semantic desde las plantillas (se rehacen en cada flujo)
+agents/concept_bump/
+agents/concept_bump_scaled/

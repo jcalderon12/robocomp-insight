@@ -21,13 +21,17 @@ Grafos: `G = Graphs.at("work")` (dominio 0, mundo), `mission_graph` (1, misiones
 `concept_robot` | mueve el robot: `follow_target()` y la máquina de la misión de fotos |
 `concept_person`, `concept_<x>` | publican la RT `robot -> su concepto` |
 `mission_controller` | crea y activa misiones; crea la arista TARGET al activarlas |
-`fake_castilla_la_mancha` | detecta la botella caída, crea `problem`, genera el agente del concepto |
-`inner_simulator` | simula causas en PyBullet; publica `problem_position` y `concept_size` |
+`semantic` | detecta la botella caída, crea `problem` (el caso) y sus hipótesis; con el veredicto crea el concepto (nombre = `cause.name`) + `photograph_me` (`aff_mission`) y genera su agente |
+`inner_simulator` | simula las hipótesis en PyBullet; publica el veredicto (`verdict_filepath`) o `search_abandoned` en `problem` |
+`fake_castilla_la_mancha` | **obsoleto** desde 16/11 (lo hace `semantic`); no lanzarlo: recrearía `problem` |
 `episodic_memory` | graba en `agents/mission_controller/recorded_missions/` |
 `webots-bridge` | **repositorio aparte** (`robocomp/webots-bridge`), no es de este proyecto |
 
 Cadena de misiones: `follow_person` -> cae la botella -> `problem` -> `search_cause` ->
 `take_photos`.
+
+`unexplained` y `problem` son **el mismo nodo** (el caso abierto): se fusionaron el 16/11 con el nombre
+`problem`. En código, comentarios, grabaciones o documentos anteriores, `unexplained` significa `problem`.
 
 El agente del concepto se genera desde las plantillas Jinja2 de
 `agents/agent_generation/templates/`. **Editar siempre la plantilla**: `generate_agent()` hace
