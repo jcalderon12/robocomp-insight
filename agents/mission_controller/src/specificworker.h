@@ -107,7 +107,7 @@ public slots:
 	/**
 	 * \brief Slot triggered when the "Stop Mission" button is clicked.
 	 */
-	void on_stopMission_clicked();
+	void on_stopMission_clicked(uint64_t mission_id);
 	/**
 	 * \brief Slot triggered when the "Set Mission" button is clicked.
 	 */
@@ -115,10 +115,15 @@ public slots:
 	/**
 	 * \brief Slot triggered when the "Start Mission" button is clicked.
 	 */
-	bool on_startMission_clicked();  // Returns true only if the active affordance existed and aff_interacting was set
-	// Structural lookup, no hardcoded node names: active TARGET edge -> its "has_intention"
-	// edge -> the affordance node. Same algorithm as concept_robot::check_affordance_active().
-	std::optional<DSR::Node> get_active_affordance_node(const std::shared_ptr<DSR::DSRGraph>& graph) const;
+	bool on_startMission_clicked(uint64_t mission_id);  // True solo si la afordance de la mision existe y se activo
+	// Afordances cuyo aff_mission es este tipo de mision y que cuelgan de un concepto (has_intention)
+	std::vector<DSR::Node> find_affordances_for_mission(const std::string& mission_type) const;
+	std::optional<uint64_t> concept_of_affordance(uint64_t affordance_id) const;  // origen de su has_intention
+	bool affordance_busy(uint64_t affordance_id) const;  // atada a una mision sin completar
+	// Afordance atada a la mision; si aun no tiene, ata la primera de su tipo (libre si la hay)
+	std::optional<DSR::Node> affordance_of_mission(uint64_t mission_id);
+	std::optional<uint64_t> mission_target_concept(uint64_t mission_id);  // concepto al que apunta su TARGET
+	bool concept_known() const;  // hay algun concepto con afordance para fotos: la causa ya se resolvio
 	
 	// Historic debugger slots
 	void local_changes_management(int value);
@@ -170,6 +175,7 @@ private:
 	
 	// Follow_person mission status tracking
 	bool follow_person_active = false;  // Track if follow_person mission is currently active
+	std::map<uint64_t, uint64_t> mission_affordance;  // mision -> afordance atada al crearla o activarla
 	bool photos_done = false;  // Take Photos ya completada: no se repite y el siguiente follow_person cierra la cadena
 	bool last_aff_interacting_state = false;  // Track previous state of aff_interacting
 
@@ -225,7 +231,7 @@ private:
 	void create_mission_target_edge(uint64_t mission_id);
 	void delete_mission_target_edge(uint64_t mission_id);
 	void delete_active_target_edge(); 
-	void set_dsr_target_edge(const std::string& from_name, const std::string& to_name);  // TARGET robot->objetivo de la mision activa
+	void set_dsr_target_edge(uint64_t to_id);  // TARGET robot->concepto de la mision activa
 	std::optional<uint64_t> find_mission_node_by_name(const std::string &mission_name);
 	
 	// Affordance and mission monitoring
@@ -233,7 +239,7 @@ private:
 	void monitor_mission_execution_state();           // Monitor aff_interacting and mission status
 	void create_or_check_follow_person_mission();     // Create follow_person if it doesn't exist
 	void create_search_problem_cause_mission();       // Create search_cause once after a failure stop
-	void create_take_photos_mission();                // Create take-photos mission once the cause is resolved (problem_position set)
+	void create_take_photos_missions();               // Una take_photos por cada afordance de fotos sin mision
 	void disable_autopilot_and_reset();               // Reset autopilot state and UI
 	bool bottle_rt_exists() const;                    // Minimal structural check
 	bool unexplained_node_exists() const;             // Check if the semantic agent's "unexplained" node exists

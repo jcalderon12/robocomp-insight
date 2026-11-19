@@ -32,17 +32,23 @@ Ice.MessageSizeMax = "20004800"
 
 Simulated = true
 
-# Misión de fotos: este agente dispara en cada parada del giro y etiqueta proyectando
-# simulated_position. El margen de descarte en el borde se deduce de Expected_size_m, este factor
-# sólo lo escala.
+# Misión de fotos: este agente dispara en cada parada del giro. Expected_size_m es el tamaño de reserva
+# si no llega concept_size; Label_margin_factor escala el margen con el que la validacion espera a
+# tener el concepto en cuadro.
 Camera_name = "camera"
 # DEF del objeto real en Webots, solo para medir el error de simulated_position: se graba junto al
 # veredicto de la verificacion y en el CSV de cada disparo, y no entra en el control. Vacio = sin
-# referencia. Tiene que existir en el mundo; si no resuelve, el agente avisa una vez y sigue.
+# referencia. Tiene que existir en el mundo; si no resuelve, el agente avisa una vez y sigue. Las
+# copias Real_def_1, _2... (mientras existan) sirven de referencia para las instancias detectadas.
 Real_def = "{{concept_name|upper}}"
 Photo_save_dir = "photos"
 Expected_size_m = 0.25
 Label_margin_factor = 1.0
+# Mascara de etiqueta de cada foto (1 bache, 0 fondo, 255 ignorado), por distancia al centro de la huella.
+# Huella de SAM: banda ignorada de +-Label_ignore_band_sam_m en su borde. Huella simulada: bache solo
+# en el nucleo (Label_sim_core_fraction del radio) e ignorado hasta r + Verify_max_shift_m.
+Label_ignore_band_sam_m = 0.03
+Label_sim_core_fraction = 0.5
 
 # Verificacion con SAM antes de hacer las fotos: la mascara se reconstruye en 3D (marco root) con la
 # profundidad y se mide. Pasa si tiene puntos suficientes, diametro y altura dentro de rango (los del
@@ -59,8 +65,32 @@ Verify_max_shift_m = 0.3
 # coincidir con Force_photos de concept_robot, que es quien decide si hace el giro.
 Force_photos = false
 
-# Clasificador del concepto: backbone DINOv3 y cada cuántos ciclos se clasifica la vista
-# actual una vez entrenado. Entrena con las fotos que él mismo ha tomado en esta ejecución.
+# Detector del concepto: regresion logistica sobre los vectores por trozo (16x16 px) de DINOv3,
+# entrenada con las fotos que él mismo ha tomado en esta ejecución. Una vez entrenado clasifica la
+# vista actual cada Inference_period_cycles: mapa de probabilidad por trozo y deteccion.
 Dinov3_repo = "/home/robolab/software/dinov3"
 Dinov3_weights = "/home/robolab/robocomp/components/robocomp-insight/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
 Inference_period_cycles = 10
+# Trozo positivo si al menos esta fraccion de sus pixeles es bache; negativos por foto al entrenar.
+Patch_positive_fraction = 0.5
+Train_negatives_per_image = 300
+# Probabilidad minima de un trozo para ser bache: hay deteccion si alguno la supera, y la region
+# detectada son los trozos conexos por encima. Tambien es el corte de las metricas de entrenamiento.
+Detection_threshold = 0.7
+# Refinado con SAM (clic en el centro de la deteccion): se acepta si diametro y altura estan a
+# +-Detection_size_tolerance de la huella. Heatmaps: imagen del mapa en cada deteccion.
+Inference_sam_refine = false
+Detection_size_tolerance = 0.3
+Inference_save_heatmaps = true
+
+# Instancias para el esquive: cada deteccion se lleva al mundo con la profundidad (si esta a menos de
+# Detection_max_range_m) y se asocia a la instancia mas cercana a menos de Instance_association_m, que
+# la ajusta; si no hay, abre una candidata. Con Instance_min_hits vistas se crea su nodo object (y su
+# RT, que es lo que esquiva concept_robot); si no se repite en Instance_candidate_timeout_s, caduca.
+# El concepto es la primera instancia y parte de simulated_position, que pesa como
+# Simulation_prior_weight detecciones.
+Detection_max_range_m = 4.0
+Instance_association_m = 0.5
+Instance_min_hits = 3
+Instance_candidate_timeout_s = 10.0
+Simulation_prior_weight = 1.0

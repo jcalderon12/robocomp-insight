@@ -12,11 +12,11 @@ class Logger:
         self.log_file = log_file
         self.file = open(self.log_file, "w")
 
-    def log(self, message: str, style: str = "black") -> None:
+    def log(self, message: str, style: str = "green") -> None:
         """Log a message to file and console.
             Parameters:
                 - message (str): The message to log.
-                - style (str): The Rich console style for the message (default: "black").
+                - style (str): The Rich console style for the message (default: "green", visible on a dark terminal).
         """
         self.file.write(f"{strftime('%Y-%m-%d %H:%M:%S', localtime())} - {message}\n")
         self.console.print(message, style=style)

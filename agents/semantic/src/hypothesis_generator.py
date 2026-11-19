@@ -60,6 +60,8 @@ SOSA = Namespace("http://www.w3.org/ns/sosa/")
 
 ARM = "llm_full"
 DEFAULT_MAX_ATTEMPTS = 3
+#: Wait before asking again when the LLM was not reached (server down or restarting).
+LLM_RETRY_DELAY_SECONDS = 10.0
 MAX_HYPOTHESES = 10
 #: DescriptionCharLimit of agents/semantic/etc/config: the self-model goes whole if it fits.
 SELF_MODEL_CHAR_LIMIT = 12000
@@ -436,6 +438,8 @@ def generate_from_memory(memory: MemorySnapshot, llm: LLM, *, model: str, output
             stages["llm"] += time.monotonic() - clock
             errors.append(f"attempt {number}: the LLM failed: {error}")
             log(f"attempt {number}: the LLM failed: {error}")
+            if number < max_attempts:
+                time.sleep(LLM_RETRY_DELAY_SECONDS)  # back-to-back retries all fell inside the same outage
             continue
         attempt.update(elapsed_seconds=round(time.monotonic() - clock, 3), **({"ollama_native": metrics} if metrics else {}))
         stages["llm"] += time.monotonic() - clock

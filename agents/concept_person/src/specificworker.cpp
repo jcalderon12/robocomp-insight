@@ -492,6 +492,10 @@ void SpecificWorker::create_affordance()
     G->add_or_modify_attrib_local<pos_y_att>(affordance_node, pos_y);
 	G->add_or_modify_attrib_local<parent_att>(affordance_node, person_node.id());
 	G->add_or_modify_attrib_local<aff_interacting_att>(affordance_node, false);
+	// Mision que atiende esta afordance (atributo sin registrar en el nucleo: va por el mapa)
+	DSR::Attribute mission_attr;
+	mission_attr.value(std::string("follow_person"));
+	affordance_node.attrs()["aff_mission"] = mission_attr;
 	G->insert_node(affordance_node);
 	G->update_node(affordance_node);
 

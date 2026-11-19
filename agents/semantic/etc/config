@@ -59,7 +59,9 @@ hypothesisGenerator.PrimaryModel = "gemma4:31b"
 # Local fallback model. Must be downloaded beforehand with: ollama pull qwen3:14b
 hypothesisGenerator.FallbackModel = "qwen3:14b"
 hypothesisGenerator.OllamaBaseUrl = "http://158.49.247.149:11434"
-hypothesisGenerator.RequestTimeoutSeconds = 300
+# Por llamada; gemma4:31b remoto tarda 40-90 s. Igual a la espera de inner (Simulation.BatchWaitSeconds):
+# una respuesta posterior se descarta, asi que mas no sirve.
+hypothesisGenerator.RequestTimeoutSeconds = 180
 hypothesisGenerator.InternalCount = 3
 hypothesisGenerator.ExternalCount = 3
 hypothesisGenerator.PreferredClient = "ollama_http"

@@ -38,6 +38,14 @@ sys.path.append('/opt/robocomp/lib')
 console = Console(highlight=False)
 
 import json
+import subprocess
+
+# Ruta a 'agents' para alcanzar el paquete compartido agent_generation (plantillas y generacion de
+# agentes): el agente del concepto confirmado se genera y se lanza desde aqui.
+AGENTS_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if AGENTS_ROOT not in sys.path:
+    sys.path.insert(0, AGENTS_ROOT)
+from agent_generation.agent_generator import generate_agent
 
 from src.ontology_mapping import DSRSemanticWrapper, UNEXPLAINED_INTENTION_NAME, FOLLOW_AFFORDANCE_NAME
 from src.episode_memory_reader import episode_from_memory, recording_to_explain
@@ -58,6 +66,10 @@ from src.verdict_ingestor import ingest_verdict, load_verdict, mechanism_graph, 
 # DSR contract with the inner simulator (attributes of the intention node)
 HYPOTHESES_FILEPATH_ATTR = "hypotheses_filepath"
 VERDICT_FILEPATH_ATTR = "verdict_filepath"
+# Puesto por inner cuando agota su espera sin lote: el caso se cierra sin simular.
+SEARCH_ABANDONED_ATTR = "search_abandoned"
+# Mision que atiende la afordance del concepto: mission_controller crea una por afordance.
+CONCEPT_AFFORDANCE_MISSION = "take_photos"
 
 
 
@@ -70,7 +82,7 @@ NON_SEMANTIC_ATTRIBUTES = frozenset({"imu_accelerometer", "imu_gyroscope", "imu_
                                      "imu_orientation", "robot_ref_adv_speed", "robot_ref_rot_speed"})
 
 #: How long the generation waits for GraphDB to store the case and give it back. A healthy GraphDB
-#: answers in milliseconds; past this the batch goes out empty (the simulator waits 120 s for it).
+#: answers in milliseconds; past this the batch goes out empty (the simulator waits 180 s for it).
 MEMORY_READ_TIMEOUT_S = 30.0
 
 
@@ -237,8 +249,14 @@ class SpecificWorker(GenericWorker):
                     style="red",
                 )
 
+        if self.unexplained and self._case_abandoned():
+            return True
+
         if self.unexplained and self.hypothesis_config.enabled and not self.hypothesis_generation_done:
             self.generate_hypotheses_json()
+            # La llamada al LLM bloquea el ciclo: inner puede haber abandonado mientras tanto.
+            if self._case_abandoned():
+                return True
 
         # Publish (and retry until the node accepts it) the hypotheses batch path so
         # the inner simulator can pick it up from the working memory.
@@ -390,12 +408,97 @@ class SpecificWorker(GenericWorker):
             )
 
         self.ingested_verdict_paths.add(verdict_path)
+        # Antes de cerrar el caso: mission_controller pasa a las fotos si el concepto ya existe
+        # cuando desaparece el nodo del caso.
+        self._create_concept_from_verdict(verdict_path)
         self._resolve_unexplained_cycle(node)
+
+    def _case_abandoned(self) -> bool:
+        """Si inner marco el caso como abandonado (agoto su espera sin lote), se cierra sin simular
+        y se descarta el lote que llegue tarde."""
+        node = self.g.get_node(UNEXPLAINED_INTENTION_NAME)
+        if node is None or SEARCH_ABANDONED_ATTR not in node.attrs or not node.attrs[SEARCH_ABANDONED_ATTR].value:
+            return False
+        console.print("The inner simulator abandoned the case (no batch in time): closing it.", style="yellow")
+        self._resolve_unexplained_cycle(node)
+        return True
+
+    def _close_case_without_batch(self, reason: str) -> None:
+        """La generacion fallo sin publicar lote: se cierra el caso para que termine la busqueda."""
+        console.print(f"No hypotheses batch ({reason}): closing the case.", style="red")
+        self._resolve_unexplained_cycle(self.g.get_node(UNEXPLAINED_INTENTION_NAME))
+
+    def _create_concept_from_verdict(self, verdict_path: str) -> None:
+        """Concepto de la causa confirmada por el veredicto (aceptada, o provisional con
+        AcceptMostProbable en inner): su nodo con la posicion y medidas de la mejor repeticion, su
+        afordance photograph_me y su agente, generado desde las plantillas. Solo causas espaciales."""
+        verdict = load_verdict(verdict_path)
+        if verdict is None:
+            return
+        confirmed_id = verdict.get("accepted_hypothesis_id") or verdict.get("provisional_hypothesis_id")
+        hypothesis = next((h for h in verdict.get("hypotheses", []) if h.get("hypothesis_id") == confirmed_id), None)
+        if hypothesis is None:
+            console.print("Verdict without a confirmed hypothesis: no concept is created.", style="yellow")
+            return
+        # El concepto se llama como la causa del catalogo (nodo y agente concept_<nombre>).
+        concept = (hypothesis.get("cause") or {}).get("name")
+        sample = (hypothesis.get("best_generated_instances") or {}).get("sample") or {}
+        if concept is None or "x_m" not in sample:
+            console.print(f"Confirmed hypothesis {confirmed_id} has no spatial concept: none is created.", style="yellow")
+            return
+        if self.g.get_node(concept) is not None:
+            return
+
+        robot_node = self.g.get_node("robot")
+        concept_node = Node(agent_id=self.agent_id, type="object", name=concept)
+        if robot_node is not None and "pos_x" in robot_node.attrs:
+            concept_node.attrs["pos_x"] = Attribute(float(robot_node.attrs["pos_x"].value) - 200.0, self.agent_id)
+            concept_node.attrs["pos_y"] = Attribute(float(robot_node.attrs["pos_y"].value), self.agent_id)
+        # Metros de PyBullet, en el marco del mundo: lo que el agente del concepto lee como creencia.
+        concept_node.attrs["simulated_position"] = Attribute([float(sample["x_m"]), float(sample["y_m"]), 0.0], self.agent_id)
+        if "diameter_m" in sample:
+            concept_node.attrs["concept_size"] = Attribute(
+                [float(sample["diameter_m"]), float(sample["diameter_m"]), float(sample.get("height_m", 0.0))], self.agent_id)
+        self.g.insert_node(concept_node)
+        concept_node = self.g.get_node(concept)
+
+        photograph_me_node = Node(agent_id=self.agent_id, type="affordance", name="photograph_me")
+        if "pos_x" in concept_node.attrs:
+            photograph_me_node.attrs["pos_x"] = Attribute(concept_node.attrs["pos_x"].value, self.agent_id)
+            photograph_me_node.attrs["pos_y"] = Attribute(concept_node.attrs["pos_y"].value - 100.0, self.agent_id)
+        photograph_me_node.attrs["parent"] = Attribute(concept_node.id, self.agent_id)
+        photograph_me_node.attrs["aff_interacting"] = Attribute(False, self.agent_id)
+        photograph_me_node.attrs["aff_mission"] = Attribute(CONCEPT_AFFORDANCE_MISSION, self.agent_id)
+        self.g.insert_node(photograph_me_node)
+        photograph_me_node = self.g.get_node("photograph_me")
+        # Edge(destino, origen, ...): concepto -> photograph_me
+        self.g.insert_or_assign_edge(Edge(photograph_me_node.id, concept_node.id, "has_intention", self.agent_id))
+        console.print(f"Created '{concept}' + 'photograph_me' from {confirmed_id} "
+                      f"({'accepted' if verdict.get('accepted_hypothesis_id') else 'provisional'}): {sample}.", style="bold green")
+
+        if not self._launch_concept_agent(concept):
+            console.print(f"concept_{concept} could not be generated/launched.", style="bold red")
+
+    def _launch_concept_agent(self, concept: str) -> bool:
+        """Genera concept_<concepto> desde las plantillas y lo lanza, con un log por ejecucion."""
+        agent_name = f"concept_{concept}"
+        console.print(f"Generating {agent_name} from the templates...", style="bold yellow")
+        if not generate_agent(concept, AGENTS_ROOT):
+            return False
+        agent_dir = os.path.join(AGENTS_ROOT, agent_name)
+        log_dir = os.path.join(agent_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, f"{time.strftime('%Y%m%d_%H%M%S')}.log")
+        subprocess.Popen(["bin/" + agent_name, "etc/config"], cwd=agent_dir,
+                         stdout=open(log_path, "w"), stderr=subprocess.STDOUT)
+        console.print(f"{agent_name} generated and launched from {agent_dir} (log: {log_path}).", style="bold green")
+        return True
 
     def _resolve_unexplained_cycle(self, intention_node) -> None:
         """Remove the unexplained intention node and re-arm the detection cycle."""
         try:
-            self.g.delete_node(intention_node.id)
+            if intention_node is not None:
+                self.g.delete_node(intention_node.id)
         except Exception as exc:
             console.print(f"Could not delete intention node: {exc}", style="red")
         self.unexplained = False
@@ -439,7 +542,7 @@ class SpecificWorker(GenericWorker):
 
         intention_id = self.g.insert_node(intention_node)
         if intention_id is None:
-            existing = self.g.get_node("unexplained")
+            existing = self.g.get_node(UNEXPLAINED_INTENTION_NAME)
             if existing is None:
                 console.print("Cannot insert intention: node creation failed.", style="red")
                 return False
@@ -668,6 +771,7 @@ class SpecificWorker(GenericWorker):
                     f"Reason: {result.error}. Elapsed: {generation_elapsed:.3f}s.",
                     style="yellow",
                 )
+                self._close_case_without_batch(str(result.error))
         except Exception as exc:
             generation_elapsed = time.perf_counter() - generation_started_at
             self.hypothesis_generation_done = True
@@ -676,6 +780,7 @@ class SpecificWorker(GenericWorker):
                 f"Elapsed: {generation_elapsed:.3f}s.",
                 style="red",
             )
+            self._close_case_without_batch(str(exc))
 
     def _generate_from_episode(self) -> None:
         """Generation v2 (contract 3): the episode from the recording of the episodic memory goes to the
@@ -719,6 +824,7 @@ class SpecificWorker(GenericWorker):
             episode_path.write_text(json.dumps(episode, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
         except Exception as exc:
             console.print(f"[Generation v2] No batch for '{recording}': {exc}", style="red")
+            self._close_case_without_batch(str(exc))
             return
         stages["episode"] = time.perf_counter() - started
         clock = time.perf_counter()
@@ -738,6 +844,7 @@ class SpecificWorker(GenericWorker):
             result = self._memory_error_batch(case_id, episode, trigger, episode_path, exc, timings)
         except Exception as exc:
             console.print(f"[Generation v2] No batch for '{recording}': {exc}", style="red")
+            self._close_case_without_batch(str(exc))
             return
         self.current_batch = result.batch
         self.current_episode = result.episode or episode
@@ -822,7 +929,7 @@ class SpecificWorker(GenericWorker):
             semantic_changed = self.mapper.updated_node(self.g, node_type)
         if semantic_changed:
             self._request_sync()
-        console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
+        # console.print(f"UPDATE NODE ATT: {id} {attribute_names}", style='green')
 
     def update_node(self, id: int, type: str):
         if type in NON_SEMANTIC_NODE_TYPES:
@@ -834,7 +941,7 @@ class SpecificWorker(GenericWorker):
         if semantic_changed:
             self._request_sync()
 
-        console.print(f"UPDATE NODE: {id} {type}", style='green')
+        # console.print(f"UPDATE NODE: {id} {type}", style='green')
 
     def delete_node(self, id: int):
         self._bottle_id = None
@@ -842,8 +949,7 @@ class SpecificWorker(GenericWorker):
             self.mapper.initialize_from_dsr(self.g)
         self._request_sync()
 
-
-        console.print(f"DELETE NODE:: {id} ", style='green')
+        # console.print(f"DELETE NODE:: {id} ", style='green')
 
     def update_edge(self, fr: int, to: int, type: str):
         # Of the RT edges, only robot->bottle changes the mirror (by existing or not); the rest are
@@ -855,7 +961,7 @@ class SpecificWorker(GenericWorker):
         if semantic_changed:
             self._request_sync()
 
-        console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
+        # console.print(f"UPDATE EDGE: {fr} to {type}", type, style='green')
 
     def update_edge_att(self, fr: int, to: int, type: str, attribute_names: [str]):
         if type == "RT":           # a pose is not a semantic fact; the edge's existence is (update/delete_edge)
@@ -864,7 +970,7 @@ class SpecificWorker(GenericWorker):
             semantic_changed = self.mapper.updated_edge(self.g, type)
         if semantic_changed:
             self._request_sync()
-        console.print(f"UPDATE EDGE ATT: {fr} to {type} {attribute_names}", style='green')
+        # console.print(f"UPDATE EDGE ATT: {fr} to {type} {attribute_names}", style='green')
 
     def _bottle_node_id(self):
         if self._bottle_id is None:
@@ -878,4 +984,4 @@ class SpecificWorker(GenericWorker):
         if semantic_changed:
             self._request_sync()
 
-        console.print(f"DELETE EDGE: {fr} to {type} {type}", style='green')
+        # console.print(f"DELETE EDGE: {fr} to {type} {type}", style='green')

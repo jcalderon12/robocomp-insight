@@ -20,8 +20,10 @@
 #
 
 import glob
+import json
 import math
 import os
+import threading
 import time
 
 import cv2
@@ -44,6 +46,10 @@ ZED_MOUNT_OFFSET_M = [0.0, -0.075, 0.945]
 ZED_MOUNT_ROTATION_AXIS = [0.0, 0.0, 1.0]
 ZED_MOUNT_ROTATION_ANGLE_RAD = 1.57  # del Shadow.proto, valido en el marco de Webots
 STOPPED_SPEED_EPSILON = 1e-3 # <1e-3 m/s is considered stopped 
+# Valores de la mascara de etiqueta (255 = ignorado, el convenio de los datasets de segmentacion)
+LABEL_BACKGROUND, LABEL_BUMP, LABEL_IGNORE = 0, 1, 255
+# Un pixel cuya profundidad queda tanto por delante del suelo ve otra cosa (persona, pared)
+OCCLUSION_MARGIN_M = 0.25
 
 
 class Stage:
@@ -104,6 +110,7 @@ class SpecificWorker(GenericWorker):
         # simulado la sabe quien monta el experimento, no este agente.
         self.real_def = configData.get("Real_def", "")
         self.real_def_warned = False
+        self.real_objects_cache = None  # {DEF: (x, y)} de Real_def y Real_def_1, _2...; los baches no se mueven
         self.robot_def = "shadow"
         self.simulated = configData["Simulated"]
 
@@ -138,21 +145,37 @@ class SpecificWorker(GenericWorker):
         self.photo_session_dir = os.path.abspath(
             os.path.join(configData["Photo_save_dir"], str(int(time.time() * 1000))))
         os.makedirs(self.photo_session_dir, exist_ok=True)
-        self.photo_log_path = os.path.join(self.photo_session_dir, "shots.csv")
-        with open(self.photo_log_path, "w") as log:
-            log.write("label,u,v,depth_m,real_rel_x,real_rel_y,real_rel_z,"
-                      "real_world_x,real_world_y,real_world_z,footprint,path\n")
+        self.annotations_path = os.path.join(self.photo_session_dir, "annotations.jsonl")
+        # Etiquetado: banda ignorada en el borde de la huella de SAM y nucleo de la simulada.
+        self.label_ignore_band_sam_m = configData["Label_ignore_band_sam_m"]
+        self.label_sim_core_fraction = configData["Label_sim_core_fraction"]
         console.print(f"Fotos de esta sesión en: {self.photo_session_dir}", style="cyan")
 
         # concept classifier: trained on the fly with the photos of the mission
         self.dinov3_repo = configData["Dinov3_repo"]
         self.dinov3_weights = configData["Dinov3_weights"]
         self.inference_period_cycles = configData["Inference_period_cycles"]
+        self.patch_positive_fraction = configData["Patch_positive_fraction"]
+        self.train_negatives_per_image = configData["Train_negatives_per_image"]
+        self.detection_threshold = configData["Detection_threshold"]
+        self.detection_size_tolerance = configData["Detection_size_tolerance"]
+        self.inference_sam_refine = configData["Inference_sam_refine"]
+        self.inference_save_heatmaps = configData["Inference_save_heatmaps"]
+        self.training_thread = None
         # Un modelo por sesion, con el mismo nombre que su carpeta de fotos: entre flujos no se mezclan.
         self.model_dir = os.path.join("model", os.path.basename(self.photo_session_dir))
         self.backbone = None
         self.classifier = None
         self.cycle_count = 0
+
+        # Instancias del concepto (cada bache fisico) para el esquive. La primera es el propio nodo
+        # del concepto, que parte de simulated_position; las demas salen del detector.
+        self.detection_max_range_m = configData["Detection_max_range_m"]
+        self.instance_association_m = configData["Instance_association_m"]
+        self.instance_min_hits = configData["Instance_min_hits"]
+        self.instance_candidate_timeout_s = configData["Instance_candidate_timeout_s"]
+        self.simulation_prior_weight = configData["Simulation_prior_weight"]
+        self.instances = []  # {"name", "xy", "weight", "hits", "last_seen", "confirmed", "last_rt"}
 
         if startup_check:
             self.startup_check()
@@ -170,6 +193,8 @@ class SpecificWorker(GenericWorker):
         concept_node = self.g.get_node(CONCEPT_NAME)
         if concept_node is None:
             return  # not created yet
+        if not self.instances:
+            self.init_instances(concept_node)
 
         now_ms = int(time.time() * 1000)
         relative_position = self.get_relative_position(concept_node)
@@ -182,6 +207,7 @@ class SpecificWorker(GenericWorker):
             if self.update_relative_position(relative_position):
                 self.last_relative_pose = relative_position
                 self.has_published_once = True
+        self.publish_instance_rts()
 
         if self.stage in (Stage.IDLE, Stage.SHOOTING, Stage.VERIFYING):
             self.log_bearing_check(concept_node, relative_position, now_ms)
@@ -212,35 +238,19 @@ class SpecificWorker(GenericWorker):
         relative_position = [0.0, 0.0, 0.0]
 
         if self.simulated:
-            # El concepto se situa donde lo estimo la simulacion, no donde esta de verdad: es lo
-            # que este agente "cree" y es el objetivo al que se aproxima el robot.
-            if "simulated_position" not in concept_node.attrs:
+            # El concepto se situa donde lo estima este agente: simulated_position al principio,
+            # ajustada despues con las detecciones (concept_world_position). Es el objetivo al
+            # que se aproxima el robot y el obstaculo que esquiva.
+            wp = self.concept_world_position(concept_node)
+            if wp is None:
                 return self.last_relative_pose
-            wp = concept_node.attrs["simulated_position"].value
 
             try:
                 robot_pose = self.webots2robocomp_proxy.getObjectPose(self.robot_def)
             except Exception as e:
                 console.print(f"Sin pose de Webots ({e}); se mantiene la última RT.", style="bold red")
                 return self.last_relative_pose
-
-            # simulated_position va en metros; getObjectPose devuelve milimetros.
-            dx = float(wp[0]) - robot_pose.position.x / 1000.0
-            dy = float(wp[1]) - robot_pose.position.y / 1000.0
-            dz = float(wp[2]) - robot_pose.position.z / 1000.0
-
-            q = robot_pose.orientation
-            theta = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-            local_x = -math.sin(theta) * dx + math.cos(theta) * dy
-            local_y = -math.cos(theta) * dx - math.sin(theta) * dy
-
-            # Convencion de RoboComp: el avance va en la coordenada y, que es lo que asume
-            # follow_target al medir el rumbo como atan2(x, y). Mismo orden que concept_person.
-            # La primera componente va negada porque el rumbo publicado respondia al giro con el
-            # signo contrario al que espera la ley de control (medido en lazo abierto, 209
-            # muestras, 96% consistente). atan2(-x, y) = -atan2(x, y): refleja el sentido de giro
-            # y deja el cero donde estaba, o sea que de frente sigue siendo rumbo 0.
-            relative_position = [-local_y, local_x, dz]
+            relative_position = self.relative_from_world(wp, robot_pose)
         else:
             # TODO: no trained detector for CONCEPT_NAME yet. Wire this up once a real detector
             # exists; until then this branch returns [0,0,0] and never publishes on the real robot.
@@ -253,6 +263,205 @@ class SpecificWorker(GenericWorker):
                     break
 
         return relative_position
+
+    def relative_from_world(self, world_m, robot_pose):
+        """Punto del mundo (metros) en el marco del robot, con la convencion de la RT."""
+        # world en metros; getObjectPose devuelve milimetros.
+        dx = float(world_m[0]) - robot_pose.position.x / 1000.0
+        dy = float(world_m[1]) - robot_pose.position.y / 1000.0
+        dz = float(world_m[2]) - robot_pose.position.z / 1000.0
+
+        q = robot_pose.orientation
+        theta = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        local_x = -math.sin(theta) * dx + math.cos(theta) * dy
+        local_y = -math.cos(theta) * dx - math.sin(theta) * dy
+
+        # Convencion de RoboComp: el avance va en la coordenada y, que es lo que asume
+        # follow_target al medir el rumbo como atan2(x, y). Mismo orden que concept_person.
+        # La primera componente va negada porque el rumbo publicado respondia al giro con el
+        # signo contrario al que espera la ley de control (medido en lazo abierto, 209
+        # muestras, 96% consistente). atan2(-x, y) = -atan2(x, y): refleja el sentido de giro
+        # y deja el cero donde estaba, o sea que de frente sigue siendo rumbo 0.
+        return [-local_y, local_x, dz]
+
+    # ================ Instancias (esquive) ================
+
+    def concept_world_position(self, concept_node):
+        """Posicion del concepto en el mundo: la estimacion fusionada si existe, si no
+        simulated_position. None sin ninguna de las dos."""
+        if "simulated_position" not in concept_node.attrs:
+            return None
+        wp = [float(v) for v in concept_node.attrs["simulated_position"].value]
+        concept = self.instance_by_name(CONCEPT_NAME)
+        if concept is not None:
+            wp[0], wp[1] = float(concept["xy"][0]), float(concept["xy"][1])
+        return wp
+
+    def instance_by_name(self, name):
+        return next((i for i in self.instances if i["name"] == name), None)
+
+    def init_instances(self, concept_node):
+        """Primera instancia: el concepto, con simulated_position como prior. Si el agente rearranca
+        recupera las instancias del grafo por su world_position."""
+        if "simulated_position" not in concept_node.attrs:
+            return
+        source = "world_position" if "world_position" in concept_node.attrs else "simulated_position"
+        xy = np.array([float(v) for v in concept_node.attrs[source].value[:2]])
+        self.instances.append({"name": CONCEPT_NAME, "xy": xy, "weight": float(self.simulation_prior_weight),
+                               "hits": 0, "last_seen": time.time(), "confirmed": True, "last_rt": None})
+        for node in self.g.get_nodes_by_type("object"):
+            suffix = node.name[len(CONCEPT_NAME) + 1:]
+            if node.name.startswith(CONCEPT_NAME + "_") and suffix.isdigit() and "world_position" in node.attrs:
+                self.instances.append({"name": node.name, "weight": 1.0, "hits": self.instance_min_hits,
+                                       "xy": np.array([float(v) for v in node.attrs["world_position"].value[:2]]),
+                                       "last_seen": time.time(), "confirmed": True, "last_rt": None})
+        if len(self.instances) > 1:
+            console.print(f"Instancias recuperadas del grafo: {[i['name'] for i in self.instances[1:]]}", style="cyan")
+
+    def region_world_point(self, region, depth_m, image, root_to_camera):
+        """Centro de una region detectada en el mundo (XY, marco root): profundidad mediana en una
+        ventana 5x5 sobre su centro, retroproyectada. None sin profundidad o mas alla del alcance."""
+        u, v = (int(round(c)) for c in region["center_uv"])
+        window = depth_m[max(v - 2, 0):v + 3, max(u - 2, 0):u + 3]
+        d = window[np.isfinite(window) & (window > 0)]
+        if d.size == 0:
+            return None
+        d = float(np.median(d))
+        # Lejos el trozo de 16 px abarca demasiado suelo y la profundidad pierde precision.
+        if d > self.detection_max_range_m:
+            return None
+        # Inversa de project_root_point: camara +X avance, +Y izquierda, +Z arriba.
+        point_camera = np.array([d, (image.width / 2 - u) * d / image.focalx,
+                                 (image.height / 2 - v) * d / image.focaly, 1.0])
+        return (root_to_camera @ point_camera)[:2]
+
+    def update_instances(self, points):
+        """Asocia cada medida (XY en el mundo) a la instancia mas cercana dentro de
+        Instance_association_m y la fusiona (media ponderada); si no hay, abre una candidata. Una
+        candidata se confirma con Instance_min_hits vistas y caduca si no se repite a tiempo."""
+        now = time.time()
+        seen = set()
+        for xy in points:
+            nearest = min(self.instances, key=lambda i: np.linalg.norm(i["xy"] - xy), default=None)
+            if nearest is None or np.linalg.norm(nearest["xy"] - xy) > self.instance_association_m:
+                nearest = {"name": None, "xy": xy, "weight": 1.0, "hits": 1, "last_seen": now,
+                           "confirmed": False, "last_rt": None}
+                self.instances.append(nearest)
+                seen.add(id(nearest))
+                self.log_instance_event(nearest, "candidata", xy)
+            elif id(nearest) in seen:
+                continue  # una medida por instancia y vista: dos regiones del mismo bache no cuentan doble
+            else:
+                seen.add(id(nearest))
+                nearest["xy"] = (nearest["xy"] * nearest["weight"] + xy) / (nearest["weight"] + 1.0)
+                nearest["weight"] += 1.0
+                nearest["hits"] += 1
+                nearest["last_seen"] = now
+                if nearest["confirmed"]:
+                    self.publish_world_position(nearest)
+                    self.log_instance_event(nearest, "fusion", xy)
+                else:
+                    self.log_instance_event(nearest, "vista", xy)
+
+            if not nearest["confirmed"] and nearest["hits"] >= self.instance_min_hits:
+                self.confirm_instance(nearest)
+
+        self.instances = [i for i in self.instances
+                          if i["confirmed"] or now - i["last_seen"] <= self.instance_candidate_timeout_s]
+
+    def confirm_instance(self, instance):
+        """Crea el nodo de una instancia confirmada: tipo object (lo que esquiva concept_robot), con
+        el tamaño del concepto y su posicion en el mundo. La RT la publica publish_instance_rts."""
+        concept_node = self.g.get_node(CONCEPT_NAME)
+        if concept_node is None:
+            return
+        index = 1
+        while self.g.get_node(f"{CONCEPT_NAME}_{index}") is not None:
+            index += 1
+        name = f"{CONCEPT_NAME}_{index}"
+
+        node = Node(agent_id=self.agent_id, type="object", name=name)
+        if "pos_x" in concept_node.attrs:
+            node.attrs["pos_x"] = Attribute(float(concept_node.attrs["pos_x"].value), self.agent_id)
+            node.attrs["pos_y"] = Attribute(float(concept_node.attrs["pos_y"].value) + 100.0 * index, self.agent_id)
+        if "concept_size" in concept_node.attrs:
+            node.attrs["concept_size"] = Attribute([float(v) for v in concept_node.attrs["concept_size"].value], self.agent_id)
+        node.attrs["world_position"] = Attribute([float(instance["xy"][0]), float(instance["xy"][1]), 0.0], self.agent_id)
+        if self.g.insert_node(node) is None:
+            console.print(f"No se pudo crear el nodo {name}.", style="bold red")
+            return
+        instance["name"], instance["confirmed"] = name, True
+        console.print(f"Nueva instancia {name} en ({instance['xy'][0]:.2f}, {instance['xy'][1]:.2f}) "
+                      f"tras {instance['hits']} vistas", style="bold green")
+        self.log_instance_event(instance, "confirmada", instance["xy"])
+
+    def publish_world_position(self, instance):
+        """Escribe la estimacion fusionada en el nodo (world_position): consulta y recuperacion al
+        rearrancar. Lo que usa el esquive es la RT."""
+        node = self.g.get_node(instance["name"])
+        if node is None:
+            return
+        node.attrs["world_position"] = Attribute([float(instance["xy"][0]), float(instance["xy"][1]), 0.0], self.agent_id)
+        self.g.update_node(node)
+
+    def publish_instance_rts(self):
+        """RT robot -> cada instancia confirmada (salvo el concepto, que va por su camino): la
+        posicion en el mundo no cambia, pero el robot si, asi que se recalcula cada ciclo."""
+        others = [i for i in self.instances if i["confirmed"] and i["name"] != CONCEPT_NAME]
+        if not others or not self.simulated:
+            return  # TODO real: pose del robot sin Webots
+        robot_node = self.g.get_node("robot")
+        if robot_node is None:
+            return
+        try:
+            robot_pose = self.webots2robocomp_proxy.getObjectPose(self.robot_def)
+        except Exception:
+            return
+        for instance in others:
+            node = self.g.get_node(instance["name"])
+            if node is None:
+                continue
+            relative = self.relative_from_world([instance["xy"][0], instance["xy"][1], 0.0], robot_pose)
+            if instance["last_rt"] is None or self.has_significant_change(relative, instance["last_rt"]):
+                self.rt_api.insert_or_assign_edge_RT(robot_node, node.id, relative, [0.0, 0.0, 0.0])
+                instance["last_rt"] = relative
+
+    def real_objects(self):
+        """Posiciones reales (XY, metros) de Real_def y de sus copias Real_def_1, _2... mientras
+        resuelvan. Se piden una vez: los baches no se mueven. {} sin referencia."""
+        if self.real_objects_cache is not None or not self.real_def:
+            return self.real_objects_cache or {}
+        found = {}
+        for name in [self.real_def] + [f"{self.real_def}_{k}" for k in range(1, 20)]:
+            try:
+                pose = self.webots2robocomp_proxy.getObjectPose(name)
+            except Exception:
+                break
+            xy = (pose.position.x / 1000.0, pose.position.y / 1000.0)
+            if not all(math.isfinite(v) for v in xy) or not any(xy):
+                break  # NaN o ceros: el DEF no existe
+            found[name] = xy
+        self.real_objects_cache = found
+        console.print(f"Referencias reales: {list(found) or 'ninguna'}", style="cyan")
+        return found
+
+    def log_instance_event(self, instance, event, measured_xy):
+        """Una fila en instances.csv: medida, estimacion de la instancia y error frente al objeto
+        real mas cercano."""
+        real = self.real_objects()
+        nearest_def, error = "", None
+        if real:
+            nearest_def = min(real, key=lambda k: math.dist(real[k], instance["xy"]))
+            error = math.dist(real[nearest_def], instance["xy"])
+        path = os.path.join(self.model_dir, "instances.csv")
+        new_file = not os.path.exists(path)
+        os.makedirs(self.model_dir, exist_ok=True)
+        with open(path, "a") as log:
+            if new_file:
+                log.write("timestamp_ms,instance,event,measured_x,measured_y,estimate_x,estimate_y,hits,real_def,error_m\n")
+            log.write(f"{int(time.time() * 1000)},{instance['name'] or ''},{event},{measured_xy[0]:.3f},{measured_xy[1]:.3f},"
+                      f"{instance['xy'][0]:.3f},{instance['xy'][1]:.3f},{instance['hits']},{nearest_def},"
+                      f"{'' if error is None else f'{error:.3f}'}\n")
 
     def warn_no_real_reference(self, reason):
         """Avisa una sola vez, no por ciclo: sin referencia real la mision es identica, solo se
@@ -533,10 +742,8 @@ class SpecificWorker(GenericWorker):
         self.publish_concept_attrs(diag)
         return True
 
-    def mask_candidates_for_point(self, concept_node, rgb, depth_m, image, u, v):
-        """Segmenta con SAM en (u, v), reconstruye cada mascara en 3D (marco root) y la mide:
-        centro en el suelo, diametro y altura. Devuelve todas las candidatas, con "ok" si pasan
-        los criterios; lista vacia si SAM falla o falta la pose de la camara."""
+    def run_sam(self, rgb, u, v):
+        """Mascaras de SAM para un clic en (u, v); lista vacia si falla."""
         try:
             if self.sam is None:
                 from ultralytics import SAM   # import aqui: tarda y solo hace falta al verificar
@@ -550,8 +757,44 @@ class SpecificWorker(GenericWorker):
         except Exception as e:
             console.print(f"Fallo ejecutando SAM: {e}", style="bold red")
             return []
-
         if not results or results[0].masks is None:
+            return []
+        return [(mask > 0).astype(np.uint8) for mask in results[0].masks.data.cpu().numpy()]
+
+    def measure_mask_3d(self, mask_uint8, depth_m, image, root_to_camera):
+        """Reconstruye la mascara en 3D (marco root) con la profundidad y la mide: centro en el
+        suelo, diametro y altura. None si no hay puntos suficientes con profundidad."""
+        # Sin el borde: sus pixeles mezclan la profundidad del objeto con la del fondo.
+        vs, us = np.nonzero(cv2.erode(mask_uint8, np.ones((3, 3), np.uint8)))
+        d = depth_m[vs, us]
+        valid = np.isfinite(d) & (d > 0)
+        if valid.sum() < self.verify_min_points:
+            return None
+        us, vs, d = us[valid].astype(np.float64), vs[valid].astype(np.float64), d[valid].astype(np.float64)
+
+        # Inversa de project_root_point: camara +X avance, +Y izquierda, +Z arriba.
+        points_camera = np.stack([d, (image.width / 2 - us) * d / image.focalx,
+                                  (image.height / 2 - vs) * d / image.focaly, np.ones_like(d)])
+        points_root = (root_to_camera @ points_camera)[:3].T
+
+        # Medidas en ejes de la vista: la parte trasera del objeto queda oculta, asi que el
+        # diametro sale del ancho lateral y el centro del borde cercano + radio (huella
+        # circular). Percentiles 0.5/99.5: la profundidad trae valores sueltos.
+        forward = root_to_camera[:2, 0] / max(np.linalg.norm(root_to_camera[:2, 0]), 1e-6)
+        lateral = np.array([-forward[1], forward[0]])
+        along, across = points_root[:, :2] @ forward, points_root[:, :2] @ lateral
+        across_lo, across_hi = np.percentile(across, [0.5, 99.5])
+        diameter = float(across_hi - across_lo)
+        center = (np.percentile(along, 0.5) + diameter / 2.0) * forward + (across_lo + across_hi) / 2.0 * lateral
+        # Altura desde z = 0 de root, que es el suelo.
+        height = float(np.percentile(points_root[:, 2], 98))
+        return {"center_m": center, "diameter_m": diameter, "height_m": height, "points": int(valid.sum())}
+
+    def mask_candidates_for_point(self, concept_node, rgb, depth_m, image, u, v):
+        """Segmenta con SAM en (u, v), mide cada mascara en 3D y marca "ok" las que pasan los
+        criterios de la validacion; lista vacia si SAM falla o falta la pose de la camara."""
+        masks = self.run_sam(rgb, u, v)
+        if not masks:
             return []
 
         root_to_camera = self.get_root_to_camera_transform()
@@ -561,52 +804,31 @@ class SpecificWorker(GenericWorker):
         simulated_xy = np.array([float(c) for c in concept_node.attrs["simulated_position"].value[:2]])
 
         candidates = []
-        for mask in results[0].masks.data.cpu().numpy():
-            mask_uint8 = (mask > 0).astype(np.uint8)
+        for mask_uint8 in masks:
             if mask_uint8.shape != depth_m.shape:
                 mask_uint8 = cv2.resize(mask_uint8, (depth_m.shape[1], depth_m.shape[0]),
                                         interpolation=cv2.INTER_NEAREST)
             candidate = {"mask": mask_uint8, "ok": False, "shift_m": float("inf")}
             candidates.append(candidate)
 
-            # Sin el borde: sus pixeles mezclan la profundidad del objeto con la del fondo.
-            vs, us = np.nonzero(cv2.erode(mask_uint8, np.ones((3, 3), np.uint8)))
-            d = depth_m[vs, us]
-            valid = np.isfinite(d) & (d > 0)
-            if valid.sum() < self.verify_min_points:
-                console.print(f"  candidata: {int(valid.sum())} puntos con profundidad -> descartada", style="cyan")
+            measure = self.measure_mask_3d(mask_uint8, depth_m, image, root_to_camera)
+            if measure is None:
+                console.print("  candidata: sin puntos suficientes con profundidad -> descartada", style="cyan")
                 continue
-            us, vs, d = us[valid].astype(np.float64), vs[valid].astype(np.float64), d[valid].astype(np.float64)
-
-            # Inversa de project_root_point: camara +X avance, +Y izquierda, +Z arriba.
-            points_camera = np.stack([d, (image.width / 2 - us) * d / image.focalx,
-                                      (image.height / 2 - vs) * d / image.focaly, np.ones_like(d)])
-            points_root = (root_to_camera @ points_camera)[:3].T
-
-            # Medidas en ejes de la vista: la parte trasera del objeto queda oculta, asi que el
-            # diametro sale del ancho lateral y el centro del borde cercano + radio (huella
-            # circular). Percentiles 0.5/99.5: la profundidad trae valores sueltos.
-            forward = root_to_camera[:2, 0] / max(np.linalg.norm(root_to_camera[:2, 0]), 1e-6)
-            lateral = np.array([-forward[1], forward[0]])
-            along, across = points_root[:, :2] @ forward, points_root[:, :2] @ lateral
-            across_lo, across_hi = np.percentile(across, [0.5, 99.5])
-            diameter = float(across_hi - across_lo)
-            center = (np.percentile(along, 0.5) + diameter / 2.0) * forward + (across_lo + across_hi) / 2.0 * lateral
-            # Altura desde z = 0 de root, que es el suelo.
-            height = float(np.percentile(points_root[:, 2], 98))
-            shift = float(np.linalg.norm(center - simulated_xy))
+            diameter, height = measure["diameter_m"], measure["height_m"]
+            shift = float(np.linalg.norm(measure["center_m"] - simulated_xy))
 
             checks = {
                 "diametro": self.verify_diameter_range_m[0] <= diameter <= self.verify_diameter_range_m[1],
                 "altura": self.verify_height_range_m[0] <= height <= self.verify_height_range_m[1],
                 "desplazamiento": shift <= self.verify_max_shift_m,
             }
-            candidate.update({"center_m": center, "diameter_m": diameter, "height_m": height,
-                              "shift_m": shift, "ok": all(checks.values())})
+            candidate.update(measure)
+            candidate.update({"shift_m": shift, "ok": all(checks.values())})
 
             # concept_size solo como referencia en el log: es lo que se quiere corregir.
             failed = [name for name, passed in checks.items() if not passed]
-            console.print(f"  candidata: {int(valid.sum())} puntos, diametro {diameter:.3f} m "
+            console.print(f"  candidata: {measure['points']} puntos, diametro {diameter:.3f} m "
                           f"(simulado {self.expected_size(concept_node):.3f}), altura {height:.3f} m, "
                           f"desplazamiento {shift:.3f} m -> "
                           f"{'aceptada' if candidate['ok'] else 'descartada por ' + ', '.join(failed)}", style="cyan")
@@ -704,13 +926,19 @@ class SpecificWorker(GenericWorker):
         wp = concept_node.attrs["simulated_position"].value
         return self.project_root_point([float(wp[0]), float(wp[1]), float(wp[2])], image)
 
-    def project_footprint_center(self, concept_node, image):
-        """Proyecta el centro de la huella con la que se etiqueta: el corregido por la validacion
-        si la hubo y paso, y si no simulated_position."""
-        if self.footprint is None:
-            return self.project_simulated_position(concept_node, image)
-        return self.project_root_point([float(self.footprint["center_m"][0]),
-                                        float(self.footprint["center_m"][1]), 0.0], image)
+    def labelling_footprint(self, concept_node):
+        """Huella con la que se etiqueta: la corregida por la validacion si paso, y si no la
+        simulada (simulated_position y concept_size). None sin simulated_position."""
+        if self.footprint is not None:
+            return {"center_m": [float(c) for c in self.footprint["center_m"][:2]],
+                    "diameter_m": float(self.footprint["diameter_m"]),
+                    "height_m": float(self.footprint["height_m"]), "source": "sam"}
+        if "simulated_position" not in concept_node.attrs:
+            return None
+        wp = concept_node.attrs["simulated_position"].value
+        size = [float(v) for v in concept_node.attrs["concept_size"].value] if "concept_size" in concept_node.attrs else []
+        return {"center_m": [float(wp[0]), float(wp[1])], "diameter_m": float(self.expected_size(concept_node)),
+                "height_m": size[2] if len(size) == 3 else None, "source": "simulacion"}
 
     def project_root_point(self, point_root_m, image):
         """Proyecta un punto del marco root (metros) en la imagen; None si falta la pose."""
@@ -730,71 +958,103 @@ class SpecificWorker(GenericWorker):
         v = image.height / 2 - image.focaly * (point_camera[2] / depth_m)
         return {"behind": False, "u": u, "v": v, "depth_m": depth_m}
 
-    def label_for_projection(self, projection, image):
-        """Etiqueta del disparo según dónde cae el concepto: dentro del encuadre con margen ->
-        positivo, detrás o fuera -> negativo, a caballo del borde -> None, porque una foto con el
-        concepto cortado no es ni un positivo claro ni un negativo limpio."""
-        if projection["behind"]:
-            return "sin_bache"
+    def floor_hit_per_pixel(self, image, root_to_camera):
+        """Corta el rayo de cada pixel con el suelo (z = 0 de root): punto XY en root y
+        profundidad plana a la que deberia verse; inf donde el rayo no llega al suelo."""
+        us, vs = np.meshgrid(np.arange(image.width, dtype=np.float64), np.arange(image.height, dtype=np.float64))
+        dirs = np.stack([np.ones_like(us), (image.width / 2 - us) / image.focalx,
+                         (image.height / 2 - vs) / image.focaly], axis=-1) @ root_to_camera[:3, :3].T
+        origin = root_to_camera[:3, 3]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = np.where(dirs[..., 2] < 0, -origin[2] / dirs[..., 2], np.inf)
+        # La componente de avance del rayo en la camara vale 1, asi que t es la profundidad plana.
+        floor_xy = origin[:2] + np.where(np.isfinite(t), t, 0.0)[..., None] * dirs[..., :2]
+        return floor_xy, t
 
-        # margin calculated based on the expected size of the concept and the focal length of the camera
-        size_m = self.expected_size_m if self.footprint is None else self.footprint["diameter_m"]
-        r_px = (size_m / 2.0) * image.focalx / max(projection["depth_m"], 1e-3)
-        margin = r_px * self.label_margin_factor
+    def label_mask(self, footprint, depth_m, image, root_to_camera):
+        """Mascara de etiqueta: 1 bache, 0 fondo, 255 ignorado. Cada pixel se lleva al suelo y se
+        etiqueta por su distancia al centro de la huella. Huella de SAM: bache hasta r - banda e
+        ignorado hasta r + banda. Huella simulada (poco fiable): bache solo en el nucleo e ignorado
+        hasta r + Verify_max_shift_m, lo maximo que la validacion habria corregido."""
+        floor_xy, floor_depth = self.floor_hit_per_pixel(image, root_to_camera)
+        dist = np.linalg.norm(floor_xy - np.array(footprint["center_m"]), axis=-1)
+        r = footprint["diameter_m"] / 2.0
+        if footprint["source"] == "sam":
+            bump_r, ignore_r = r - self.label_ignore_band_sam_m, r + self.label_ignore_band_sam_m
+        else:
+            bump_r, ignore_r = r * self.label_sim_core_fraction, r + self.verify_max_shift_m
 
-        u, v = projection["u"], projection["v"]
-        if margin <= u <= image.width - margin and margin <= v <= image.height - margin:
-            return "con_bache"
-        if u < -margin or u > image.width + margin or v < -margin or v > image.height + margin:
-            return "sin_bache"
-        return None
+        mask = np.zeros((image.height, image.width), np.uint8)
+        on_floor = np.isfinite(floor_depth)
+        mask[on_floor & (dist <= ignore_r)] = LABEL_IGNORE
+        mask[on_floor & (dist <= bump_r)] = LABEL_BUMP
+        # Algo delante del suelo (persona, pared) tapa la huella: es fondo, no bache.
+        if depth_m is not None:
+            occluded = np.isfinite(depth_m) & (depth_m > 0) & (depth_m < floor_depth - OCCLUSION_MARGIN_M)
+            mask[occluded & (mask != 0)] = LABEL_BACKGROUND
+        return mask
 
     def take_labelled_photo(self, concept_node):
-        """Captura el frame actual, lo etiqueta proyectando el centro de la huella (corregido por la
-        validacion o simulado) y lo guarda en la carpeta de su etiqueta. El robot está parado."""
-        rgb, _, image = self.get_current_rgbd()
+        """Captura el frame actual con su profundidad y su mascara de etiqueta (huella corregida
+        por la validacion o simulada) y anota la foto en annotations.jsonl. El robot está parado."""
+        rgb, depth_m, image = self.get_current_rgbd()
         if rgb is None:
             console.print("Disparo descartado: sin imagen de la cámara.", style="bold red")
             return
-
-        projection = self.project_footprint_center(concept_node, image)
-        if projection is None:
-            console.print("Disparo descartado: no se pudo proyectar el centro de la huella.", style="bold red")
+        footprint = self.labelling_footprint(concept_node)
+        root_to_camera = self.get_root_to_camera_transform()
+        if footprint is None or root_to_camera is None:
+            console.print("Disparo descartado: sin huella o sin pose de la cámara.", style="bold red")
             return
 
-        label = self.label_for_projection(projection, image)
-        if label is None:
-            console.print("Disparo descartado: el concepto cae en el borde del encuadre.", style="yellow")
+        mask = self.label_mask(footprint, depth_m, image, root_to_camera)
+        name = f"{self.photo_counter:03d}"
+        paths = {"rgb": f"rgb/{name}.jpg", "mask": f"mask/{name}.png",
+                 "depth": None if depth_m is None else f"depth/{name}.npy"}
+        for folder in ("rgb", "mask", "depth"):
+            os.makedirs(os.path.join(self.photo_session_dir, folder), exist_ok=True)
+        if not cv2.imwrite(os.path.join(self.photo_session_dir, paths["rgb"]), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)):
+            console.print(f"Disparo descartado: cv2.imwrite falló en {paths['rgb']}.", style="bold red")
             return
-
-        folder = os.path.join(self.photo_session_dir, label)
-        os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, f"{label}_{self.photo_counter}.jpg")
-
-        # RGB ???
-        if not cv2.imwrite(path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)):
-            console.print(f"Disparo descartado: cv2.imwrite falló en {path}.", style="bold red")
-            return
+        cv2.imwrite(os.path.join(self.photo_session_dir, paths["mask"]), mask)
+        if depth_m is not None:
+            np.save(os.path.join(self.photo_session_dir, paths["depth"]), depth_m.astype(np.float16))
         self.photo_counter += 1
 
-        u_txt = "" if projection["u"] is None else f"{projection['u']:.1f}"
-        v_txt = "" if projection["v"] is None else f"{projection['v']:.1f}"
-        console.print(f"{label} en ({u_txt}, {v_txt}) a {projection['depth_m']:.2f} m -> {path}",
-                      style="green" if label.startswith("con_") else "blue")
-        # La etiqueta sale de proyectar simulated_position, o sea de la creencia: sin la posicion
-        # real en la misma fila, un dataset mal etiquetado no hay forma de detectarlo despues.
-        real = self.real_reference()
-        real_txt = ",,,,," if real is None else ",".join(f"{v:.3f}" for v in real["relative"] + real["world"])
-        with open(self.photo_log_path, "a") as log:
-            footprint = "simulacion" if self.footprint is None else "sam"
-            log.write(f"{label},{u_txt},{v_txt},{projection['depth_m']:.3f},{real_txt},{footprint},{path}\n")
+        # La etiqueta sale de la huella, o sea de la creencia: la posicion real va en la misma
+        # linea para poder detectar despues un dataset mal etiquetado.
+        center = self.project_root_point(footprint["center_m"] + [0.0], image)
+        record = {"index": name, "timestamp_ms": int(time.time() * 1000), "paths": paths, "footprint": footprint,
+                  "center_projection": center,
+                  "pixels": {"bache": int((mask == LABEL_BUMP).sum()), "ignorado": int((mask == LABEL_IGNORE).sum())},
+                  "root_to_camera": root_to_camera.tolist(),
+                  "intrinsics": {"width": image.width, "height": image.height,
+                                 "focalx": float(image.focalx), "focaly": float(image.focaly)},
+                  "real": self.real_reference()}
+        with open(self.annotations_path, "a") as log:
+            log.write(json.dumps(record, default=float) + "\n")
+        console.print(f"Foto {name}: {record['pixels']['bache']} px de bache, {record['pixels']['ignorado']} "
+                      f"ignorados (huella {footprint['source']})",
+                      style="green" if record["pixels"]["bache"] else "blue")
 
     # Concept classifier
     def run_training(self):
-        """Entrena con las fotos que este agente acaba de tomar y pasa a clasificar. Un intento
-        por tanda: si falla, se queda sin clasificador pero sigue publicando la RT."""
-        self.session_trained = True
-        if self.train_classifier(self.photo_session_dir):
+        """Entrena en un hilo aparte (tarda minutos y compute() tiene que seguir publicando la RT)
+        con las fotos de esta tanda y pasa a clasificar. Un intento por tanda."""
+        if self.training_thread is None:
+            self.session_trained = True
+            # Sin fotos no hay nada que entrenar: se avisa y se queda en reposo
+            if not os.path.exists(self.annotations_path):
+                console.print("Tanda sin fotos: no se entrena el clasificador.", style="bold yellow")
+                self.stage = Stage.IDLE
+                return
+            self.training_thread = threading.Thread(target=self.train_classifier,
+                                                    args=(self.photo_session_dir,), daemon=True)
+            self.training_thread.start()
+            return
+        if self.training_thread.is_alive():
+            return
+        if self.classifier is not None:
             self.stage = Stage.INFERRING
         else:
             console.print("Entrenamiento fallido para esta tanda; no se reintenta.", style="bold red")
@@ -814,64 +1074,137 @@ class SpecificWorker(GenericWorker):
         console.print(f"DINOv3 cargado en {device} (embed_dim={backbone.embed_dim}, patch={backbone.patch_size})", style="green")
         return backbone, device
 
-    def embed_image(self, rgb_array):
-        """Token CLS de una imagen RGB (H, W, 3) a resolución nativa."""
+    def embed_patches(self, rgb_array):
+        """Vector de cada trozo de patch_size x patch_size de una imagen RGB (H, W, 3) a
+        resolución nativa: array (filas, columnas, embed_dim)."""
         import torch
         from torchvision import transforms
 
         # w/h need to be multiples of the patch size
-        # DINOv3 will crop the image to the largest multiple of patch_size
         patch = self.backbone.patch_size
-        h = (rgb_array.shape[0] // patch) * patch
-        w = (rgb_array.shape[1] // patch) * patch
-        cropped = rgb_array[:h, :w, :]
+        rows, cols = rgb_array.shape[0] // patch, rgb_array.shape[1] // patch
+        cropped = np.ascontiguousarray(rgb_array[:rows * patch, :cols * patch, :])
 
         tensor = transforms.functional.to_tensor(cropped)
         tensor = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(tensor)
         with torch.no_grad():
-            cls = self.backbone(tensor.unsqueeze(0).to(self.device))
-        return cls.squeeze(0).cpu().numpy()
+            tokens = self.backbone.forward_features(tensor.unsqueeze(0).to(self.device))["x_norm_patchtokens"]
+        return tokens.squeeze(0).cpu().numpy().reshape(rows, cols, -1)
+
+    def cached_patch_features(self, photos_dir, record, rgb):
+        """Vectores por trozo de una foto, de la cache si ya estan (dependen del modelo y la resolucion)."""
+        folder = os.path.join(photos_dir, "features", f"dinov3_vits16_{rgb.shape[1]}x{rgb.shape[0]}")
+        path = os.path.join(folder, f"{record['index']}.npy")
+        if os.path.exists(path):
+            return np.load(path).astype(np.float32)
+        features = self.embed_patches(rgb)
+        os.makedirs(folder, exist_ok=True)
+        np.save(path, features.astype(np.float16))
+        return features
+
+    def patch_labels(self, mask, rows, cols):
+        """Etiqueta de cada trozo a partir de la mascara: 1 si al menos Patch_positive_fraction de
+        sus pixeles es bache, 0 si todos son fondo, -1 (ignorado) en cualquier otro caso."""
+        patch = self.backbone.patch_size
+        blocks = mask[:rows * patch, :cols * patch].reshape(rows, patch, cols, patch).swapaxes(1, 2)
+        bump_fraction = (blocks == LABEL_BUMP).mean(axis=(2, 3))
+        all_background = (blocks == LABEL_BACKGROUND).all(axis=(2, 3))
+        labels = np.full((rows, cols), -1, np.int8)
+        labels[all_background] = 0
+        labels[bump_fraction >= self.patch_positive_fraction] = 1
+        return labels
 
     def train_classifier(self, photos_dir):
+        """Regresion logistica sobre los vectores por trozo de DINOv3. Valida dejando fuera una foto
+        entera cada vez (los trozos de una misma foto se parecen y darian una precision inflada) y
+        guarda modelo, metadatos y metricas en model_dir."""
         try:
-            from PIL import Image
+            import joblib
             from sklearn.linear_model import LogisticRegression
-            from sklearn.model_selection import LeaveOneOut, cross_val_predict
-            from sklearn.metrics import accuracy_score, confusion_matrix
+            from sklearn.metrics import f1_score, roc_auc_score
         except ImportError as e:
             console.print(f"Sin dependencias para entrenar ({e}); el agente sigue publicando la RT.", style="bold red")
             return False
 
         try:
             self.backbone, self.device = self.load_backbone()
+            rng = np.random.default_rng(0)
+            with open(os.path.join(photos_dir, "annotations.jsonl")) as f:
+                records = [json.loads(line) for line in f if line.strip()]
 
-            features, labels = [], []
-            for label, folder in ((1, "con_bache"), (0, "sin_bache")):
-                for path in sorted(glob.glob(os.path.join(photos_dir, folder, "*.jpg"))):
-                    features.append(self.embed_image(np.array(Image.open(path).convert("RGB"))))
-                    labels.append(label)
+            photos = []
+            for record in records:
+                rgb = cv2.cvtColor(cv2.imread(os.path.join(photos_dir, record["paths"]["rgb"])), cv2.COLOR_BGR2RGB)
+                mask = cv2.imread(os.path.join(photos_dir, record["paths"]["mask"]), cv2.IMREAD_UNCHANGED)
+                features = self.cached_patch_features(photos_dir, record, rgb)
+                labels = self.patch_labels(mask, features.shape[0], features.shape[1])
+                # Todos los positivos y un maximo de negativos por foto: hay cientos por cada positivo.
+                pos, neg = np.flatnonzero(labels.ravel() == 1), np.flatnonzero(labels.ravel() == 0)
+                neg = rng.choice(neg, min(len(neg), self.train_negatives_per_image), replace=False)
+                photos.append({"record": record, "features": features, "labels": labels, "mask": mask,
+                               "train_idx": np.concatenate([pos, neg])})
 
-            if len(set(labels)) < 2 or len(labels) < 4:
-                console.print(f"Fotos insuficientes para entrenar ({len(labels)}).", style="bold red")
+            with_bump = sum(int((p["labels"] == 1).any()) for p in photos)
+            if len(photos) < 2 or with_bump == 0:
+                console.print(f"Fotos insuficientes para entrenar ({len(photos)} fotos, {with_bump} con bache).", style="bold red")
                 self.backbone = None
                 return False
+            console.print(f"Entrenando con {len(photos)} fotos ({with_bump} con bache).", style="cyan")
 
-            features, labels = np.array(features), np.array(labels)
-            console.print(f"Embeddings: {features.shape} ({int(sum(labels))} con_bache, {int(len(labels) - sum(labels))} sin_bache)", style="cyan")
+            def fit(subset):
+                x = np.concatenate([p["features"].reshape(-1, p["features"].shape[-1])[p["train_idx"]] for p in subset])
+                y = np.concatenate([p["labels"].ravel()[p["train_idx"]] for p in subset])
+                return LogisticRegression(max_iter=2000, class_weight="balanced").fit(x, y)
 
-            # leave-one-out validation (not many photos)
-            clf = LogisticRegression(max_iter=2000)
-            predicted = cross_val_predict(clf, features, labels, cv=LeaveOneOut())
-            console.print(f"Leave-one-out accuracy: {accuracy_score(labels, predicted) * 100:.1f}%", style="bold green")
-            console.print(f"Matriz de confusión (filas=real, cols=predicho):\n{confusion_matrix(labels, predicted)}")
+            # leave-one-image-out: cada foto se puntua con un modelo que no la ha visto
+            scores, truth, per_photo = [], [], []
+            for i, held in enumerate(photos):
+                train = photos[:i] + photos[i + 1:]
+                if not any((p["labels"] == 1).any() for p in train):
+                    continue
+                prob = self.patch_probabilities(fit(train), held["features"])
+                labelled = held["labels"] >= 0
+                scores.append(prob[labelled])
+                truth.append(held["labels"][labelled])
+                has_bump = bool((held["labels"] == 1).any())
+                detection = self.detect_in_map(prob)
+                error_px = None
+                if has_bump and detection is not None:
+                    vs, us = np.nonzero(held["mask"] == LABEL_BUMP)
+                    error_px = float(np.hypot(detection["center_uv"][0] - us.mean(), detection["center_uv"][1] - vs.mean()))
+                per_photo.append({"index": held["record"]["index"], "has_bump": has_bump,
+                                  "p_max": float(prob.max()), "detected": detection is not None,
+                                  "center_error_px": error_px})
 
-            clf.fit(features, labels)
-            self.classifier = clf
+            scores, truth = np.concatenate(scores), np.concatenate(truth)
+            predicted = scores >= self.detection_threshold
+            image_hits = [p["has_bump"] == p["detected"] for p in per_photo]
+            errors = [p["center_error_px"] for p in per_photo if p["center_error_px"] is not None]
+            metrics = {
+                "photos": len(photos), "photos_with_bump": with_bump,
+                "patches": {"positive": int((truth == 1).sum()), "negative": int((truth == 0).sum()),
+                            "auc": float(roc_auc_score(truth, scores)) if len(set(truth)) == 2 else None,
+                            "f1": float(f1_score(truth, predicted, zero_division=0))},
+                "image_accuracy": float(np.mean(image_hits)) if image_hits else None,
+                "center_error_px_median": float(np.median(errors)) if errors else None,
+                "per_photo": per_photo,
+            }
+            console.print(f"Leave-one-image-out: AUC por trozo {metrics['patches']['auc']}, F1 {metrics['patches']['f1']:.3f}, "
+                          f"acierto por imagen {metrics['image_accuracy']}, error del centro (mediana) "
+                          f"{metrics['center_error_px_median']} px", style="bold green")
 
+            self.classifier = fit(photos)
             os.makedirs(self.model_dir, exist_ok=True)
-            import joblib
-            joblib.dump(clf, os.path.join(self.model_dir, "logreg.joblib"))
-            console.print(f"Clasificador guardado en {self.model_dir}/logreg.joblib", style="green")
+            joblib.dump(self.classifier, os.path.join(self.model_dir, "logreg.joblib"))
+            with open(os.path.join(self.model_dir, "meta.json"), "w") as f:
+                json.dump({"backbone": "dinov3_vits16", "weights": self.dinov3_weights,
+                           "patch_size": self.backbone.patch_size,
+                           "grid": list(photos[0]["features"].shape[:2]),
+                           "detection_threshold": self.detection_threshold,
+                           "patch_positive_fraction": self.patch_positive_fraction}, f, indent=1)
+            with open(os.path.join(self.model_dir, "metrics.json"), "w") as f:
+                json.dump(metrics, f, indent=1)
+            console.print(f"Clasificador guardado en {self.model_dir}/", style="green")
             return True
 
         except Exception as e:
@@ -880,29 +1213,156 @@ class SpecificWorker(GenericWorker):
             self.classifier = None
             return False
 
+    def patch_probabilities(self, classifier, features):
+        """Mapa (filas, columnas) con la probabilidad de bache de cada trozo."""
+        rows, cols, dim = features.shape
+        return classifier.predict_proba(features.reshape(-1, dim))[:, 1].reshape(rows, cols)
+
+    def detect_regions(self, prob):
+        """Todas las regiones conexas sobre el umbral (una por bache en vista), de mayor a menor
+        pico, con su caja y su centro ponderado por probabilidad, en pixeles."""
+        if prob.max() < self.detection_threshold:
+            return []
+        patch = self.backbone.patch_size
+        count, labels = cv2.connectedComponents((prob >= self.detection_threshold).astype(np.uint8))
+        regions = []
+        for k in range(1, count):
+            rows, cols = np.nonzero(labels == k)
+            weights = prob[rows, cols]
+            peak = int(np.argmax(weights))
+            regions.append({"p_max": float(weights[peak]),
+                            "peak_uv": [(cols[peak] + 0.5) * patch, (rows[peak] + 0.5) * patch],
+                            "center_uv": [float(((cols + 0.5) * weights).sum() / weights.sum() * patch),
+                                          float(((rows + 0.5) * weights).sum() / weights.sum() * patch)],
+                            "box_uv": [int(cols.min() * patch), int(rows.min() * patch),
+                                       int((cols.max() + 1) * patch), int((rows.max() + 1) * patch)],
+                            "touches_border": bool(rows.min() == 0 or cols.min() == 0 or
+                                                   rows.max() == prob.shape[0] - 1 or cols.max() == prob.shape[1] - 1)})
+        return sorted(regions, key=lambda r: -r["p_max"])
+
+    def detect_in_map(self, prob):
+        """Deteccion principal: la region que contiene el pico. None si nada supera el umbral."""
+        regions = self.detect_regions(prob)
+        return regions[0] if regions else None
+
+    def refine_with_sam(self, rgb, depth_m, image, center_uv):
+        """Clic de SAM en el centro de la deteccion y medida 3D de su mascara. Se acepta si
+        diametro y altura estan a +-Detection_size_tolerance de la huella con la que se entreno."""
+        root_to_camera = self.get_root_to_camera_transform()
+        concept_node = self.g.get_node(CONCEPT_NAME)
+        reference = None if concept_node is None else self.labelling_footprint(concept_node)
+        if depth_m is None or root_to_camera is None or reference is None:
+            return {"sam": "sin_datos"}
+        masks = self.run_sam(rgb, int(center_uv[0]), int(center_uv[1]))
+        if not masks:
+            return {"sam": "sin_mascara"}
+        mask = masks[0]
+        if mask.shape != depth_m.shape:
+            mask = cv2.resize(mask, (depth_m.shape[1], depth_m.shape[0]), interpolation=cv2.INTER_NEAREST)
+        measure = self.measure_mask_3d(mask, depth_m, image, root_to_camera)
+        if measure is None:
+            return {"sam": "sin_profundidad", "mask": mask}
+
+        tolerance = self.detection_size_tolerance
+        ok = abs(measure["diameter_m"] - reference["diameter_m"]) <= tolerance * reference["diameter_m"]
+        if reference["height_m"]:
+            ok = ok and abs(measure["height_m"] - reference["height_m"]) <= tolerance * reference["height_m"]
+        return {"sam": "aceptada" if ok else "rechazada", "mask": mask, **measure}
+
     def classify_current_view(self):
-        """Clasifica el frame actual de la cámara y deja el resultado en consola y en CSV."""
+        """Mapa de probabilidad del frame actual, deteccion, refinado opcional con SAM y una fila
+        en inference.csv (con la posicion real proyectada, para medir aciertos despues)."""
         try:
-            rgb, _, _ = self.get_current_rgbd()
+            rgb, depth_m, image = self.get_current_rgbd()
             if rgb is None:
                 return
 
-            probabilities = self.classifier.predict_proba(self.embed_image(rgb).reshape(1, -1))[0]
-            label = "con_bache" if probabilities[1] >= 0.5 else "sin_bache"
+            prob = self.patch_probabilities(self.classifier, self.embed_patches(rgb))
+            regions = self.detect_regions(prob)
+            detection = regions[0] if regions else None
+            refined = {"sam": "no_usado"}
+            if detection is not None and self.inference_sam_refine:
+                refined = self.refine_with_sam(rgb, depth_m, image, detection["center_uv"])
+            self.locate_regions(regions, refined, depth_m, image)
 
-            console.print(f"Vista actual: {label} (p={probabilities[1]:.3f})",
-                          style="bold green" if label == "con_bache" else "bold blue")
-
-            # Con la posicion real en la misma fila, como en shots.csv, para medir aciertos despues.
             real = self.real_reference()
-            real_txt = ",,,,," if real is None else ",".join(f"{v:.3f}" for v in real["relative"] + real["world"])
+            real_uv = None
+            if real is not None:
+                projection = self.project_root_point(real["world"], image)
+                if projection is not None and not projection["behind"]:
+                    real_uv = [projection["u"], projection["v"]]
+
+            if detection is None:
+                console.print(f"Vista actual: sin bache (p_max={prob.max():.3f})", style="blue")
+            else:
+                console.print(f"Vista actual: bache en ({detection['center_uv'][0]:.0f}, {detection['center_uv'][1]:.0f}) "
+                              f"p_max={detection['p_max']:.3f}, SAM {refined['sam']}", style="bold green")
+                if self.inference_save_heatmaps:
+                    self.save_heatmap(rgb, prob, detection, refined, real_uv)
+
+            def fmt(values):
+                return "," if values is None else f"{values[0]:.1f},{values[1]:.1f}"
             path = os.path.join(self.model_dir, "inference.csv")
             new_file = not os.path.exists(path)
             with open(path, "a") as log:
                 if new_file:
-                    log.write("timestamp_ms,label,p_con,real_rel_x,real_rel_y,real_rel_z,"
-                              "real_world_x,real_world_y,real_world_z\n")
-                log.write(f"{int(time.time() * 1000)},{label},{probabilities[1]:.4f},{real_txt}\n")
+                    log.write("timestamp_ms,detected,p_max,center_u,center_v,box_u0,box_v0,box_u1,box_v1,"
+                              "sam,sam_diameter_m,sam_height_m,sam_x,sam_y,real_u,real_v,real_world_x,real_world_y\n")
+                box = ",,," if detection is None else ",".join(str(v) for v in detection["box_uv"])
+                sam_values = ",,," if "diameter_m" not in refined else (
+                    f"{refined['diameter_m']:.3f},{refined['height_m']:.3f},"
+                    f"{refined['center_m'][0]:.3f},{refined['center_m'][1]:.3f}")
+                real_world = "," if real is None else f"{real['world'][0]:.3f},{real['world'][1]:.3f}"
+                log.write(f"{int(time.time() * 1000)},{int(detection is not None)},{prob.max():.4f},"
+                          f"{fmt(None if detection is None else detection['center_uv'])},{box},{refined['sam']},"
+                          f"{sam_values},{fmt(real_uv)},{real_world}\n")
 
         except Exception as e:
             console.print(f"Fallo clasificando la vista actual: {e}", style="bold red")
+
+    def locate_regions(self, regions, refined, depth_m, image):
+        """Lleva cada region detectada al mundo y actualiza las instancias. Se descartan las que
+        tocan el borde (el bache sale cortado y su centro desplazado) y, si SAM refina la principal,
+        la que rechaza; si la acepta se usa su centro medido."""
+        root_to_camera = self.get_root_to_camera_transform()
+        if depth_m is None or root_to_camera is None:
+            return
+        points = []
+        for k, region in enumerate(regions):
+            if region["touches_border"]:
+                continue
+            if k == 0 and refined["sam"] == "rechazada":
+                continue
+            if k == 0 and refined["sam"] == "aceptada":
+                points.append(np.array(refined["center_m"][:2], dtype=np.float64))
+                continue
+            xy = self.region_world_point(region, depth_m, image, root_to_camera)
+            if xy is not None:
+                points.append(xy)
+        if points:
+            self.update_instances(points)
+
+    def save_heatmap(self, rgb, prob, detection, refined, real_uv):
+        """Mapa de probabilidad superpuesto al frame: caja y centro de la deteccion (verde),
+        contorno de SAM (amarillo si se acepta, magenta si no) y posicion real (rojo)."""
+        folder = os.path.join(self.model_dir, "heatmaps")
+        os.makedirs(folder, exist_ok=True)
+        patch = self.backbone.patch_size
+        heat = cv2.resize((prob * 255).astype(np.uint8), (prob.shape[1] * patch, prob.shape[0] * patch),
+                          interpolation=cv2.INTER_NEAREST)
+        frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        region = frame[:heat.shape[0], :heat.shape[1]]
+        frame[:heat.shape[0], :heat.shape[1]] = cv2.addWeighted(region, 0.6, cv2.applyColorMap(heat, cv2.COLORMAP_JET), 0.4, 0)
+
+        u0, v0, u1, v1 = detection["box_uv"]
+        cv2.rectangle(frame, (u0, v0), (u1, v1), (0, 255, 0), 2)
+        cu, cv_ = (int(c) for c in detection["center_uv"])
+        cv2.drawMarker(frame, (cu, cv_), (0, 255, 0), cv2.MARKER_CROSS, 30, 2)
+        if "mask" in refined:
+            contours, _ = cv2.findContours(refined["mask"], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(frame, contours, -1, (0, 255, 255) if refined["sam"] == "aceptada" else (255, 0, 255), 2)
+        if real_uv is not None:
+            cv2.drawMarker(frame, (int(real_uv[0]), int(real_uv[1])), (0, 0, 255), cv2.MARKER_TILTED_CROSS, 20, 2)
+        cv2.putText(frame, f"p_max {detection['p_max']:.3f}  SAM {refined['sam']}", (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.imwrite(os.path.join(folder, f"{int(time.time() * 1000)}.jpg"), frame)

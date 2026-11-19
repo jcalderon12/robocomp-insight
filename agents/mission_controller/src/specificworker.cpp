@@ -442,10 +442,9 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 			create_mission_target_edge(event.mission_id);
 
 			// TARGET en el mundo para los concept_*: activar o reanudar una mision recupera su
-			// propio objetivo, en vez de quedarse con el de la ultima mision creada.
-			const std::string activated_type = get_mission_type_from_id(event.mission_id);
-			if (activated_type == "follow_person")    set_dsr_target_edge("robot", "person");
-			else if (activated_type == "Take Photos") set_dsr_target_edge("robot", "bump");
+			// propio objetivo (el concepto de su afordance), no el de la ultima mision creada.
+			if (auto concept_id = mission_target_concept(event.mission_id); concept_id.has_value())
+				set_dsr_target_edge(concept_id.value());
 
 			// Update DSR status
 			update_mission_status_episodic(event.mission_id, "running");
@@ -473,7 +472,7 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 		{
 			std::cout << "[SCHEDULER] Mission completed: id=" << event.mission_id << std::endl;
 			const std::string completed_type = get_mission_type_from_id(event.mission_id);
-			// "bump" node lifecycle (creation/deletion) belongs to inner_simulator/semantic, not
+			// The concept's lifecycle (creation/deletion) belongs to semantic, not
 			// mission_controller; here we only release the TARGET edge we created for the mission.
 			if (completed_type == "Take Photos") {
 				delete_active_target_edge();
@@ -489,9 +488,9 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 			}
 			// In the semantic memory loop one pass is one autopilot run: it ends when follow_person
 			// reaches the person without an unexplained change, or when the search for one is resolved
-			// without a "bump" (no photo chain).
+			// without a concept to photograph (no photo chain).
 			const bool reached = completed_type == "follow_person" && !unexplained_seen_at.has_value();
-			const bool resolved = completed_type == "Search Problem Cause" && !G->get_node("bump").has_value();
+			const bool resolved = completed_type == "Search Problem Cause" && !concept_known();
 			if (reached || resolved) {
 				std::cout << "[AUTOPILOT] Pass finished (" << completed_type << ")." << std::endl;
 				disable_autopilot_and_reset();
@@ -619,28 +618,90 @@ void SpecificWorker::on_setMission_clicked()
 	}
 }
 
-std::optional<DSR::Node> SpecificWorker::get_active_affordance_node(const std::shared_ptr<DSR::DSRGraph>& graph) const
+// Clave comparable con aff_mission: minusculas y '_' por espacios ("Take Photos" -> "take_photos")
+static std::string mission_key(std::string type)
 {
-	auto target_edges = graph->get_edges_by_type("TARGET");
-	auto has_intention_edges = graph->get_edges_by_type("has_intention");
-	for (const auto& target_edge : target_edges)
-	{
-		for (const auto& intention_edge : has_intention_edges)
-		{
-			if (intention_edge.from() == target_edge.to())
-			{
-				auto affordance_node_opt = graph->get_node(intention_edge.to());
-				if (affordance_node_opt.has_value())
-					return affordance_node_opt.value();
-			}
-		}
-	}
+	std::transform(type.begin(), type.end(), type.begin(),
+	               [](unsigned char c) { return c == ' ' ? '_' : static_cast<char>(std::tolower(c)); });
+	return type;
+}
+
+std::optional<uint64_t> SpecificWorker::concept_of_affordance(uint64_t affordance_id) const
+{
+	for (const auto& edge : G->get_edges_by_type("has_intention"))
+		if (edge.to() == affordance_id)
+			return edge.from();
 	return std::nullopt;
 }
 
-bool SpecificWorker::on_startMission_clicked()
+std::vector<DSR::Node> SpecificWorker::find_affordances_for_mission(const std::string& mission_type) const
 {
-	if (auto affordance_node_opt = get_active_affordance_node(G); affordance_node_opt.has_value())
+	std::vector<DSR::Node> found;
+	const std::string key = mission_key(mission_type);
+	for (const auto& node : G->get_nodes_by_type("affordance"))
+	{
+		auto it = node.attrs().find("aff_mission");
+		if (it == node.attrs().end())
+			continue;
+		try {
+			if (mission_key(std::get<std::string>(it->second.value())) == key && concept_of_affordance(node.id()).has_value())
+				found.push_back(node);
+		} catch (const std::bad_variant_access&) {}  // aff_mission que no es texto: se ignora
+	}
+	return found;
+}
+
+bool SpecificWorker::affordance_busy(uint64_t affordance_id) const
+{
+	for (const auto& [mission_id, bound_id] : mission_affordance)
+	{
+		if (bound_id != affordance_id)
+			continue;
+		for (const auto& [row, id] : mission_row_to_node_id)
+			if (id == mission_id && model->getMission(row).status != MissionStatus::COMPLETED)
+				return true;
+	}
+	return false;
+}
+
+std::optional<DSR::Node> SpecificWorker::affordance_of_mission(uint64_t mission_id)
+{
+	if (auto it = mission_affordance.find(mission_id); it != mission_affordance.end())
+		if (auto node = G->get_node(it->second); node.has_value())
+			return node;
+
+	// Sin atar (p. ej. follow_me nace cuando concept_person ve el TARGET): la primera libre de su
+	// tipo; si todas estan atadas se comparte, porque solo hay una mision activa a la vez.
+	auto candidates = find_affordances_for_mission(get_mission_type_from_id(mission_id));
+	if (candidates.empty())
+		return std::nullopt;
+	auto chosen = std::find_if(candidates.begin(), candidates.end(),
+	                           [this](const DSR::Node& n) { return !affordance_busy(n.id()); });
+	const DSR::Node& node = chosen != candidates.end() ? *chosen : candidates.front();
+	mission_affordance[mission_id] = node.id();
+	std::cout << "[AFFORDANCE] Mission " << mission_id << " -> " << node.name() << std::endl;
+	return node;
+}
+
+std::optional<uint64_t> SpecificWorker::mission_target_concept(uint64_t mission_id)
+{
+	if (auto affordance = affordance_of_mission(mission_id); affordance.has_value())
+		return concept_of_affordance(affordance->id());
+	// follow_person sin afordance aun: su objetivo es la persona, y concept_person crea follow_me al ver el TARGET
+	if (mission_key(get_mission_type_from_id(mission_id)) == "follow_person")
+		if (auto person = G->get_node("person"); person.has_value())
+			return person->id();
+	return std::nullopt;
+}
+
+bool SpecificWorker::concept_known() const
+{
+	return !find_affordances_for_mission("Take Photos").empty();
+}
+
+bool SpecificWorker::on_startMission_clicked(uint64_t mission_id)
+{
+	if (auto affordance_node_opt = affordance_of_mission(mission_id); affordance_node_opt.has_value())
 	{
 		mission_start_time = std::chrono::steady_clock::now();
 		DSR::Node affordance_node = affordance_node_opt.value();
@@ -652,9 +713,9 @@ bool SpecificWorker::on_startMission_clicked()
 	return false;
 }
 
-void SpecificWorker::on_stopMission_clicked()
+void SpecificWorker::on_stopMission_clicked(uint64_t mission_id)
 {
-	if (auto affordance_node_opt = get_active_affordance_node(G); affordance_node_opt.has_value())
+	if (auto affordance_node_opt = affordance_of_mission(mission_id); affordance_node_opt.has_value())
 	{
 		DSR::Node affordance_node = affordance_node_opt.value();
 		G->add_or_modify_attrib_local<aff_interacting_att>(affordance_node, false);
@@ -662,11 +723,12 @@ void SpecificWorker::on_stopMission_clicked()
 	}
 }
 
-//TODO - Refactor to use problem node instead of relying on "follow_me" node name 
 void SpecificWorker::modify_node_attrs_slot(std::uint64_t id, const std::vector<std::string>& att_names)
 {
+    // Solo la afordance atada a la mision activa
     auto node = G->get_node(id);
-    if (!node.has_value() || node.value().name() != "follow_me")
+    auto active_affordance = affordance_of_mission(mission_scheduler.getActiveMissionId());
+    if (!node.has_value() || !active_affordance.has_value() || active_affordance->id() != id)
 		return;
 
     bool relevant = std::any_of(att_names.begin(), att_names.end(), [](const std::string& s){
@@ -1219,16 +1281,13 @@ void SpecificWorker::delete_active_target_edge() {
 
 // Apunta el TARGET del mundo a un nodo por nombre; los concept_* lo leen para saber a quien
 // seguir. Nombre vacio o nodo ausente: no se toca nada.
-void SpecificWorker::set_dsr_target_edge(const std::string& from_name, const std::string& to_name)
+void SpecificWorker::set_dsr_target_edge(uint64_t to_id)
 {
-	if (to_name.empty())
-		return;
-
-	auto from_opt = G->get_node(from_name);
-	auto to_opt   = G->get_node(to_name);
+	auto from_opt = G->get_node("robot");
+	auto to_opt   = G->get_node(to_id);
 	if (!from_opt.has_value() || !to_opt.has_value())
 	{
-		std::cerr << "[TARGET] Falta el nodo '" << (from_opt.has_value() ? to_name : from_name) << "'" << std::endl;
+		std::cerr << "[TARGET] Falta el nodo " << (from_opt.has_value() ? std::to_string(to_id) : std::string("robot")) << std::endl;
 		return;
 	}
 
@@ -1239,7 +1298,7 @@ void SpecificWorker::set_dsr_target_edge(const std::string& from_name, const std
 	new_target_edge.to(to_opt.value().id());
 	new_target_edge.type("TARGET");
 	G->insert_or_assign_edge(new_target_edge);
-	std::cout << "[TARGET] " << from_name << " -> " << to_name << std::endl;
+	std::cout << "[TARGET] robot -> " << to_opt.value().name() << std::endl;
 }
 
 void SpecificWorker::delete_mission_target_edge(uint64_t mission_id) {
@@ -1353,41 +1412,36 @@ void SpecificWorker::create_search_problem_cause_mission()
 	std::cout << "[AUTOPILOT] Search Problem Cause mission created" << std::endl;
 }
 
-void SpecificWorker::create_take_photos_mission()
+void SpecificWorker::create_take_photos_missions()
 {
-	// Una sola tanda de fotos por cadena: con el bache aun en el DSR, el monitor la volveria a crear
+	// Una sola tanda de fotos por cadena: con el concepto aun en el DSR, el monitor la volveria a crear
 	// en cuanto terminase.
 	if (photos_done)
 		return;
 
-	// Check if a "Take Photos" mission already exists and is PENDING
-	for (int i = 0; i < model->rowCount(); i++)
+	// Una mision por afordance de fotos sin mision pendiente, atada a ella desde su creacion
+	for (const auto& affordance : find_affordances_for_mission("Take Photos"))
 	{
-		Mission m = model->getMission(i);
-		if (m.type == "Take Photos" && m.status != MissionStatus::COMPLETED) {
-			return;
+		if (affordance_busy(affordance.id()))
+			continue;
+
+		static int take_photos_attempt_count = 1;
+		QString customName = QString("take_photos_attempt_%1").arg(take_photos_attempt_count++);
+		QString missionType = "Take Photos";
+		int priority_value = 2; // La última de la cadena: sólo cuando follow_person haya terminado
+
+		Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};
+		int row = model->rowCount();
+		model->addMission(newMission);
+
+		auto mission_id_opt = insert_mission_node_episodic(customName.toStdString(), row, priority_value, ControlType::AUTONOMOUS);
+		if (!mission_id_opt.has_value()) {
+			std::cerr << "[TAKE_PHOTOS_ERROR] Failed to insert mission node" << std::endl;
+			continue;
 		}
+		mission_affordance[mission_id_opt.value()] = affordance.id();
+		std::cout << "[AUTOPILOT] Take Photos mission created for affordance " << affordance.name() << std::endl;
 	}
-
-	// Create a new "Take Photos" mission with unique name
-	static int take_photos_attempt_count = 1;
-	QString customName = QString("take_photos_attempt_%1").arg(take_photos_attempt_count++);
-	QString missionType = "Take Photos";
-	int priority_value = 2; // La última de la cadena: sólo cuando follow_person haya terminado
-
-	// Create the mission and add it to the model
-	Mission newMission{customName, missionType, 0.0f, MissionStatus::IDLE, priority_value};
-	int row = model->rowCount();
-	model->addMission(newMission);
-
-	// Insert the mission node into the episodic graph
-	auto mission_id_opt = insert_mission_node_episodic(customName.toStdString(), row, priority_value, ControlType::AUTONOMOUS);
-	if (!mission_id_opt.has_value()) {
-		std::cerr << "[TAKE_PHOTOS_ERROR] Failed to insert mission node" << std::endl;
-		return;
-	}
-
-	std::cout << "[AUTOPILOT] Take Photos mission created" << std::endl;
 }
 
 bool SpecificWorker::unexplained_node_exists() const
@@ -1518,8 +1572,8 @@ void SpecificWorker::monitor_mission_execution_state()
 	// A change the semantic agent cannot explain closes follow_person and opens the search, once the
 	// recording holds loss_recording_seconds after it: the robot's stop and what it perceives next (an
 	// occluded bottle is seen again 1.7-2.5 s later). Se para (no se completa), como antes del merge:
-	// el scheduler la reanuda tras la busqueda; con "bump" ya creado no se vuelve a cerrar.
-	if (active_type == "follow_person" && unexplained_node_exists() && !G->get_node("bump").has_value()) {
+	// el scheduler la reanuda tras la busqueda; con el concepto ya creado no se vuelve a cerrar.
+	if (active_type == "follow_person" && unexplained_node_exists() && !concept_known()) {
 		const auto now = std::chrono::steady_clock::now();
 		if (!unexplained_seen_at.has_value()) {
 			unexplained_seen_at = now;
@@ -1534,25 +1588,23 @@ void SpecificWorker::monitor_mission_execution_state()
 		return;
 	}
 
-	// Same pattern as follow_person: gate on the target NODE existing (structural), not on
-	// any specific attribute payload. "bump" is created by semantic once the cause is
-	// resolved and a concept is chosen (replacing "problem", which it deletes).
-	bool bump_exists = G->get_node("bump").has_value();
-
-	if (bump_exists)
-		create_take_photos_mission();  // no-op if already created (internal duplicate guard)
+	// Semantic crea el concepto y su afordance de fotos al resolver la causa, justo antes de
+	// borrar "unexplained": una take_photos por afordance.
+	const bool known = concept_known();
+	if (known)
+		create_take_photos_missions();
 
 	// "Search Problem Cause" covers the full investigation: it ends when the semantic agent has
 	// stored the verdict and resolved the case it opened (it deletes "unexplained"), or once
-	// "bump" (and its generated agent) exist in the photo chain.
+	// the concept (and its generated agent) exist in the photo chain.
 	const bool case_resolved = unexplained_seen_at.has_value() && !unexplained_node_exists();
-	if (active_type == "Search Problem Cause" && (bump_exists || case_resolved))
+	if (active_type == "Search Problem Cause" && (known || case_resolved))
 		mission_scheduler.requestMissionCompletion(active_id);
 
 	// Only monitor if the active mission is of type "follow_person" or "Take Photos"
 	if (active_type != "follow_person" && active_type != "Take Photos") return;
 
-	auto affordance_opt = get_active_affordance_node(G);
+	auto affordance_opt = affordance_of_mission(active_id);
 	if (!affordance_opt.has_value()) return;
 
 	auto affordance = affordance_opt.value();
@@ -1562,11 +1614,10 @@ void SpecificWorker::monitor_mission_execution_state()
 	try {
 		bool current_state = std::get<bool>(aff_iter->second.value());
 
-		// Losing the bottle also turns follow_me off (semantic, fake_castilla_la_mancha), maybe before the
-		// "unexplained" node appears: that ends follow_person through the unexplained case, not here.
-		// Con 'bump' ya creado la botella sigue en el suelo: el true->false es el final de la mision.
-		const bool bottle_lost = active_type == "follow_person" && !bottle_rt_exists()
-		                         && !G->get_node("bump").has_value();
+		// Losing the bottle also turns follow_me off (semantic), maybe before the "unexplained" node
+		// appears: that ends follow_person through the unexplained case, not here.
+		// Con el concepto ya creado la botella sigue en el suelo: el true->false es el final de la mision.
+		const bool bottle_lost = active_type == "follow_person" && !bottle_rt_exists() && !known;
 
 		// Detect change from true to false - mission complete
 		if (last_aff_interacting_state && !current_state && !bottle_lost) {
@@ -1622,7 +1673,7 @@ void SpecificWorker::stop_active_mission() {
 	active_mission_row = -1;
 	follow_person_active = false;
 	last_aff_interacting_state = false;
-	on_stopMission_clicked();
+	on_stopMission_clicked(mission_id);
 }
 
 
@@ -1673,7 +1724,7 @@ void SpecificWorker::check_recording_handshake()
 				std::string mission_type = get_mission_type_from_id(handshake_waiting_mission_id);
 				bool needs_affordance = (mission_type == "follow_person" || mission_type == "Take Photos");
 
-				if (needs_affordance && !on_startMission_clicked()) {
+				if (needs_affordance && !on_startMission_clicked(handshake_waiting_mission_id)) {
 					// Affordance not created yet by its owning agent (race with its own state
 					// machine). Don't consume the handshake: retry on the next compute cycle.
 					std::cout << "[HANDSHAKE] Waiting for affordance node to exist, will retry..." << std::endl;
@@ -1716,7 +1767,7 @@ void SpecificWorker::check_recording_handshake()
 	if (handshake_wait_cycles[handshake_waiting_mission_id] > MAX_WAIT_CYCLES) {
 		// Timeout: assume handshake completed (EM logs show it did)
 		std::cout << "[HANDSHAKE] Node not in work graph, but assuming handshake complete. Proceeding." << std::endl;
-		on_startMission_clicked();
+		on_startMission_clicked(handshake_waiting_mission_id);
 		handshake_wait_cycles.erase(handshake_waiting_mission_id);
 		handshake_waiting_mission_id = 0;
 	}

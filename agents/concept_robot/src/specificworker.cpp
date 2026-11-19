@@ -778,8 +778,24 @@ bool SpecificWorker::is_photo_target()
 	auto target_edges = G->get_edges_by_type("TARGET");
 	if (target_edges.empty())
 		return false;
-	auto target_node_opt = G->get_node(target_edges[0].to());
-	return target_node_opt.has_value() && target_node_opt.value().name() == "bump";
+	// Mision de fotos: el concepto del TARGET tiene una afordance (has_intention) con aff_mission "take_photos"
+	const uint64_t concept_id = target_edges[0].to();
+	for (const auto& edge : G->get_edges_by_type("has_intention"))
+	{
+		if (edge.from() != concept_id)
+			continue;
+		auto affordance_opt = G->get_node(edge.to());
+		if (!affordance_opt.has_value())
+			continue;
+		auto it = affordance_opt.value().attrs().find("aff_mission");
+		if (it == affordance_opt.value().attrs().end())
+			continue;
+		try {
+			if (std::get<std::string>(it->second.value()) == "take_photos")
+				return true;
+		} catch (const std::bad_variant_access&) {}
+	}
+	return false;
 }
 
 void SpecificWorker::reset_photo_spin()

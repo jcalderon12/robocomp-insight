@@ -42,8 +42,8 @@ Simulation.RealTime = false
 #      chunks, each scored in its process; docs_output/resultados/41). 0 = as many as cores.
 Simulation.Processes = 0
 # Seconds to wait, once the recording is closed, for the semantic agent's hypotheses batch
-# while its "unexplained" intention node exists; past them, the static causes (src/causes.json).
-Simulation.BatchWaitSeconds = 120
+# while its "unexplained" intention node exists; past them the search ends without simulating.
+Simulation.BatchWaitSeconds = 180
 # Repetitions: repeticiones por causa (0 = 4000, el valor calibrado). 1000 para pruebas de integracion:
 #      la busqueda baja de ~7 a ~2 min, pero llega peor a baches pequenos fuera de la trayectoria.
 Simulation.Repetitions = 1000

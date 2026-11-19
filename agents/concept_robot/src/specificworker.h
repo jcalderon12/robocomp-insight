@@ -167,7 +167,7 @@ public slots:
 	void stop_robot();
 
 	/**
-	 * \brief True when the current TARGET points at the "bump" node, i.e. this is the photo
+	 * \brief True when the TARGET concept has a "take_photos" affordance (aff_mission), i.e. this is the photo
 	 * mission (photo_spin()) and not a plain follow (follow_target()).
 	 */
 	bool is_photo_target();
