@@ -237,6 +237,9 @@ private:
 	// Affordance and mission monitoring
 	void check_affordance_and_complete_handshake();   // Check if affordance appeared
 	void monitor_mission_execution_state();           // Monitor aff_interacting and mission status
+	void monitor_manual_mission();                    // Autopilot apagado: cierre por afordance de la mision manual
+	uint64_t manual_aff_mission = 0;                  // mision manual vigilada y su ultimo aff_interacting
+	bool manual_aff_state = false;
 	void create_or_check_follow_person_mission();     // Create follow_person if it doesn't exist
 	void create_search_problem_cause_mission();       // Create search_cause once after a failure stop
 	void create_take_photos_missions();               // Una take_photos por cada afordance de fotos sin mision

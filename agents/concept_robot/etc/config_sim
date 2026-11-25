@@ -62,3 +62,44 @@ Force_photos = false
 Photo_angular_step = 5.0
 Photo_settle_seconds = 0.7
 Photo_spin_speed_factor = 0.1
+
+# Lidar (helios + bpearl del puente, solo simulacion): sus puntos entran como obstaculos en el DWA
+# y en el freno de seguridad. Se quedan los que estan entre Lidar_min_height (por debajo, suelo y
+# baches, que los lleva el DSR) y Lidar_max_height, entre Lidar_self_radius (el propio robot) y
+# Lidar_max_range, y fuera de Lidar_target_exclusion alrededor del objetivo. Metros.
+Lidar_enabled = true
+Lidar_debug = true
+Lidar_max_range = 3.0
+Lidar_min_height = 0.20
+Lidar_max_height = 1.80
+Lidar_self_radius = 0.40
+Lidar_target_exclusion = 0.7
+# Freno de seguridad: anula el avance si el arco mandado lleva el robot (radio 0.40 m, sin margen)
+# contra un punto en Brake_time segundos mas Brake_margin metros. El giro se mantiene.
+Brake_time = 0.5
+Brake_margin = 0.10
+
+# Ventana de depuracion de la navegacion: arcos del DWA (gris claro choca, naranja no frena, gris valido,
+# verde elegido), puntos del lidar por tramo (rojo el muro que se rodea), meta/submeta y objetivo.
+# Nav_debug_save_dir no vacio: guarda cada imagen (10 Hz) en ese directorio.
+Nav_debug_view = true
+Nav_debug_save_dir = ""
+
+# DWA (concept_robot::navigate_to()): muestreo, pesos del coste y holgura. Sin la clave, valor por defecto.
+# Arcos: Nav_v_samples avances en [0, max] x Nav_w_samples giros a +-Nav_w_window rad/s del actual.
+Nav_v_samples = 11
+Nav_w_samples = 21
+Nav_w_window = 1.0
+# Pesos: rumbo final a la meta, distancia final, holgura, velocidad, espacio libre delante,
+# cambiar de lado al pasar un obstaculo, cambio de giro (suavidad / mantener el rumbo).
+Nav_w_heading = 1.0
+Nav_w_dist = 1.0
+Nav_w_clearance = 3.0
+Nav_w_speed = 1.0
+Nav_w_free = 1.5
+Nav_w_side = 1.5
+Nav_w_smooth = 1.5
+# Metros desde el borde del robot a partir de los que la holgura no penaliza (antes 0.5).
+Nav_safe_clearance = 0.7
+# Metros del rayo de espacio libre al final del arco.
+Nav_free_ahead = 1.5

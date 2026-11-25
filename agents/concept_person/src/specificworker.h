@@ -37,6 +37,7 @@ static constexpr float WEBOTS_MAX_ANGULAR_SPEED = 4.03f; //radians per second
 
 #include <genericworker.h>
 #include <Eigen/Geometry>
+#include <deque>
 
 enum class States
 {
@@ -181,6 +182,9 @@ public slots:
 	 * quaternion yaw (radians). False if the RT is missing.
 	 */
 	bool get_robot_pose_2d(float &x, float &y, float &yaw);
+	// Retardo de la vision: lleva la deteccion del marco del robot en la captura al marco actual.
+	void record_robot_pose();
+	std::vector<float> compensate_detection_delay(const std::vector<float>& detected);
 
 	/**
 	 * \brief Writes perceived on the person node, only when it changes.
@@ -222,6 +226,17 @@ private:
 	bool simulated = configLoader.get<bool>("Simulated");
 
 	std::vector<float> last_relative_pose = {0.0f, 0.0f, 0.0f}; // {x, y, z}
+
+	// ---- Compensacion del retardo de la deteccion (compensate_detection_delay()) ----
+	// La segmentacion llega 160-260 ms despues de la captura; girando, la persona aparecia desplazada en el
+	// sentido del giro. Historial de poses del robot (marco root) para saber donde estaba al capturar.
+	struct StampedPose { long long ms; float x, y, yaw; };
+	std::deque<StampedPose> robot_pose_history;
+	static constexpr long long POSE_HISTORY_MS = 3000;       // historial guardado
+	static constexpr long long MAX_DETECTION_AGE_MS = 1500;  // mas antigua (o reloj raro): sin compensar
+	long long detection_capture_ms = 0;                       // hora de captura (ms epoch) de la ultima deteccion
+	std::chrono::steady_clock::time_point delay_trace_last;
+	bool delay_age_warned = false;
 
 	// ---- Memoria de la persona (apply_person_memory()) ----
 	// Un vector nulo es "no la veo", no una posicion: es lo que devuelve la segmentacion sin persona.

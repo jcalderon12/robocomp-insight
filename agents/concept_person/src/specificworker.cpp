@@ -87,7 +87,8 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-	auto detected = get_person_relative_position();
+	record_robot_pose();
+	auto detected = compensate_detection_delay(get_person_relative_position());
 	// Un salto sin confirmar no se publica ni entra en la memoria: mientras, se sigue la recordada.
 	const bool is_detection = std::hypot(detected[0], detected[1]) >= PERSON_NULL_DISTANCE;
 	const bool held = is_detection && !confirm_person_jump(detected);
@@ -245,7 +246,10 @@ std::vector<float> SpecificWorker::get_person_relative_position()
 					<< " | theta: " << theta << std::endl;
 	}
 	else{
-		auto segmented_objects = this->imagesegmentation_proxy->getSegmentedObjects(true, false);
+		// getAll en vez de getSegmentedObjects: trae la hora de captura de la imagen (image.alivetime).
+		auto data = this->imagesegmentation_proxy->getAll(true, false);
+		const auto &segmented_objects = data.objects;
+		detection_capture_ms = data.image.alivetime;
 
 		std::vector<std::vector<float>> person_positions;
 
@@ -360,6 +364,68 @@ std::vector<float> SpecificWorker::apply_person_memory(const std::vector<float>&
 	const float dx = person_memory_x - robot_x;
 	const float dy = person_memory_y - robot_y;
 	return {dx * s + dy * c, dx * c - dy * s, person_memory_z};
+}
+
+void SpecificWorker::record_robot_pose()
+{
+	float x, y, yaw;
+	if (!get_robot_pose_2d(x, y, yaw))
+		return;
+	const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()).count();
+	robot_pose_history.push_back({now, x, y, yaw});
+	while (!robot_pose_history.empty() && now - robot_pose_history.front().ms > POSE_HISTORY_MS)
+		robot_pose_history.pop_front();
+}
+
+std::vector<float> SpecificWorker::compensate_detection_delay(const std::vector<float>& detected)
+{
+	// Deteccion = {derecha, avance, altura} en el marco del robot cuando se capturo la imagen. Se pasa al
+	// marco root con la pose de entonces (interpolada del historial) y se vuelve con la actual.
+	if (simulated || std::hypot(detected[0], detected[1]) < PERSON_NULL_DISTANCE || robot_pose_history.size() < 2)
+		return detected;
+	const long long now = robot_pose_history.back().ms;
+	const long long age = now - detection_capture_ms;
+	if (age < 0 || age > MAX_DETECTION_AGE_MS)
+	{
+		if (!delay_age_warned)
+			std::cout << "[retardo] edad de la captura fuera de rango (" << age << " ms); deteccion sin compensar." << std::endl;
+		delay_age_warned = true;
+		return detected;
+	}
+	delay_age_warned = false;
+	// Pose en la captura: interpolada entre las dos muestras que la rodean (o la mas antigua)
+	StampedPose then = robot_pose_history.front();
+	for (size_t i = 1; i < robot_pose_history.size(); ++i)
+	{
+		const auto &a = robot_pose_history[i - 1], &b = robot_pose_history[i];
+		if (b.ms < detection_capture_ms)
+			continue;
+		const float f = b.ms > a.ms ? std::clamp(static_cast<float>(detection_capture_ms - a.ms) / (b.ms - a.ms), 0.f, 1.f) : 1.f;
+		const float dyaw = std::remainder(b.yaw - a.yaw, 2.f * static_cast<float>(M_PI));
+		then = {detection_capture_ms, a.x + f * (b.x - a.x), a.y + f * (b.y - a.y), a.yaw + f * dyaw};
+		break;
+	}
+	const auto &cur = robot_pose_history.back();
+	// Mismos ejes que apply_person_memory(): avance (cos yaw, -sin yaw), derecha (sin yaw, cos yaw)
+	const float c0 = std::cos(then.yaw), s0 = std::sin(then.yaw);
+	const float wx = then.x + detected[1] * c0 + detected[0] * s0;
+	const float wy = then.y - detected[1] * s0 + detected[0] * c0;
+	const float c1 = std::cos(cur.yaw), s1 = std::sin(cur.yaw);
+	const float dx = wx - cur.x, dy = wy - cur.y;
+	std::vector<float> out = {dx * s1 + dy * c1, dx * c1 - dy * s1, detected[2]};
+
+	// Traza: como mucho una por segundo, solo si el robot se ha movido de forma apreciable
+	const float turned = std::remainder(cur.yaw - then.yaw, 2.f * static_cast<float>(M_PI)) * 180.f / static_cast<float>(M_PI);
+	const float shift = std::hypot(out[0] - detected[0], out[1] - detected[1]);
+	const auto steady_now = std::chrono::steady_clock::now();
+	if (shift > 0.05f && std::chrono::duration<float>(steady_now - delay_trace_last).count() > 1.f)
+	{
+		delay_trace_last = steady_now;
+		std::cout << "[retardo] captura hace " << age << " ms; el robot giro " << turned << " grados: deteccion ("
+		          << detected[0] << ", " << detected[1] << ") -> (" << out[0] << ", " << out[1] << "), " << shift << " m" << std::endl;
+	}
+	return out;
 }
 
 bool SpecificWorker::get_robot_pose_2d(float &x, float &y, float &yaw)

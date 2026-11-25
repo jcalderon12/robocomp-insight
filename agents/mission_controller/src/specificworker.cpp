@@ -238,12 +238,19 @@ void SpecificWorker::initialize()
 		if (mission_row_to_node_id.count(row) > 0) {
 			uint64_t mission_id = mission_row_to_node_id[row];
 
+			// Igual que el cierre por proximidad del agente: su afordance pasa a false y el robot se para.
+			// last_aff_interacting_state a false para que el monitor no lo tome por un segundo cierre.
+			on_stopMission_clicked(mission_id);
+			last_aff_interacting_state = false;
+
 			// If this mission is currently active, request completion through the scheduler
 			if (mission_id == mission_scheduler.getActiveMissionId()) {
+				std::cout << "[CIERRE] causa=boton COMPLETAR (UI), mision activa id=" << mission_id << std::endl;
 				mission_scheduler.requestMissionCompletion(mission_id);
 			}
 			// If this mission is not active, just mark it as completed (scheduler will handle it)
 			else {
+				std::cout << "[CIERRE] causa=boton COMPLETAR (UI), mision no activa id=" << mission_id << std::endl;
 				mission_scheduler.completeMission(mission_id);
 				ExecutionEventData ev{ExecutionEvent::MISSION_COMPLETED, mission_id, get_mission_type_from_id(mission_id)};
 				handle_scheduler_event(ev);
@@ -398,6 +405,54 @@ void SpecificWorker::compute()
 		// Monitor mission execution state (aff_interacting, mission status)
 		monitor_mission_execution_state();
 	}
+	else
+		monitor_manual_mission();
+}
+
+void SpecificWorker::monitor_manual_mission()
+{
+	// Mision lanzada a mano: el scheduler no la tiene como activa y el monitor del autopilot no la ve.
+	// Su afordance de true a false (cierre por proximidad del robot) la completa como el boton COMPLETAR.
+	if (active_mission_row < 0 || mission_row_to_node_id.count(active_mission_row) == 0)
+	{
+		manual_aff_mission = 0;
+		return;
+	}
+	const int row = active_mission_row;
+	const uint64_t mission_id = mission_row_to_node_id[row];
+	if (model->getMission(row).status == MissionStatus::COMPLETED)
+		return;
+	const std::string type = get_mission_type_from_id(mission_id);
+	if (type != "follow_person" && type != "Take Photos")
+		return;
+	auto aff = affordance_of_mission(mission_id);
+	if (!aff.has_value())
+		return;
+	auto interacting = G->get_attrib_by_name<aff_interacting_att>(aff.value());
+	if (!interacting.has_value())
+		return;
+
+	// Mision nueva: se toma su estado actual como referencia
+	if (mission_id != manual_aff_mission)
+	{
+		manual_aff_mission = mission_id;
+		manual_aff_state = interacting.value();
+		return;
+	}
+	// Perder la botella tambien apaga follow_me: eso es el caso unexplained, no el final (igual que el autopilot)
+	const bool bottle_lost = type == "follow_person" && !bottle_rt_exists() && !concept_known();
+	if (manual_aff_state && !interacting.value() && !bottle_lost)
+	{
+		std::cout << "[CIERRE] causa=afordance " << aff->name() << " (" << aff->id()
+		          << ") paso a aff_interacting=false, mision manual " << type << " id=" << mission_id << std::endl;
+		manual_aff_state = false;
+		on_stopMission_clicked(mission_id);
+		mission_scheduler.completeMission(mission_id);
+		ExecutionEventData ev{ExecutionEvent::MISSION_COMPLETED, mission_id, type};
+		handle_scheduler_event(ev);
+		return;
+	}
+	manual_aff_state = interacting.value();
 }
 
 void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
@@ -472,6 +527,20 @@ void SpecificWorker::handle_scheduler_event(const ExecutionEventData& event)
 		{
 			std::cout << "[SCHEDULER] Mission completed: id=" << event.mission_id << std::endl;
 			const std::string completed_type = get_mission_type_from_id(event.mission_id);
+			// Estado al cerrar, venga de donde venga: su afordance y el TARGET del mundo.
+			{
+				std::cout << "[CIERRE] " << completed_type << " id=" << event.mission_id;
+				if (auto it = mission_affordance.find(event.mission_id); it != mission_affordance.end())
+				{
+					auto aff = G->get_node(it->second);
+					auto interacting = aff.has_value() ? G->get_attrib_by_name<aff_interacting_att>(aff.value()) : std::nullopt;
+					std::cout << " | afordance " << (aff.has_value() ? aff->name() : std::string("(borrada)"))
+					          << " aff_interacting=" << (interacting.has_value() ? std::to_string(interacting.value()) : "?");
+				}
+				else
+					std::cout << " | sin afordance atada";
+				std::cout << " | TARGET del mundo: " << G->get_edges_by_type("TARGET").size() << std::endl;
+			}
 			// The concept's lifecycle (creation/deletion) belongs to semantic, not
 			// mission_controller; here we only release the TARGET edge we created for the mission.
 			if (completed_type == "Take Photos") {
@@ -1599,7 +1668,11 @@ void SpecificWorker::monitor_mission_execution_state()
 	// the concept (and its generated agent) exist in the photo chain.
 	const bool case_resolved = unexplained_seen_at.has_value() && !unexplained_node_exists();
 	if (active_type == "Search Problem Cause" && (known || case_resolved))
+	{
+		std::cout << "[CIERRE] causa=busqueda resuelta (concepto=" << known << ", caso cerrado=" << case_resolved
+		          << ") id=" << active_id << std::endl;
 		mission_scheduler.requestMissionCompletion(active_id);
+	}
 
 	// Only monitor if the active mission is of type "follow_person" or "Take Photos"
 	if (active_type != "follow_person" && active_type != "Take Photos") return;
@@ -1621,6 +1694,8 @@ void SpecificWorker::monitor_mission_execution_state()
 
 		// Detect change from true to false - mission complete
 		if (last_aff_interacting_state && !current_state && !bottle_lost) {
+			std::cout << "[CIERRE] causa=afordance " << affordance.name() << " (" << affordance.id()
+			          << ") paso a aff_interacting=false, mision " << active_type << " id=" << active_id << std::endl;
 
 			// Signal mission completion to scheduler
 			mission_scheduler.requestMissionCompletion(active_id);
@@ -1639,6 +1714,7 @@ void SpecificWorker::stop_active_mission() {
 	if (active_mission_row < 0) return;
 
 	uint64_t mission_id = mission_row_to_node_id[active_mission_row];
+	std::cout << "[CIERRE] parada (no completada): " << get_mission_type_from_id(mission_id) << " id=" << mission_id << std::endl;
 
 	// Update mission time status and UI
 	if (mission_timing_active) {

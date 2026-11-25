@@ -38,6 +38,15 @@
 #include <string>
 #include <limits>
 #include <utility>
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <unordered_set>
+#include <unordered_map>
+#include <memory>
+#include <QLabel>
+#include <QImage>
+#include <QPainter>
 
 // Robot maximum speeds
 static constexpr float WEBOTS_MAX_LINEAR_SPEED  = 1.5f; //meters per second
@@ -253,24 +262,47 @@ private:
 	struct Obstacle { float x, y, radius; };   // marco del robot, metros; radio ya inflado
 	std::vector<Obstacle> collect_obstacles(const DSR::Node &robot_node);
 	std::pair<float, float> detour_subgoal(float gx, float gy, const std::vector<Obstacle> &obstacles);
-	// Huella del robot como circulo: ruedas en +-0.26 m de lado y -0.10/+0.16 m a lo largo.
-	static constexpr float NAV_ROBOT_RADIUS = 0.35f;           // metros
-	static constexpr float NAV_SAFETY_MARGIN = 0.10f;          // metros de holgura extra al obstaculo
+	std::pair<float, float> wall_detour_subgoal(float gx, float gy);   // rodeo de muros del lidar por su extremo
+	// Radio de choque del robot (dwa.pdf: 365 mm de Shadow mas margen). Lo usan el DWA y el freno.
+	static constexpr float NAV_ROBOT_RADIUS = 0.40f;           // metros
 	static constexpr float NAV_DEFAULT_OBSTACLE_SIZE = 0.25f;  // metros, si el nodo no trae concept_size
 	static constexpr float NAV_SIM_TIME = 2.0f;                // segundos que se simula cada arco
 	static constexpr float NAV_SIM_STEP = 0.1f;                // segundos por paso de la simulacion
-	static constexpr int   NAV_V_SAMPLES = 6;
-	static constexpr int   NAV_W_SAMPLES = 21;
+	// Muestreo, pesos y holgura del DWA: valores por defecto, se pueden sobrescribir con Nav_* en el config.
+	int   NAV_V_SAMPLES = 11;
+	int   NAV_W_SAMPLES = 21;
 	static constexpr float NAV_MAX_W = 1.2f;                   // rad/s de giro maximo en los arcos (no en el giro en el sitio)
+	float NAV_W_WINDOW = 1.0f;                               // rad/s alrededor del giro actual
 	static constexpr float NAV_ACCEL_V = 1.0f;                 // m/s^2; el giro no se limita
-	// Pesos del coste: distancia final a la meta (m), error de rumbo (rad), cercania a obstaculos
-	// (0..1 por debajo de NAV_CLEARANCE_CAP), velocidad (0..1) y cambio de giro (rad/s).
-	static constexpr float NAV_W_GOAL = 1.0f;
-	static constexpr float NAV_W_HEADING = 0.3f;
-	static constexpr float NAV_W_CLEARANCE = 0.3f;
-	static constexpr float NAV_W_SPEED = 0.2f;
-	static constexpr float NAV_W_SMOOTH = 0.05f;
-	static constexpr float NAV_CLEARANCE_CAP = 0.3f;           // metros a partir de los que no penaliza
+	static constexpr float NAV_BRAKE_DECEL = 0.5f;             // m/s^2: fuera el arco que no puede parar antes del obstaculo
+	// Costes de dwa.pdf, cada uno en 0..1 salvo la distancia: rumbo final a la meta (/pi), distancia
+	// final a la meta (/NAV_DIST_NORM), holgura ((1 - d/NAV_SAFE_CLEARANCE)^2), velocidad (1 - v/max),
+	// espacio libre en recta al final del arco (hasta NAV_FREE_AHEAD), pasar un obstaculo por el lado
+	// contrario al del ciclo anterior, y cambio de giro.
+	float NAV_W_HEADING = 1.0f;
+	float NAV_W_DIST = 1.0f;
+	float NAV_W_CLEARANCE = 3.0f;
+	float NAV_W_SPEED = 1.0f;
+	float NAV_W_FREE = 1.5f;
+	float NAV_W_SIDE = 1.5f;
+	float NAV_W_SMOOTH = 1.0f;
+	static constexpr float NAV_DIST_NORM = 2.0f;               // metros
+	float NAV_SAFE_CLEARANCE = 0.5f;          // metros a partir de los que la holgura no penaliza
+	float NAV_FREE_AHEAD = 1.5f;              // metros
+	// Regla de progreso: a mas de NAV_PROGRESS_GOAL_DIST de la meta, arcos por debajo de
+	// NAV_PROGRESS_MIN_V solo si no hay uno mas rapido libre.
+	static constexpr float NAV_PROGRESS_GOAL_DIST = 0.1f;      // metros
+	static constexpr float NAV_PROGRESS_MIN_V = 0.15f;         // m/s
+	// Rodeo de muros (wall_detour_subgoal()): tramos con huecos menores que NAV_CLUSTER_GAP (por donde el
+	// robot no cabe); cortan la recta si pasan a menos de radio + NAV_WALL_PASS_MARGIN; un extremo a
+	// menos de NAV_WALL_RANGE_GUARD del alcance del lidar no cuenta (el muro puede seguir).
+	static constexpr float NAV_CLUSTER_GAP = 0.9f;             // metros
+	static constexpr float NAV_WALL_PASS_MARGIN = 0.25f;       // metros (radio del rodeo de la punta)
+	static constexpr float NAV_WALL_BLOCK_MARGIN = 0.05f;      // metros: corta la recta lo que pasa a menos de radio + esto
+	static constexpr float NAV_WALL_RANGE_GUARD = 0.3f;        // metros
+	static constexpr float NAV_WALL_RELEASE_MARGIN = 0.2f;     // metros de mas para dar la recta por libre
+	static constexpr float NAV_WALL_MIN_LENGTH = 0.5f;         // metros: tramos mas cortos no se rodean
+	static constexpr float NAV_DETOUR_MAX_ANGLE = 1.0f;        // radianes (~57 grados) de desvio maximo hacia la submeta
 	// Rodeo (detour_subgoal()): holgura sobre el radio inflado y prolongacion de la tangente.
 	static constexpr float NAV_DETOUR_MARGIN = 0.25f;          // metros
 	static constexpr float NAV_DETOUR_EXTENSION = 0.5f;        // metros
@@ -282,10 +314,121 @@ private:
 	static constexpr float NAV_TURN_UNLOCK_ANGLE = 1.57f;      // radianes (~90 grados)
 	static constexpr float NAV_TURN_GAIN = 1.0f;               // rad/s por radian de error
 	bool nav_rotating = false;     // girando en el sitio antes de avanzar
+	std::chrono::steady_clock::time_point nav_rotate_since;   // traza [giro]: inicio del giro en el sitio
 	int  nav_turn_sign = 0;        // sentido de giro bloqueado: 0 libre, +1/-1 el signo del rumbo
 	int  nav_detour_side = 0;      // lado del rodeo: 0 ninguno, +1 derecha, -1 izquierda
+	int  nav_wall_side = 0;        // lado del rodeo de un muro del lidar, igual convenio
+	// Trazas del rodeo: inicio, ciclos y el ultimo punto que cortaba (along, lateral, extremo).
+	std::chrono::steady_clock::time_point nav_wall_since;
+	int nav_wall_cycles = 0;
+	float nav_wall_cut_along = 0.f, nav_wall_cut_lateral = 0.f, nav_wall_end_dist = 0.f;
+	// Estado del rodeo (tipo Bug2), en root: meta y esquina al empezar, distancia a la meta al empezar y la
+	// mejor desde entonces. Se suelta con la recta libre y mas cerca que al empezar (o NAV_WALL_FREE_SECONDS
+	// libre); se rehace si la meta se mueve NAV_WALL_GOAL_MOVED; sin progreso (NAV_WALL_ABANDON_DIST mas lejos
+	// que al empezar o NAV_WALL_STALL_SECONDS sin mejorar) prueba el otro lado y, si tampoco, lo deja al DWA.
+	static constexpr float NAV_WALL_GOAL_MOVED = 1.0f;         // metros
+	static constexpr float NAV_WALL_ABANDON_DIST = 1.5f;       // metros
+	static constexpr float NAV_WALL_STALL_SECONDS = 10.f;
+	static constexpr float NAV_WALL_PROGRESS_STEP = 0.1f;      // metros de mejora que cuentan como progreso
+	static constexpr float NAV_WALL_FREE_SECONDS = 2.f;
+	static constexpr float NAV_WALL_LEAVE_FREE_SECONDS = 0.3f; // recta libre minima para soltar por progreso
+	static constexpr float NAV_WALL_LEAVE_MARGIN = 0.3f;       // metros mas cerca que al empezar para soltar
+	static constexpr long  NAV_WALL_DIR_POINTS = 2;            // puntos hacia dentro para la direccion del muro
+	float nav_wall_dir_wx = 0.f, nav_wall_dir_wy = 0.f;        // direccion del muro hacia fuera en la esquina (root)
+	float nav_target_x = 0.f, nav_target_y = 0.f;              // objetivo (persona) en el marco del robot
+	static constexpr float NAV_WALL_GIVEUP_COOLDOWN = 5.f;     // segundos sin empezar otro rodeo tras rendirse
+	float nav_wall_goal_wx = 0.f, nav_wall_goal_wy = 0.f;
+	float nav_wall_corner_wx = 0.f, nav_wall_corner_wy = 0.f;
+	bool  nav_wall_corner_valid = false;
+	float nav_wall_hit_dist = 0.f, nav_wall_best_dist = 0.f;
+	std::chrono::steady_clock::time_point nav_wall_best_time, nav_wall_free_since, nav_wall_cooldown_until;
+	bool  nav_wall_free = false;
+	int   nav_wall_switches = 0;
+	bool robot_world_pose(float &x, float &y, float &yaw);   // pose del robot en root (DSR)
+	int  nav_pass_side = 0;        // lado por el que el arco elegido deja el obstaculo cercano (+1 derecha)
 	bool nav_blocked_warned = false;
 	std::chrono::steady_clock::time_point nav_last_time;
+
+	// ---- Obstaculos del lidar (paredes, cajas: lo que no esta en el DSR) ----
+	// Montaje de Shadow.proto: los dos lidars van invertidos con la misma rotacion, que lleva el
+	// punto del dispositivo (x, y, z) al cuerpo como (y, x, -z); el cuerpo es x derecha, y avance.
+	// Solo simulacion: en el robot real el componente del lidar entrega otro marco.
+	struct LidarMount { const char *name; float tx, ty, tz; };
+	static constexpr LidarMount LIDAR_MOUNTS[] = {{"helios", 0.f, -0.155f, 1.075f}, {"bpearl", 0.f, 0.14f, 0.67f}};
+	static constexpr int   LIDAR_BINS = 180;                   // sectores de 2 grados: el punto mas cercano de cada uno
+	static constexpr float LIDAR_READ_PERIOD = 0.04f;          // segundos; el lidar publica a 20 Hz
+	static constexpr float LIDAR_STALE_SECONDS = 0.5f;         // sin datos nuevos en este tiempo se avisa
+	static constexpr float LIDAR_DEBUG_PERIOD = 2.f;           // segundos entre trazas de diagnostico
+	static constexpr float BRAKE_SIM_STEP = 0.05f;             // segundos por paso del arco del freno
+	void update_lidar_obstacles(const DSR::Node &robot_node);
+	bool brake_needed(float v, float w);                       // el arco (v, w) acerca el robot a un punto del lidar
+	void apply_safety_brake();
+	// Punto del lidar en el marco del robot (metros, ya filtrado); z y el lidar de origen, para las trazas.
+	struct LidarPoint { float x, y, z; const char *src; };
+	std::vector<LidarPoint> lidar_points;
+	// Diagnostico: el punto descartado por bajo (z < Lidar_min_height) mas alto del pasillo de delante.
+	static constexpr float LIDAR_LOW_CORRIDOR_HALF = 0.5f;     // metros a cada lado
+	static constexpr float LIDAR_LOW_CORRIDOR_LENGTH = 2.f;    // metros por delante
+	std::optional<LidarPoint> lidar_low_front;
+	// Persistencia: un punto solo cuenta si la lectura anterior del mismo lidar tenia otro en su celda
+	// o en una vecina (rejilla de LIDAR_PERSIST_CELL). Quita retornos sueltos de una sola lectura.
+	static constexpr float LIDAR_PERSIST_CELL = 0.15f;         // metros
+	static constexpr size_t LIDAR_N_MOUNTS = 2;
+	std::array<std::unordered_set<int64_t>, LIDAR_N_MOUNTS> lidar_prev_cells;
+	std::array<std::vector<LidarPoint>, LIDAR_N_MOUNTS> lidar_mount_points;   // ultimos confirmados de cada lidar
+	std::array<std::vector<LidarPoint>, LIDAR_N_MOUNTS> lidar_mount_target_points;   // confirmados junto al objetivo (linea de vista)
+	int lidar_dropped = 0;                                     // descartados por persistencia desde la ultima traza
+	std::optional<LidarPoint> lidar_dropped_nearest;
+	// Aislamiento: en la misma lectura (en planta, xy) tiene que haber otro punto en su celda o en una vecina.
+	// Quita rayos sueltos que se repiten en el mismo sitio y la persistencia deja pasar.
+	int lidar_isolated = 0;                                    // descartados por aislados desde la ultima traza
+	std::optional<LidarPoint> lidar_isolated_nearest;
+	// Traza del DWA: avance recortado a menos de esta fraccion del posible, con al menos este posible.
+	static constexpr float NAV_CUT_TRACE_FRACTION = 0.5f;
+	static constexpr float NAV_CUT_TRACE_MIN_V = 0.2f;         // m/s
+	bool nav_cut_active = false;
+
+	// ---- Ventana de depuracion de la navegacion (Nav_debug_view) ----
+	// navigate_to guarda en nav_dbg los arcos del ciclo y draw_nav_debug() los pinta, en el marco del
+	// robot, a NAV_DEBUG_PERIOD como mucho. Con Nav_debug_save_dir no vacio, ademas guarda cada imagen.
+	struct NavDebugArc { std::vector<std::pair<float, float>> pts; int status; };   // 0 choca, 1 no frena, 2 valido
+	struct NavDebug
+	{
+		bool navigating = false, rotating = false;
+		std::pair<float, float> goal{0.f, 0.f}, subgoal{0.f, 0.f};
+		std::vector<Obstacle> dsr;                 // radio ya inflado con NAV_ROBOT_RADIUS
+		std::vector<NavDebugArc> arcs;
+		int chosen = -1, n_valid = 0;
+		float v_target = 0.f, v_cmd = 0.f, w = 0.f, min_clear = -1.f;
+		std::vector<int> point_cluster;            // tramo de cada punto de lidar_points
+		std::vector<char> cluster_wall;            // tramo con longitud de muro
+		int blocking_cluster = -1;
+	};
+	static constexpr float NAV_DEBUG_PERIOD = 0.1f;            // segundos entre imagenes
+	static constexpr int NAV_DEBUG_W = 700, NAV_DEBUG_H = 820;  // pixeles de la imagen (y tamano minimo de la ventana)
+	static constexpr int   NAV_DEBUG_ARC_STRIDE = 2;           // pasos del arco por punto pintado
+	void draw_nav_debug();
+	std::optional<LidarPoint> wall_between_robot_and_target();
+	bool nav_debug_view = false;
+	std::string nav_debug_save_dir;
+	NavDebug nav_dbg;
+	std::optional<std::pair<float, float>> lidar_target;      // objetivo excluido del lidar, marco del robot
+	std::unique_ptr<QLabel> nav_debug_label;
+	std::chrono::steady_clock::time_point nav_debug_last;
+	int nav_debug_frame = 0;
+	std::chrono::steady_clock::time_point lidar_last_read, lidar_last_data, lidar_last_debug;
+	bool lidar_stale_warned = false;
+	bool brake_active = false;
+	std::chrono::steady_clock::time_point brake_start;
+	bool  lidar_enabled;
+	bool  lidar_debug;
+	float lidar_max_range;          // metros
+	float lidar_min_height;         // metros sobre el suelo: por debajo, suelo y baches
+	float lidar_max_height;         // metros
+	float lidar_self_radius;        // metros: mas cerca del centro es el propio robot
+	float lidar_target_exclusion;   // metros alrededor del objetivo: no se esquiva a quien se sigue
+	float brake_time;               // segundos de avance que mira el freno
+	float brake_margin;             // metros extra al final del arco del freno
 
 	// ---- Fin de follow_person por permanencia a la distancia deseada ----
 	// Holgura sobre desired_distance: la aproximacion es asintotica y los ultimos centimetros se
@@ -297,6 +440,18 @@ private:
 	static constexpr float FOLLOW_BRAKE_GAIN = 1.2f;       // m/s, el Kp_lin del PD antiguo
 	// Deriva de la distancia durante la espera que se interpreta como que la persona se ha movido.
 	static constexpr float FOLLOW_HOLD_DRIFT     = 0.25f;  // metros
+	// Linea de vista para dar por alcanzada a la persona (wall_between_robot_and_target()): tramos del lidar
+	// con huecos menores que LIDAR_POINT_GAP y al menos FOLLOW_LOS_WALL_LENGTH de largo (muros, no la persona)
+	// que cruzan la recta a menos de FOLLOW_LOS_HALF_WIDTH antes de FOLLOW_LOS_TARGET_MARGIN del objetivo, o
+	// que pasan a menos de FOLLOW_LOS_TARGET_ON_WALL de el (su RT cayo en el muro).
+	static constexpr float LIDAR_POINT_GAP = 0.3f;              // metros
+	static constexpr float FOLLOW_LOS_WALL_LENGTH = 0.8f;       // metros
+	static constexpr float FOLLOW_LOS_HALF_WIDTH = 0.25f;       // metros
+	static constexpr float FOLLOW_LOS_TARGET_MARGIN = 0.1f;     // metros
+	static constexpr float FOLLOW_LOS_TARGET_ON_WALL = 0.15f;   // metros
+	static constexpr float FOLLOW_LOS_SIDE_SPAN = 0.3f;         // metros a cada lado de la vista para "muro que sigue"
+	const char *follow_los_reason = "";                         // que prueba de la linea de vista ha fallado (traza)
+	bool follow_los_warned = false;
 	float follow_hold_seconds;           // segundos que hay que aguantar a la distancia deseada
 	// Un vector nulo no es una posicion, es ausencia de dato: el puente de Webots devuelve la pose
 	// a ceros cuando no resuelve el DEF, y asi el objetivo parece estar encima y centrado.
@@ -314,6 +469,12 @@ private:
 	bool print_extra_info = configLoader.get<bool>("print_extra_info");
 	bool simulated = configLoader.get<bool>("Simulated");
 	std::string robot_DEF = "shadow";
+	// Traza [persona] (simulacion): pose real de la persona y del robot en Webots frente a la RT publicada.
+	std::string person_DEF = "HUMAN_2";
+	static constexpr float PERSON_TRACE_PERIOD = 0.5f;          // segundos
+	std::chrono::steady_clock::time_point person_trace_last;
+	bool person_trace_warned = false;
+	void trace_person_ground_truth(const DSR::Node &robot_node);
 
 	static constexpr int ODOMETRY_WINDOW_SIZE = 5;
 	static constexpr float LINEAR_VELOCITY_DEADBAND  = 2.f;    // mm/s
