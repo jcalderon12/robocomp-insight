@@ -21,17 +21,18 @@ Grafos: `G = Graphs.at("work")` (dominio 0, mundo), `mission_graph` (1, misiones
 `concept_robot` | mueve el robot: `follow_target()` y la máquina de la misión de fotos |
 `concept_person`, `concept_<x>` | publican la RT `robot -> su concepto` |
 `mission_controller` | crea y activa misiones; crea la arista TARGET al activarlas |
-`semantic` | detecta la botella caída, crea `problem` (el caso) y sus hipótesis; con el veredicto crea el concepto (nombre = `cause.name`) + `photograph_me` (`aff_mission`) y genera su agente |
-`inner_simulator` | simula las hipótesis en PyBullet; publica el veredicto (`verdict_filepath`) o `search_abandoned` en `problem` |
+`semantic` | detecta la botella caída, crea `unexplained` (el caso) y sus hipótesis; con el veredicto crea el concepto (nombre = `cause.name`) + `photograph_me` (`aff_mission`) y genera su agente |
+`inner_simulator` | simula las hipótesis en PyBullet; publica el veredicto (`verdict_filepath`) o `search_abandoned` en `unexplained` |
 `fake_castilla_la_mancha` | **obsoleto** desde 16/11 (lo hace `semantic`); no lanzarlo: recrearía `problem` |
 `episodic_memory` | graba en `agents/mission_controller/recorded_missions/` |
 `webots-bridge` | **repositorio aparte** (`robocomp/webots-bridge`), no es de este proyecto |
 
-Cadena de misiones: `follow_person` -> cae la botella -> `problem` -> `search_cause` ->
+Cadena de misiones: `follow_person` -> cae la botella -> `unexplained` -> `search_cause` ->
 `take_photos`.
 
 `unexplained` y `problem` son **el mismo nodo** (el caso abierto): se fusionaron el 16/11 con el nombre
-`problem`. En código, comentarios, grabaciones o documentos anteriores, `unexplained` significa `problem`.
+`unexplained` (entre el 16/11 y el 18/11 se llamó `problem`). En código, comentarios, grabaciones o documentos
+anteriores, `problem` significa `unexplained`.
 
 El agente del concepto se genera desde las plantillas Jinja2 de
 `agents/agent_generation/templates/`. **Editar siempre la plantilla**: `generate_agent()` hace
@@ -61,6 +62,6 @@ El agente del concepto se genera desde las plantillas Jinja2 de
   Webots, pero el cuaternión tal cual. Quien la consuma debe deshacer el swap.
 - **Unidades**: `world_position` en metros; `getObjectPose` del puente en milímetros.
 - **`problem_position` no es una medida**: es la última posición registrada del robot antes de
-  que apareciera el nodo `problem`, así que arrastra el retardo de detección de la botella.
+  que apareciera el nodo `unexplained`, así que arrastra el retardo de detección de la botella.
 - Las grabaciones salen de **0 bytes si se mata el flujo a media misión**: hay que pararla desde
   la UI o dejar que termine.
