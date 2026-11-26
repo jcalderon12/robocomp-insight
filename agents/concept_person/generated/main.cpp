@@ -82,6 +82,7 @@
 #include <Camera360RGB.h>
 #include <Gridder.h>
 #include <ImageSegmentation.h>
+#include <KinovaArm.h>
 #include <Lidar3D.h>
 #include <VisualElementsPub.h>
 #include <Webots2Robocomp.h>

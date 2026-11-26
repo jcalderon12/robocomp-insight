@@ -45,11 +45,11 @@ SET (SOURCES
 
 #ROBOCOMP
 ROBOCOMP_INITIALIZE( $ENV{ROBOCOMP}/ )
-ROBOCOMP_IDSL_TO_ICE(Gridder Lidar3D ImageSegmentation Camera360RGB Webots2Robocomp KinovaArm VisualElementsPub)
-ROBOCOMP_ICE_TO_SRC(Gridder Lidar3D ImageSegmentation Camera360RGB Webots2Robocomp KinovaArm VisualElementsPub)
+ROBOCOMP_IDSL_TO_ICE(KinovaArm Lidar3D Camera360RGB Webots2Robocomp Gridder VisualElementsPub ImageSegmentation)
+ROBOCOMP_ICE_TO_SRC(KinovaArm Lidar3D Camera360RGB Webots2Robocomp Gridder VisualElementsPub ImageSegmentation)
 SET (EXECUTABLE_OUTPUT_PATH ${RC_COMPONENT_DEVEL_PATH}/bin)
 
 # Specify construction and link process
 ADD_EXECUTABLE( concept_person ${SOURCES} ${MOC_SOURCES} ${RC_SOURCES} ${UI_HEADERS} )
-TARGET_LINK_LIBRARIES( concept_person ${LIBS}  dsr_core dsr_gui dsr_api fastcdr fastdds osgDB OpenThreads Eigen3::Eigen QGLViewer-qt6 Qt6OpenGLWidgets ${STATIC_LIBS} ${SPECIFIC_LIBS} ${QT_LIBRARIES} ${Ice_LIBRARIES} )
+TARGET_LINK_LIBRARIES( concept_person ${LIBS}  dsr_core dsr_gui dsr_api fastcdr fastdds OpenThreads Eigen3::Eigen QGLViewer-qt6 Qt6OpenGLWidgets ${STATIC_LIBS} ${SPECIFIC_LIBS} ${QT_LIBRARIES} ${Ice_LIBRARIES} )
 INSTALL(FILES ${EXECUTABLE_OUTPUT_PATH}/concept_person DESTINATION ${RC_COMPONENT_INSTALL_PATH}/bin/ PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE )

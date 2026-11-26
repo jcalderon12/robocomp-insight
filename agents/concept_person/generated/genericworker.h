@@ -30,15 +30,16 @@
 #include <QtCore>
 #include <variant>
 #include <unordered_map>
+#include <fps/fps.h>
 
 #include "dsr/api/dsr_api.h"
 #include "dsr/gui/dsr_gui.h"
-#include <doublebuffer/DoubleBuffer.h>
 #include <memory>
 
 #include <Camera360RGB.h>
 #include <Gridder.h>
 #include <ImageSegmentation.h>
+#include <KinovaArm.h>
 #include <Lidar3D.h>
 #include <VisualElementsPub.h>
 #include <Webots2Robocomp.h>
@@ -73,6 +74,7 @@ public:
 protected:
 	std::unordered_map<std::string, std::unique_ptr<GRAFCETStep>> states;
 	ConfigLoader configLoader;
+	FPSCounter fps;
 	//DSR params
 	std::string agent_name;
 	int agent_id;
