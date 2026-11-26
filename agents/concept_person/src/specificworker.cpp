@@ -79,6 +79,43 @@ void SpecificWorker::initialize()
 
 	rt = G->get_rt_api();
 
+	// Paseo de la persona: ruta "Start" (una vez) + "Loop" (en bucle), numeros separados por comas
+	auto split_route = [this](const std::string &list) {
+		std::vector<std::string> defs;
+		std::stringstream ss(list);
+		for (std::string token; std::getline(ss, token, ',');)
+		{
+			token.erase(0, token.find_first_not_of(" \t"));
+			token.erase(token.find_last_not_of(" \t") + 1);
+			if (!token.empty())
+				defs.push_back(walk_prefix + token);
+		}
+		return defs;
+	};
+	try { walk_enabled = configLoader.get<bool>("Person.Walk.Enabled"); } catch (...) {}
+	try { walk_speed = static_cast<float>(configLoader.get<double>("Person.Walk.Speed")); } catch (...) {}
+	try { walk_prefix = configLoader.get<std::string>("Person.Walk.Prefix"); } catch (...) {}
+	std::string start_list, loop_list;
+	try { start_list = configLoader.get<std::string>("Person.Walk.Start"); } catch (...) {}
+	try { loop_list = configLoader.get<std::string>("Person.Walk.Loop"); } catch (...) {}
+	walk_route = split_route(start_list);
+	walk_loop_start = walk_route.size();
+	for (const auto &def : split_route(loop_list))
+		walk_route.push_back(def);
+	if (walk_enabled && walk_route.empty())
+	{
+		std::cout << "[paseo] Person.Walk.Enabled sin waypoints en Start/Loop: desactivado." << std::endl;
+		walk_enabled = false;
+	}
+	if (walk_enabled)
+	{
+		std::cout << "[paseo] ruta:";
+		for (size_t i = 0; i < walk_route.size(); ++i)
+			std::cout << (i == walk_loop_start ? " | " : " ") << walk_route[i];
+		std::cout << " (bucle desde " << (walk_loop_start < walk_route.size() ? walk_route[walk_loop_start] : "-")
+		          << "), " << walk_speed << " m/s" << std::endl;
+	}
+
 	last_relative_pose = get_person_relative_position();
 }
 
@@ -87,6 +124,8 @@ void SpecificWorker::initialize()
 void SpecificWorker::compute()
 {
 	auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	if (walk_enabled)
+		walk_person();
 	record_robot_pose();
 	auto detected = compensate_detection_delay(get_person_relative_position());
 	// Un salto sin confirmar no se publica ni entra en la memoria: mientras, se sigue la recordada.
@@ -729,6 +768,121 @@ bool SpecificWorker::follow_person(std::vector<float> distance)
 	G->update_node(robot_node);
 
 	return true;
+}
+
+
+/************ Paseo de la persona *************/
+
+void SpecificWorker::refresh_waypoints()
+{
+	for (const auto &def : walk_route)
+	{
+		if (waypoints.contains(def))
+			continue;   // repetido en la ruta
+		try
+		{
+			const auto pose = webots2robocomp_proxy->getObjectPose(def);
+			// [0,0,0] es ausencia de dato: el puente devuelve ceros si no resuelve el DEF
+			if (pose.position.x == 0.f && pose.position.y == 0.f && pose.position.z == 0.f)
+				waypoints.erase(def);
+			else
+				waypoints[def] = {pose.position.x / 1000.f, pose.position.y / 1000.f};
+		}
+		catch (const Ice::Exception &e) { std::cout << "[paseo] sin pose de " << def << ": " << e.what() << std::endl; return; }
+	}
+}
+
+void SpecificWorker::walk_person()
+{
+	// Activo solo con la afordance follow_me aceptada (aff_interacting = true)
+	bool active = false;
+	if (auto aff = G->get_node("follow_me"); aff.has_value())
+	{
+		auto interacting = G->get_attrib_by_name<aff_interacting_att>(aff.value());
+		active = interacting.has_value() && interacting.value();
+	}
+	const auto now = std::chrono::steady_clock::now();
+
+	if (active != walk_active)
+	{
+		walk_active = active;
+		if (!active)
+		{
+			std::cout << "[paseo] pausado en " << walk_route[walk_index] << std::endl;
+			return;
+		}
+		// Arranque o reanudacion: se parte de la pose real (puede haberse movido a mano) y se releen todos
+		try
+		{
+			const auto pose = webots2robocomp_proxy->getObjectPose(person_def);
+			if (pose.position.x == 0.f && pose.position.y == 0.f && pose.position.z == 0.f)
+			{
+				walk_active = false;   // ausencia de dato: se reintenta en el siguiente ciclo
+				return;
+			}
+			walk_position = {pose.position.x / 1000.f, pose.position.y / 1000.f};
+			walk_z = pose.position.z / 1000.f;
+		}
+		catch (const Ice::Exception &e) { std::cout << "[paseo] sin pose de " << person_def << ": " << e.what() << std::endl; walk_active = false; return; }
+		waypoints.clear();
+		refresh_waypoints();
+		waypoints_last_refresh = now;
+		walk_last_tick = now;
+		std::cout << "[paseo] activo: hacia " << walk_route[walk_index] << std::endl;
+		return;
+	}
+	if (!active)
+		return;
+
+	// Relectura periodica de toda la ruta: mover un waypoint en Webots se aplica en marcha
+	if (std::chrono::duration<float>(now - waypoints_last_refresh).count() > WAYPOINT_REFRESH_PERIOD)
+	{
+		waypoints.clear();
+		refresh_waypoints();
+		waypoints_last_refresh = now;
+	}
+
+	const float dt = std::min(std::chrono::duration<float>(now - walk_last_tick).count(), WALK_MAX_DT);
+	walk_last_tick = now;
+
+	const auto &target_def = walk_route[walk_index];
+	auto target_it = waypoints.find(target_def);
+	if (target_it == waypoints.end())
+	{
+		if (!walk_missing_warned)
+			std::cout << "[paseo] no existe " << target_def << " en Webots (o esta en el origen): esperando." << std::endl;
+		walk_missing_warned = true;
+		return;
+	}
+	walk_missing_warned = false;
+
+	// Avance en linea recta a velocidad fija; al alcanzarlo, siguiente de la ruta (Loop vuelve a su inicio)
+	const Eigen::Vector2f delta = target_it->second - walk_position;
+	const float distance = delta.norm();
+	const float step = walk_speed * dt;
+	if (distance > 1e-3f)
+		walk_heading = std::atan2(delta.y(), delta.x());
+	if (distance <= step)
+	{
+		walk_position = target_it->second;
+		// Sin Loop, al acabar Start se queda en el ultimo
+		const size_t next = walk_index + 1 < walk_route.size() ? walk_index + 1
+		                  : (walk_loop_start < walk_route.size() ? walk_loop_start : walk_index);
+		if (next != walk_index)
+		{
+			std::cout << "[paseo] llegada a " << target_def << " -> " << walk_route[next] << std::endl;
+			walk_index = next;
+		}
+	}
+	else
+		walk_position += delta / distance * step;
+
+	// Orientacion: giro sobre z hacia donde camina (el modelo mira a +x, como en crowd_controller)
+	RoboCompWebots2Robocomp::ObjectPose pose;
+	pose.position = {walk_position.x() * 1000.f, walk_position.y() * 1000.f, walk_z * 1000.f};
+	pose.orientation = {0.f, 0.f, std::sin(walk_heading / 2.f), std::cos(walk_heading / 2.f)};
+	try { webots2robocomp_proxy->setObjectPose(person_def, pose); }
+	catch (const Ice::Exception &e) { std::cout << "[paseo] setObjectPose fallo: " << e.what() << std::endl; }
 }
 
 

@@ -38,6 +38,7 @@ static constexpr float WEBOTS_MAX_ANGULAR_SPEED = 4.03f; //radians per second
 #include <genericworker.h>
 #include <Eigen/Geometry>
 #include <deque>
+#include <map>
 
 enum class States
 {
@@ -211,6 +212,18 @@ public slots:
 	 */
 	float calculate_linear_speed_from_distance(std::vector<float> distance);
 
+	/**
+	 * \brief Paseo de la persona en Webots: con follow_me activa la lleva por la ruta de waypoints
+	 * (Person.Walk.*) moviendola con setObjectPose; sin ella la deja quieta donde este.
+	 */
+	void walk_person();
+
+	/**
+	 * \brief Lee las poses de los waypoints de la ruta (DEF = prefijo + numero). Una pose a ceros es
+	 * ausencia de dato (DEF que no existe) y no se guarda.
+	 */
+	void refresh_waypoints();
+
 private:
 
 	/**
@@ -254,6 +267,24 @@ private:
 	int required_large_jump_confirmations = 3;
 	float large_jump_threshold = 1.0f; // metros
 	float large_jump_candidate_tolerance = 0.2f; // metros
+
+	// ---- Paseo de la persona (walk_person()) ----
+	// Ruta = Start + Loop; al acabar Loop se vuelve a su primer waypoint. Se leen en initialize().
+	bool walk_enabled = false;
+	float walk_speed = 0.5f;                         // m/s
+	std::string walk_prefix = "WAYPOINT_";
+	std::vector<std::string> walk_route;             // DEFs de Start seguidos de los de Loop
+	size_t walk_loop_start = 0;                      // indice en walk_route donde empieza Loop
+	size_t walk_index = 0;                           // waypoint al que se dirige
+	bool walk_active = false;
+	bool walk_missing_warned = false;
+	Eigen::Vector2f walk_position = Eigen::Vector2f::Zero();   // marco de Webots, metros
+	float walk_z = 0.f;
+	float walk_heading = 0.f;
+	std::map<std::string, Eigen::Vector2f> waypoints;          // DEF -> posicion en Webots (metros)
+	static constexpr float WAYPOINT_REFRESH_PERIOD = 2.f;      // segundos: recoge los que se muevan en Webots
+	static constexpr float WALK_MAX_DT = 0.3f;                 // segundos: tope del paso tras un bloqueo
+	std::chrono::steady_clock::time_point walk_last_tick, waypoints_last_refresh;
 
 signals:
 	//void customSignal();

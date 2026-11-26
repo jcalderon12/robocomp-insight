@@ -44,3 +44,11 @@ Ice.MessageSizeMax = "20004800"
 
 Simulated = false
 print_extra_info = false
+# Paseo de la persona en Webots (walk_person()): con follow_me activa recorre los waypoints
+# Pose del mundo con DEF Prefix+numero (moverlos en Webots se aplica en marcha). Start se hace una vez;
+# despues Loop en bucle. Speed en m/s.
+Person.Walk.Enabled = true
+Person.Walk.Speed = 0.5
+Person.Walk.Prefix = "WAYPOINT_"
+Person.Walk.Start = "1"
+Person.Walk.Loop = "2,3,4,5,6,7,2,10,8,9,10"
